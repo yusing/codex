@@ -157,6 +157,7 @@ const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
 const REALTIME_CALLS_ENDPOINT: &str = "/realtime/calls";
 const RESPONSES_ENDPOINT: &str = "/responses";
 const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
+const GPT_5_3_CODEX_SPARK_SLUG: &str = "gpt-5.3-codex-spark";
 // `/responses/compact` is unary, so the timeout covers the full response rather than one idle
 // period between stream events.
 const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
@@ -806,15 +807,18 @@ impl ModelClient {
         summary: ReasoningSummaryConfig,
     ) -> Option<Reasoning> {
         if model_info.supports_reasoning_summaries {
+            let summary = if summary == ReasoningSummaryConfig::None
+                || model_info.slug == GPT_5_3_CODEX_SPARK_SLUG
+            {
+                None
+            } else {
+                Some(summary)
+            };
             Some(Reasoning {
                 effort: effort
                     .or_else(|| model_info.default_reasoning_level.clone())
                     .map(reasoning_effort_for_request),
-                summary: if summary == ReasoningSummaryConfig::None {
-                    None
-                } else {
-                    Some(summary)
-                },
+                summary,
                 // When Responses Lite is disabled, omit context so Responses uses the default,
                 // which is currently `current_turn`.
                 context: model_info

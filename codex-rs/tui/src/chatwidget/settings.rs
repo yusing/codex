@@ -606,6 +606,7 @@ impl ChatWidget {
         }
         match self.active_mode_kind() {
             ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
+            ModeKind::Orchestrated => Some(CollaborationModeIndicator::Orchestrated),
             ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
         }
     }
@@ -697,6 +698,19 @@ impl ChatWidget {
             && let Some(effort) = self.config.plan_mode_reasoning_effort.clone()
         {
             mask.reasoning_effort = Some(Some(effort));
+        }
+        if mask.mode == Some(ModeKind::Orchestrated) {
+            if let Some(model) = self.config.orchestrated_mode.orchestrator_model.clone() {
+                mask.model = Some(model);
+            }
+            if let Some(effort) = self
+                .config
+                .orchestrated_mode
+                .orchestrator_reasoning_effort
+                .clone()
+            {
+                mask.reasoning_effort = Some(Some(effort));
+            }
         }
         if mask.mode == Some(ModeKind::Plan) {
             self.dismissed_plan_mode_nudge_scopes

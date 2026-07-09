@@ -2152,6 +2152,31 @@
         }
       ]
     },
+    "OrchestratedModeToml": {
+      "additionalProperties": false,
+      "description": "Model routing defaults for Orchestrated collaboration mode.",
+      "properties": {
+        "explorer_model": {
+          "type": "string"
+        },
+        "explorer_reasoning_effort": {
+          "$ref": "#/definitions/ReasoningEffort"
+        },
+        "orchestrator_model": {
+          "type": "string"
+        },
+        "orchestrator_reasoning_effort": {
+          "$ref": "#/definitions/ReasoningEffort"
+        },
+        "worker_model": {
+          "type": "string"
+        },
+        "worker_reasoning_effort": {
+          "$ref": "#/definitions/ReasoningEffort"
+        }
+      },
+      "type": "object"
+    },
     "OrchestratorFeatureToml": {
       "additionalProperties": false,
       "description": "Settings for a feature owned by the orchestrator.",
@@ -5323,6 +5348,9 @@
     "openai_base_url": {
       "description": "Base URL override for the built-in `openai` model provider.",
       "type": "string"
+    },
+    "orchestrated_mode": {
+      "$ref": "#/definitions/OrchestratedModeToml"
     },
     "orchestrator": {
       "allOf": [

@@ -276,6 +276,22 @@ fn test_model_info() -> ModelInfo {
     .expect("deserialize test model info")
 }
 
+#[test]
+fn spark_model_omits_reasoning_summary_even_when_requested() {
+    let mut model_info = test_model_info();
+    model_info.slug = super::GPT_5_3_CODEX_SPARK_SLUG.to_string();
+    model_info.supports_reasoning_summaries = true;
+
+    let reasoning = ModelClient::build_reasoning(
+        &model_info,
+        /*effort*/ None,
+        codex_protocol::config_types::ReasoningSummary::Detailed,
+    )
+    .expect("spark should still send reasoning effort");
+
+    assert_eq!(reasoning.summary, None);
+}
+
 fn test_session_telemetry() -> SessionTelemetry {
     SessionTelemetry::new(
         ThreadId::new(),

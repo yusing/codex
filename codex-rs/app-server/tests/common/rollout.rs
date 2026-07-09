@@ -93,6 +93,7 @@ pub fn create_fake_rollout_with_token_usage(
                 reasoning_output_tokens: 5,
                 total_tokens: 90,
             },
+            orchestrated_role_token_usage: Vec::new(),
             model_context_window: Some(200_000),
         }),
         rate_limits: None,

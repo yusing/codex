@@ -1803,6 +1803,7 @@
       "description": "Initial collaboration mode to use when the TUI starts.",
       "enum": [
         "plan",
+        "orchestrated",
         "default"
       ],
       "type": "string"

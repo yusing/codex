@@ -609,6 +609,7 @@ pub enum AltScreenMode {
 #[serde(rename_all = "snake_case")]
 pub enum ModeKind {
     Plan,
+    Orchestrated,
     #[default]
     #[serde(
         alias = "code",
@@ -629,12 +630,14 @@ pub enum ModeKind {
     Execute,
 }
 
-pub const TUI_VISIBLE_COLLABORATION_MODES: [ModeKind; 2] = [ModeKind::Default, ModeKind::Plan];
+pub const TUI_VISIBLE_COLLABORATION_MODES: [ModeKind; 3] =
+    [ModeKind::Default, ModeKind::Plan, ModeKind::Orchestrated];
 
 impl ModeKind {
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Plan => "Plan",
+            Self::Orchestrated => "Orchestrated",
             Self::Default => "Default",
             Self::PairProgramming => "Pair Programming",
             Self::Execute => "Execute",
@@ -642,7 +645,7 @@ impl ModeKind {
     }
 
     pub const fn is_tui_visible(self) -> bool {
-        matches!(self, Self::Plan | Self::Default)
+        matches!(self, Self::Plan | Self::Orchestrated | Self::Default)
     }
 
     pub const fn allows_request_user_input(self) -> bool {
@@ -830,7 +833,7 @@ mod tests {
 
     #[test]
     fn tui_visible_collaboration_modes_match_mode_kind_visibility() {
-        let expected = [ModeKind::Default, ModeKind::Plan];
+        let expected = [ModeKind::Default, ModeKind::Plan, ModeKind::Orchestrated];
         assert_eq!(expected, TUI_VISIBLE_COLLABORATION_MODES);
 
         for mode in TUI_VISIBLE_COLLABORATION_MODES {
@@ -839,6 +842,17 @@ mod tests {
 
         assert!(!ModeKind::PairProgramming.is_tui_visible());
         assert!(!ModeKind::Execute.is_tui_visible());
+    }
+
+    #[test]
+    fn orchestrated_mode_serializes_and_displays() {
+        let json = serde_json::to_string(&ModeKind::Orchestrated).expect("serialize mode");
+        assert_eq!(json, "\"orchestrated\"");
+        let mode: ModeKind = serde_json::from_str(&json).expect("deserialize mode");
+        assert_eq!(mode, ModeKind::Orchestrated);
+        assert_eq!(mode.display_name(), "Orchestrated");
+        assert!(mode.is_tui_visible());
+        assert!(!mode.allows_request_user_input());
     }
 
     #[test]

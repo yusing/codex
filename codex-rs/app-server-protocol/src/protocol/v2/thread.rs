@@ -24,6 +24,7 @@ pub use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 pub use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::OrchestratedRoleTokenUsage as CoreOrchestratedRoleTokenUsage;
 use codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
@@ -1381,6 +1382,8 @@ pub struct ThreadTokenUsageUpdatedNotification {
 pub struct ThreadTokenUsage {
     pub total: TokenUsageBreakdown,
     pub last: TokenUsageBreakdown,
+    #[serde(default)]
+    pub orchestrated_role_usage: Vec<ThreadOrchestratedRoleTokenUsage>,
     // TODO(aibrahim): make this not optional
     #[ts(type = "number | null")]
     pub model_context_window: Option<i64>,
@@ -1391,7 +1394,31 @@ impl From<CoreTokenUsageInfo> for ThreadTokenUsage {
         Self {
             total: value.total_token_usage.into(),
             last: value.last_token_usage.into(),
+            orchestrated_role_usage: value
+                .orchestrated_role_token_usage
+                .into_iter()
+                .map(ThreadOrchestratedRoleTokenUsage::from)
+                .collect(),
             model_context_window: value.model_context_window,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadOrchestratedRoleTokenUsage {
+    pub role: String,
+    pub model: String,
+    pub token_usage: TokenUsageBreakdown,
+}
+
+impl From<CoreOrchestratedRoleTokenUsage> for ThreadOrchestratedRoleTokenUsage {
+    fn from(value: CoreOrchestratedRoleTokenUsage) -> Self {
+        Self {
+            role: value.role,
+            model: value.model,
+            token_usage: value.token_usage.into(),
         }
     }
 }

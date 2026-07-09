@@ -143,6 +143,21 @@ impl SessionState {
         self.history.update_token_info(usage, model_context_window);
     }
 
+    pub(crate) fn update_token_info_from_orchestrated_role_usage(
+        &mut self,
+        role: &str,
+        model: &str,
+        usage: &TokenUsage,
+        model_context_window: Option<i64>,
+    ) {
+        self.history.update_token_info_for_orchestrated_role(
+            role,
+            model,
+            usage,
+            model_context_window,
+        );
+    }
+
     pub(crate) fn ensure_auto_compact_window_server_prefill_from_usage(
         &mut self,
         usage: &TokenUsage,

@@ -11,6 +11,7 @@ use codex_extension_api::ExtensionDataInit;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::permissions::FileSystemPath;
@@ -229,7 +230,8 @@ impl SessionConfiguration {
                         )
                 });
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
-            next_configuration.collaboration_mode = collaboration_mode;
+            next_configuration.collaboration_mode =
+                self.with_orchestrated_defaults(collaboration_mode);
         }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = Some(summary);
@@ -374,6 +376,31 @@ impl SessionConfiguration {
             next_configuration.app_server_client_version = Some(app_server_client_version);
         }
         Ok(next_configuration)
+    }
+
+    fn with_orchestrated_defaults(
+        &self,
+        collaboration_mode: CollaborationMode,
+    ) -> CollaborationMode {
+        if collaboration_mode.mode != ModeKind::Orchestrated {
+            return collaboration_mode;
+        }
+
+        let orchestrated_mode = &self.original_config_do_not_use.orchestrated_mode;
+        let model = (collaboration_mode.model() == self.collaboration_mode.model())
+            .then(|| orchestrated_mode.orchestrator_model.clone())
+            .flatten();
+        let effort = (collaboration_mode.reasoning_effort()
+            == self.collaboration_mode.reasoning_effort())
+        .then(|| {
+            orchestrated_mode
+                .orchestrator_reasoning_effort
+                .clone()
+                .map(Some)
+        })
+        .flatten();
+
+        collaboration_mode.with_updates(model, effort, /*developer_instructions*/ None)
     }
 
     fn set_permission_profile_projection(

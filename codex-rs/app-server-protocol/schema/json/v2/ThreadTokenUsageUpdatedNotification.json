@@ -1,6 +1,25 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "ThreadOrchestratedRoleTokenUsage": {
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "tokenUsage": {
+          "$ref": "#/definitions/TokenUsageBreakdown"
+        }
+      },
+      "required": [
+        "model",
+        "role",
+        "tokenUsage"
+      ],
+      "type": "object"
+    },
     "ThreadTokenUsage": {
       "properties": {
         "last": {
@@ -12,6 +31,13 @@
             "integer",
             "null"
           ]
+        },
+        "orchestratedRoleUsage": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ThreadOrchestratedRoleTokenUsage"
+          },
+          "type": "array"
         },
         "total": {
           "$ref": "#/definitions/TokenUsageBreakdown"

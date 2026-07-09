@@ -94,6 +94,7 @@ async fn context_indicator_shows_used_tokens_when_window_unknown() {
     let token_info = TokenUsageInfo {
         total_token_usage: token_usage.clone(),
         last_token_usage: token_usage,
+        orchestrated_role_token_usage: Vec::new(),
         model_context_window: None,
     };
 
@@ -103,6 +104,92 @@ async fn context_indicator_shows_used_tokens_when_window_unknown() {
     assert_eq!(
         chat.bottom_pane.context_window_used_tokens(),
         Some(total_tokens)
+    );
+}
+
+#[tokio::test]
+async fn status_line_model_shows_active_orchestrated_role_model() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.config.orchestrated_mode.worker_model = Some("gpt-5.3-codex-spark".to_string());
+    chat.config.orchestrated_mode.explorer_model = Some("gpt-5.2".to_string());
+    chat.set_collaboration_mask(codex_protocol::config_types::CollaborationModeMask {
+        name: "Orchestrated".to_string(),
+        mode: Some(ModeKind::Orchestrated),
+        model: Some("gpt-5.1-codex-max".to_string()),
+        reasoning_effort: None,
+        developer_instructions: None,
+    });
+    chat.config.tui_status_line = Some(vec!["model".to_string()]);
+    chat.refresh_status_line();
+
+    assert_eq!(
+        status_line_text(&chat),
+        Some("gpt-5.1-codex-max".to_string())
+    );
+
+    chat.set_active_agent_label(Some("Robie [explorer]".to_string()));
+    chat.handle_server_notification(
+        ServerNotification::TurnActiveRoleUpdated(TurnActiveRoleUpdatedNotification {
+            thread_id: "thread".to_string(),
+            turn_id: "turn".to_string(),
+            role: Some("explorer".to_string()),
+        }),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(chat.active_agent_label.as_deref(), Some("Robie [explorer]"));
+    assert_eq!(status_line_text(&chat), Some("gpt-5.2".to_string()));
+
+    chat.handle_server_notification(
+        ServerNotification::TurnActiveRoleUpdated(TurnActiveRoleUpdatedNotification {
+            thread_id: "thread".to_string(),
+            turn_id: "turn".to_string(),
+            role: Some("worker".to_string()),
+        }),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(
+        status_line_text(&chat),
+        Some("gpt-5.3-codex-spark".to_string())
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::TurnActiveRoleUpdated(TurnActiveRoleUpdatedNotification {
+            thread_id: "thread".to_string(),
+            turn_id: "turn".to_string(),
+            role: None,
+        }),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(
+        status_line_text(&chat),
+        Some("gpt-5.1-codex-max".to_string())
+    );
+}
+
+#[tokio::test]
+async fn status_line_prepends_active_model_to_custom_items() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
+    chat.config.orchestrated_mode.worker_model = Some("gpt-5.3-codex-spark".to_string());
+    chat.set_collaboration_mask(codex_protocol::config_types::CollaborationModeMask {
+        name: "Orchestrated".to_string(),
+        mode: Some(ModeKind::Orchestrated),
+        model: Some("gpt-5.1-codex-max".to_string()),
+        reasoning_effort: None,
+        developer_instructions: None,
+    });
+    chat.config.tui_status_line = Some(vec!["context-used".to_string()]);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+    chat.refresh_status_line();
+
+    assert_eq!(
+        status_line_text(&chat),
+        Some("gpt-5.1-codex-max high · Context 0% used".to_string())
+    );
+
+    chat.set_active_orchestrated_role(Some("worker".to_string()));
+    assert_eq!(
+        status_line_text(&chat),
+        Some("gpt-5.3-codex-spark high · Context 0% used".to_string())
     );
 }
 

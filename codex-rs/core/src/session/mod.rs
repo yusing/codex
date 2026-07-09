@@ -445,6 +445,7 @@ pub(crate) struct CodexSpawnArgs {
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
     pub(crate) external_time_provider: Option<Arc<dyn TimeProvider>>,
     pub(crate) inherited_multi_agent_version: Option<MultiAgentVersion>,
+    pub(crate) initial_collaboration_mode: Option<CollaborationMode>,
 }
 
 pub(crate) fn resolve_multi_agent_version(
@@ -533,6 +534,7 @@ impl Codex {
             attestation_provider,
             external_time_provider,
             inherited_multi_agent_version,
+            initial_collaboration_mode,
         } = args;
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
@@ -625,14 +627,20 @@ impl Codex {
         };
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
-        let collaboration_mode = CollaborationMode {
-            mode: ModeKind::Default,
-            settings: Settings {
-                model: model.clone(),
-                reasoning_effort: config.model_reasoning_effort.clone(),
-                developer_instructions: None,
-            },
-        };
+        let collaboration_mode = initial_collaboration_mode
+            .unwrap_or_else(|| CollaborationMode {
+                mode: ModeKind::Default,
+                settings: Settings {
+                    model: model.clone(),
+                    reasoning_effort: config.model_reasoning_effort.clone(),
+                    developer_instructions: None,
+                },
+            })
+            .with_updates(
+                Some(model.clone()),
+                Some(config.model_reasoning_effort.clone()),
+                /*developer_instructions*/ None,
+            );
         let fast_mode_enabled = config.features.enabled(Feature::FastMode);
         let initial_service_tier_warning = unsupported_service_tier_warning(
             config.service_tier.as_deref(),
@@ -3690,11 +3698,35 @@ impl Session {
         turn_context: &TurnContext,
         token_usage: Option<&TokenUsage>,
     ) -> CodexResult<()> {
+        let role = turn_context.orchestrated_role.or_else(|| {
+            (turn_context.collaboration_mode.mode == ModeKind::Orchestrated)
+                .then_some("orchestrator")
+        });
+        self.record_token_usage_info_inner(turn_context, role, token_usage)
+            .await
+    }
+
+    async fn record_token_usage_info_inner(
+        &self,
+        turn_context: &TurnContext,
+        orchestrated_role: Option<&str>,
+        token_usage: Option<&TokenUsage>,
+    ) -> CodexResult<()> {
         if let Some(token_usage) = token_usage {
             let token_info = {
                 let mut state = self.state.lock().await;
-                state
-                    .update_token_info_from_usage(token_usage, turn_context.model_context_window());
+                match orchestrated_role {
+                    Some(role) => state.update_token_info_from_orchestrated_role_usage(
+                        role,
+                        turn_context.model_info.slug.as_str(),
+                        token_usage,
+                        turn_context.model_context_window(),
+                    ),
+                    None => state.update_token_info_from_usage(
+                        token_usage,
+                        turn_context.model_context_window(),
+                    ),
+                }
                 if matches!(
                     turn_context.config.model_auto_compact_token_limit_scope,
                     AutoCompactTokenLimitScope::BodyAfterPrefix
@@ -3734,6 +3766,7 @@ impl Session {
             let mut info = state.token_info().unwrap_or(TokenUsageInfo {
                 total_token_usage: TokenUsage::default(),
                 last_token_usage: TokenUsage::default(),
+                orchestrated_role_token_usage: Vec::new(),
                 model_context_window: None,
             });
 

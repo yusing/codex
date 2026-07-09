@@ -105,6 +105,8 @@ impl ChatWidget {
                 animations_enabled: config.animations,
                 skills: None,
             }),
+            active_agent_label: None,
+            active_orchestrated_role: None,
             transcript: TranscriptState::new(active_cell),
             raw_output_mode: config.tui_raw_output_mode,
             config,

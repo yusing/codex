@@ -73,6 +73,72 @@ fn test_absolute_path() -> AbsolutePathBuf {
 }
 
 #[test]
+fn thread_token_usage_serializes_orchestrated_role_usage() {
+    let token_usage = ThreadTokenUsage::from(codex_protocol::protocol::TokenUsageInfo {
+        total_token_usage: codex_protocol::protocol::TokenUsage {
+            input_tokens: 100,
+            cached_input_tokens: 30,
+            output_tokens: 40,
+            reasoning_output_tokens: 10,
+            total_tokens: 140,
+        },
+        last_token_usage: codex_protocol::protocol::TokenUsage {
+            input_tokens: 20,
+            cached_input_tokens: 5,
+            output_tokens: 8,
+            reasoning_output_tokens: 2,
+            total_tokens: 28,
+        },
+        orchestrated_role_token_usage: vec![codex_protocol::protocol::OrchestratedRoleTokenUsage {
+            role: "explorer".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            token_usage: codex_protocol::protocol::TokenUsage {
+                input_tokens: 11,
+                cached_input_tokens: 3,
+                output_tokens: 7,
+                reasoning_output_tokens: 2,
+                total_tokens: 18,
+            },
+        }],
+        model_context_window: Some(200_000),
+    });
+
+    assert_eq!(
+        serde_json::to_value(&token_usage).expect("serialize token usage"),
+        json!({
+            "total": {
+                "inputTokens": 100,
+                "cachedInputTokens": 30,
+                "outputTokens": 40,
+                "reasoningOutputTokens": 10,
+                "totalTokens": 140,
+            },
+            "last": {
+                "inputTokens": 20,
+                "cachedInputTokens": 5,
+                "outputTokens": 8,
+                "reasoningOutputTokens": 2,
+                "totalTokens": 28,
+            },
+            "orchestratedRoleUsage": [
+                {
+                    "role": "explorer",
+                    "model": "gpt-5.4-mini",
+                    "tokenUsage": {
+                        "inputTokens": 11,
+                        "cachedInputTokens": 3,
+                        "outputTokens": 7,
+                        "reasoningOutputTokens": 2,
+                        "totalTokens": 18,
+                    },
+                }
+            ],
+            "modelContextWindow": 200000,
+        })
+    );
+}
+
+#[test]
 fn thread_sources_round_trip_as_scalar_labels() {
     for (source, label) in [
         (ThreadSource::User, "user"),

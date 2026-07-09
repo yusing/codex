@@ -70,6 +70,7 @@ use codex_app_server_protocol::ToolRequestUserInputParams;
 use codex_app_server_protocol::ToolRequestUserInputQuestion;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
 use codex_app_server_protocol::Turn;
+use codex_app_server_protocol::TurnActiveRoleUpdatedNotification;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnDiffUpdatedNotification;
 use codex_app_server_protocol::TurnError;
@@ -177,6 +178,16 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_server_notification(ServerNotification::TurnStarted(notification))
+                .await;
+        }
+        EventMsg::OrchestratedRoleUpdated(payload) => {
+            let notification = TurnActiveRoleUpdatedNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: payload.turn_id,
+                role: payload.role,
+            };
+            outgoing
+                .send_server_notification(ServerNotification::TurnActiveRoleUpdated(notification))
                 .await;
         }
         EventMsg::TurnComplete(turn_complete_event) => {
@@ -3687,6 +3698,7 @@ mod tests {
                 reasoning_output_tokens: 1,
                 total_tokens: 23,
             },
+            orchestrated_role_token_usage: Vec::new(),
             model_context_window: Some(4096),
         };
         let rate_limits = RateLimitSnapshot {

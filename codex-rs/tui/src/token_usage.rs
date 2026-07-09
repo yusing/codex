@@ -17,6 +17,13 @@ pub struct TokenUsage {
     pub total_tokens: i64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct OrchestratedRoleTokenUsage {
+    pub(crate) role: String,
+    pub(crate) model: String,
+    pub(crate) token_usage: TokenUsage,
+}
+
 impl TokenUsage {
     pub fn is_zero(&self) -> bool {
         self.total_tokens == 0
@@ -57,6 +64,8 @@ impl TokenUsage {
 pub(crate) struct TokenUsageInfo {
     pub(crate) total_token_usage: TokenUsage,
     pub(crate) last_token_usage: TokenUsage,
+    #[serde(default)]
+    pub(crate) orchestrated_role_token_usage: Vec<OrchestratedRoleTokenUsage>,
     pub(crate) model_context_window: Option<i64>,
 }
 

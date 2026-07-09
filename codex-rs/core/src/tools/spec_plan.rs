@@ -1,5 +1,7 @@
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
+use crate::agent::role::EXPLORER_ROLE_NAME;
+use crate::agent::role::WORKER_ROLE_NAME;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
@@ -357,6 +359,7 @@ fn agent_jobs_tools_enabled(turn_context: &TurnContext) -> bool {
         .features
         .get()
         .enabled(Feature::SpawnCsv)
+        && turn_context.orchestrated_role.is_none()
         && collab_tools_enabled(turn_context)
 }
 
@@ -636,6 +639,9 @@ fn tool_environment_mode(step_context: &StepContext) -> ToolEnvironmentMode {
 #[instrument(level = "trace", skip_all)]
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     let turn_context = context.step_context.turn.as_ref();
+    if turn_context.orchestrated_role == Some(EXPLORER_ROLE_NAME) {
+        return;
+    }
     let features = turn_context.config.features.get();
     let environment_mode = tool_environment_mode(context.step_context);
     if !environment_mode.has_environment() {
@@ -758,7 +764,9 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         ));
     }
 
-    if environment_mode.has_environment() && turn_context.model_info.apply_patch_tool_type.is_some()
+    if environment_mode.has_environment()
+        && turn_context.model_info.apply_patch_tool_type.is_some()
+        && turn_context.orchestrated_role != Some(EXPLORER_ROLE_NAME)
     {
         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         planned_tools.add(ApplyPatchHandler::new(include_environment_id));
@@ -788,6 +796,24 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
 fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     let turn_context = context.step_context.turn.as_ref();
     if collab_tools_enabled(turn_context) {
+        if let Some(role) = turn_context.orchestrated_role {
+            if role == WORKER_ROLE_NAME && multi_agent_v2_enabled(turn_context) {
+                let exposure = if turn_context.config.multi_agent_v2.non_code_mode_only {
+                    ToolExposure::DirectModelOnly
+                } else {
+                    ToolExposure::Direct
+                };
+                let tool_namespace = namespace_tools_enabled(turn_context)
+                    .then_some(turn_context.config.multi_agent_v2.tool_namespace.as_deref())
+                    .flatten();
+                planned_tools.add_arc(override_tool_exposure(
+                    multi_agent_v2_handler(ListAgentsHandlerV2, tool_namespace),
+                    exposure,
+                ));
+            }
+            return;
+        }
+
         if multi_agent_v2_enabled(turn_context) {
             let exposure = if turn_context.config.multi_agent_v2.non_code_mode_only {
                 ToolExposure::DirectModelOnly

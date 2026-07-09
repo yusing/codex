@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::SkillInjections;
+use crate::agent::role::EXPLORER_ROLE_NAME;
+use crate::agent::role::WORKER_ROLE_NAME;
 use crate::build_skill_injections;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
@@ -93,11 +95,13 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentMessageContentDeltaEvent;
 use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::OrchestratedRoleUpdatedEvent;
 use codex_protocol::protocol::PlanDeltaEvent;
 use codex_protocol::protocol::ReasoningContentDeltaEvent;
 use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
@@ -205,14 +209,29 @@ pub(crate) async fn run_turn(
     }
 
     track_turn_resolved_config_analytics(&sess, &turn_context, &input).await;
-
-    let mut last_agent_message: Option<String> = None;
-    let mut stop_hook_active = false;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(
         TurnDiffTracker::with_environment_display_roots(display_roots),
     ));
+    match run_orchestrated_internal_roles_for_input(
+        Arc::clone(&sess),
+        Arc::clone(&turn_context),
+        Arc::clone(&turn_extension_data),
+        Arc::clone(&turn_diff_tracker),
+        &input,
+        &mut client_session,
+        cancellation_token.child_token(),
+    )
+    .await?
+    {
+        OrchestratedRoleOutcome::Skipped => {}
+        OrchestratedRoleOutcome::Completed => {}
+        OrchestratedRoleOutcome::Stopped => return Ok(None),
+    }
+
+    let mut last_agent_message: Option<String> = None;
+    let mut stop_hook_active = false;
 
     // `ModelClientSession` is turn-scoped and caches WebSocket + sticky routing state, so we reuse
     // one instance across retries within this turn.
@@ -234,6 +253,21 @@ pub(crate) async fn run_turn(
 
         if run_hooks_and_record_inputs(&sess, &turn_context, &pending_input).await {
             break;
+        }
+        match run_orchestrated_internal_roles_for_input(
+            Arc::clone(&sess),
+            Arc::clone(&turn_context),
+            Arc::clone(&turn_extension_data),
+            Arc::clone(&turn_diff_tracker),
+            &pending_input,
+            &mut client_session,
+            cancellation_token.child_token(),
+        )
+        .await?
+        {
+            OrchestratedRoleOutcome::Skipped => {}
+            OrchestratedRoleOutcome::Completed => {}
+            OrchestratedRoleOutcome::Stopped => break,
         }
 
         let window_id = sess.current_window_id().await;
@@ -457,6 +491,340 @@ pub(crate) async fn run_turn(
     }
 
     Ok(last_agent_message)
+}
+
+#[derive(Clone, Copy)]
+enum OrchestratedInternalRole {
+    Explorer,
+    Worker,
+}
+
+enum OrchestratedRoleOutcome {
+    Skipped,
+    Completed,
+    Stopped,
+}
+
+impl OrchestratedInternalRole {
+    const ALL: [Self; 2] = [Self::Explorer, Self::Worker];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Explorer => EXPLORER_ROLE_NAME,
+            Self::Worker => WORKER_ROLE_NAME,
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            EXPLORER_ROLE_NAME => Some(Self::Explorer),
+            WORKER_ROLE_NAME => Some(Self::Worker),
+            _ => None,
+        }
+    }
+
+    fn model_override(self, turn_context: &TurnContext) -> Option<&str> {
+        match self {
+            Self::Explorer => turn_context
+                .config
+                .orchestrated_mode
+                .explorer_model
+                .as_deref(),
+            Self::Worker => turn_context
+                .config
+                .orchestrated_mode
+                .worker_model
+                .as_deref(),
+        }
+    }
+
+    fn reasoning_effort_override(self, turn_context: &TurnContext) -> Option<ReasoningEffort> {
+        match self {
+            Self::Explorer => turn_context
+                .config
+                .orchestrated_mode
+                .explorer_reasoning_effort
+                .clone(),
+            Self::Worker => turn_context
+                .config
+                .orchestrated_mode
+                .worker_reasoning_effort
+                .clone(),
+        }
+    }
+
+    fn prompt(self) -> &'static str {
+        match self {
+            Self::Explorer => {
+                "You are the explorer role in Orchestrated mode. Use read/search tools as needed to inspect the current request and repository context. Do not edit files. Produce one concise evidence packet for the orchestrator, prefixed exactly `explorer:`. Include relevant files, source-of-truth constraints, likely tests, and risks. Keep the final packet under 800 bytes."
+            }
+            Self::Worker => {
+                "You are the worker role in Orchestrated mode. Use tools to perform the implementation and scoped verification requested by the user, following the explorer packet and repository instructions. Do not spawn sub-agents. Finish with one concise result packet prefixed exactly `worker:` containing changed files, tests run, failures, and unresolved risks. Keep the final packet under 800 bytes."
+            }
+        }
+    }
+}
+
+async fn run_orchestrated_internal_roles_for_input(
+    sess: Arc<Session>,
+    turn_context: Arc<TurnContext>,
+    turn_extension_data: Arc<codex_extension_api::ExtensionData>,
+    turn_diff_tracker: SharedTurnDiffTracker,
+    input: &[TurnInput],
+    client_session: &mut ModelClientSession,
+    cancellation_token: CancellationToken,
+) -> CodexResult<OrchestratedRoleOutcome> {
+    let has_user_input = input.iter().any(
+        |input_item| matches!(input_item, TurnInput::UserInput { content, .. } if !content.is_empty()),
+    );
+    if turn_context.collaboration_mode.mode != ModeKind::Orchestrated || !has_user_input {
+        return Ok(OrchestratedRoleOutcome::Skipped);
+    }
+
+    match run_orchestrated_internal_roles(
+        Arc::clone(&sess),
+        Arc::clone(&turn_context),
+        turn_extension_data,
+        turn_diff_tracker,
+        client_session,
+        cancellation_token,
+    )
+    .await
+    {
+        Ok(()) => Ok(OrchestratedRoleOutcome::Completed),
+        Err(err @ CodexErr::TurnAborted) => Err(err),
+        Err(err) => {
+            info!("Orchestrated internal role error: {err:#}");
+            emit_orchestrated_role_update(&sess, &turn_context, None).await;
+            let error = err.to_codex_protocol_error();
+            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                .await;
+            sess.track_turn_codex_error(turn_context.as_ref(), &err);
+            let event = EventMsg::Error(err.to_error_event(/*message_prefix*/ None));
+            sess.send_event(&turn_context, event).await;
+            Ok(OrchestratedRoleOutcome::Stopped)
+        }
+    }
+}
+
+async fn run_orchestrated_internal_roles(
+    sess: Arc<Session>,
+    turn_context: Arc<TurnContext>,
+    turn_extension_data: Arc<codex_extension_api::ExtensionData>,
+    turn_diff_tracker: SharedTurnDiffTracker,
+    client_session: &mut ModelClientSession,
+    cancellation_token: CancellationToken,
+) -> CodexResult<()> {
+    if turn_context.collaboration_mode.mode != ModeKind::Orchestrated {
+        return Ok(());
+    }
+
+    for role in OrchestratedInternalRole::ALL {
+        let role_history_baseline = sess.clone_history().await.into_raw_items();
+        emit_orchestrated_role_update(&sess, &turn_context, Some(role.name())).await;
+        run_orchestrated_internal_role(
+            Arc::clone(&sess),
+            Arc::clone(&turn_context),
+            Arc::clone(&turn_extension_data),
+            Arc::clone(&turn_diff_tracker),
+            role,
+            client_session,
+            cancellation_token.child_token(),
+        )
+        .await?;
+        compact_orchestrated_role_history(sess.as_ref(), role_history_baseline, role).await;
+    }
+    emit_orchestrated_role_update(&sess, &turn_context, None).await;
+
+    Ok(())
+}
+
+fn add_orchestrated_sampling_instruction(
+    turn_context: &TurnContext,
+    input: &mut Vec<ResponseItem>,
+) {
+    if let Some(role) = turn_context
+        .orchestrated_role
+        .and_then(OrchestratedInternalRole::from_name)
+    {
+        input.push(orchestrated_role_instruction(role));
+        return;
+    }
+    if turn_context.collaboration_mode.mode == ModeKind::Orchestrated {
+        input.push(orchestrated_root_instruction());
+    }
+}
+
+fn orchestrated_root_instruction() -> ResponseItem {
+    let text = "You are the orchestrator role for the remainder of this Orchestrated-mode turn. Use the explorer evidence packet and worker result packet as bounded internal context. Verify worker output against the original user request and active instructions, correct only small integration gaps yourself, and otherwise send concise steering/final synthesis. Prefix visible orchestrator messages with `orc:`.";
+    developer_instruction_item(text)
+}
+
+fn developer_instruction_item(text: &str) -> ResponseItem {
+    match crate::context_manager::updates::build_developer_update_item(vec![text.to_string()]) {
+        Some(item) => item,
+        None => ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+    }
+}
+
+async fn run_orchestrated_internal_role(
+    sess: Arc<Session>,
+    root_turn_context: Arc<TurnContext>,
+    turn_extension_data: Arc<codex_extension_api::ExtensionData>,
+    turn_diff_tracker: SharedTurnDiffTracker,
+    role: OrchestratedInternalRole,
+    client_session: &mut ModelClientSession,
+    cancellation_token: CancellationToken,
+) -> CodexResult<()> {
+    let mut role_turn_context = root_turn_context
+        .with_model(
+            role.model_override(&root_turn_context)
+                .unwrap_or(root_turn_context.model_info.slug.as_str())
+                .to_string(),
+            &sess.services.models_manager,
+        )
+        .await;
+    role_turn_context.orchestrated_role = Some(role.name());
+    role_turn_context.final_output_json_schema = None;
+    if let Some(reasoning_effort) = role.reasoning_effort_override(&root_turn_context) {
+        role_turn_context.reasoning_effort = Some(reasoning_effort);
+        role_turn_context.collaboration_mode = role_turn_context.collaboration_mode.with_updates(
+            /*model*/ None,
+            Some(role_turn_context.reasoning_effort.clone()),
+            /*developer_instructions*/ None,
+        );
+    }
+    let role_turn_context = Arc::new(role_turn_context);
+    loop {
+        let step_context = sess
+            .capture_step_context(Arc::clone(&role_turn_context))
+            .await;
+        let prompt_input = sess
+            .clone_history()
+            .await
+            .for_prompt(&role_turn_context.model_info.input_modalities);
+        let window_id = sess.current_window_id().await;
+        let responses_metadata = role_turn_context.turn_metadata_state.to_responses_metadata(
+            sess.installation_id.clone(),
+            window_id,
+            CodexResponsesRequestKind::Turn,
+        );
+        let (sampling_result, _) = run_sampling_request(
+            Arc::clone(&sess),
+            step_context,
+            Arc::clone(&turn_extension_data),
+            Arc::clone(&turn_diff_tracker),
+            client_session,
+            &responses_metadata,
+            prompt_input,
+            cancellation_token.child_token(),
+        )
+        .await?;
+        if !sampling_result.needs_follow_up {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn orchestrated_role_instruction(role: OrchestratedInternalRole) -> ResponseItem {
+    developer_instruction_item(role.prompt())
+}
+
+async fn emit_orchestrated_role_update(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    role: Option<&str>,
+) {
+    sess.send_event(
+        turn_context,
+        EventMsg::OrchestratedRoleUpdated(OrchestratedRoleUpdatedEvent {
+            turn_id: turn_context.sub_id.clone(),
+            role: role.map(str::to_string),
+        }),
+    )
+    .await;
+}
+
+async fn compact_orchestrated_role_history(
+    sess: &Session,
+    baseline: Vec<ResponseItem>,
+    role: OrchestratedInternalRole,
+) {
+    let after_items = sess.clone_history().await.into_raw_items();
+    let role_items = after_items.get(baseline.len()..).unwrap_or_default();
+    let mut compacted_history = baseline;
+    compacted_history.push(compact_orchestrated_role_packet(role, role_items));
+    let mut state = sess.state.lock().await;
+    let reference_context_item = state.reference_context_item();
+    state.replace_history(compacted_history, reference_context_item);
+}
+
+fn compact_orchestrated_role_packet(
+    role: OrchestratedInternalRole,
+    role_items: &[ResponseItem],
+) -> ResponseItem {
+    let role_prefix = format!("{}:", role.name());
+    let fallback = role_items.iter().rev().find_map(assistant_message_text);
+    let packet = role_items
+        .iter()
+        .rev()
+        .find_map(assistant_message_text)
+        .filter(|text| text.trim_start().starts_with(&role_prefix))
+        .or(fallback)
+        .unwrap_or_else(|| format!("{}: no final packet produced", role.name()));
+    ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: truncate_orchestrated_role_packet(packet.trim(), 800),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+fn assistant_message_text(item: &ResponseItem) -> Option<String> {
+    let ResponseItem::Message { role, content, .. } = item else {
+        return None;
+    };
+    if role != "assistant" {
+        return None;
+    }
+    let text = content
+        .iter()
+        .filter_map(|content| match content {
+            ContentItem::InputText { text } | ContentItem::OutputText { text } => Some(text),
+            _ => None,
+        })
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("");
+    (!text.is_empty()).then_some(text)
+}
+
+fn truncate_orchestrated_role_packet(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let suffix = "...";
+    let mut end = max_bytes.saturating_sub(suffix.len());
+    if end == 0 {
+        return suffix.to_string();
+    }
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &text[..end], suffix)
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -1141,13 +1509,14 @@ async fn run_sampling_request(
     let mut initial_input = Some(input);
     let mut original_input = None;
     loop {
-        let prompt_input = if let Some(input) = initial_input.take() {
+        let mut prompt_input = if let Some(input) = initial_input.take() {
             input
         } else {
             sess.clone_history()
                 .await
                 .for_prompt(&turn_context.model_info.input_modalities)
         };
+        add_orchestrated_sampling_instruction(turn_context.as_ref(), &mut prompt_input);
         let prompt = build_prompt(
             prompt_input,
             router.as_ref(),
@@ -1547,6 +1916,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
         | EventMsg::ContextCompacted(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::TurnStarted(_)
+        | EventMsg::OrchestratedRoleUpdated(_)
         | EventMsg::ThreadSettingsApplied(_)
         | EventMsg::TurnComplete(_)
         | EventMsg::TokenCount(_)

@@ -530,6 +530,8 @@ pub(crate) struct ChatWidget {
     app_event_tx: AppEventSender,
     codex_op_target: CodexOpTarget,
     bottom_pane: BottomPane,
+    active_agent_label: Option<String>,
+    active_orchestrated_role: Option<String>,
     transcript: TranscriptState,
     config: Config,
     raw_output_mode: bool,
@@ -923,6 +925,21 @@ fn token_usage_info_from_app_server(token_usage: ThreadTokenUsage) -> TokenUsage
             output_tokens: token_usage.last.output_tokens,
             reasoning_output_tokens: token_usage.last.reasoning_output_tokens,
         },
+        orchestrated_role_token_usage: token_usage
+            .orchestrated_role_usage
+            .into_iter()
+            .map(|usage| crate::token_usage::OrchestratedRoleTokenUsage {
+                role: usage.role,
+                model: usage.model,
+                token_usage: TokenUsage {
+                    total_tokens: usage.token_usage.total_tokens,
+                    input_tokens: usage.token_usage.input_tokens,
+                    cached_input_tokens: usage.token_usage.cached_input_tokens,
+                    output_tokens: usage.token_usage.output_tokens,
+                    reasoning_output_tokens: usage.token_usage.reasoning_output_tokens,
+                },
+            })
+            .collect(),
         model_context_window: token_usage.model_context_window,
     }
 }

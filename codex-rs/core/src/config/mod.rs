@@ -24,6 +24,7 @@ use codex_config::ThreadConfigLoader;
 use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
+use codex_config::config_toml::OrchestratedModeToml;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
@@ -947,6 +948,8 @@ pub struct Config {
     /// Plan preset. The `none` value means "no reasoning" (not "inherit the
     /// global default").
     pub plan_mode_reasoning_effort: Option<ReasoningEffort>,
+    /// Optional Orchestrated-mode routing defaults for root and internal roles.
+    pub orchestrated_mode: OrchestratedModeConfig,
 
     /// Optional value to use for `reasoning.summary` when making a request
     /// using the Responses API. When unset, the model catalog default is used.
@@ -1137,6 +1140,32 @@ impl Default for CurrentTimeReminderConfig {
             clock_source: CurrentTimeSource::System,
             delivery_mode: CurrentTimeReminderDeliveryMode::AnyInference,
             sleep_tool: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct OrchestratedModeConfig {
+    pub orchestrator_model: Option<String>,
+    pub orchestrator_reasoning_effort: Option<ReasoningEffort>,
+    pub worker_model: Option<String>,
+    pub worker_reasoning_effort: Option<ReasoningEffort>,
+    pub explorer_model: Option<String>,
+    pub explorer_reasoning_effort: Option<ReasoningEffort>,
+}
+
+impl From<Option<OrchestratedModeToml>> for OrchestratedModeConfig {
+    fn from(value: Option<OrchestratedModeToml>) -> Self {
+        let Some(value) = value else {
+            return Self::default();
+        };
+        Self {
+            orchestrator_model: value.orchestrator_model,
+            orchestrator_reasoning_effort: value.orchestrator_reasoning_effort,
+            worker_model: value.worker_model,
+            worker_reasoning_effort: value.worker_reasoning_effort,
+            explorer_model: value.explorer_model,
+            explorer_reasoning_effort: value.explorer_reasoning_effort,
         }
     }
 }
@@ -3902,6 +3931,7 @@ impl Config {
             guardian_policy_config,
             model_reasoning_effort: cfg.model_reasoning_effort,
             plan_mode_reasoning_effort: cfg.plan_mode_reasoning_effort,
+            orchestrated_mode: cfg.orchestrated_mode.into(),
             model_reasoning_summary: cfg.model_reasoning_summary,
             model_supports_reasoning_summaries: cfg.model_supports_reasoning_summaries,
             model_catalog,

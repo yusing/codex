@@ -64,6 +64,9 @@ impl ChatWidget {
                     self.on_task_started();
                 }
             }
+            ServerNotification::TurnActiveRoleUpdated(notification) => {
+                self.set_active_orchestrated_role(notification.role);
+            }
             ServerNotification::TurnCompleted(notification) => {
                 self.handle_turn_completed_notification(notification, replay_kind);
             }

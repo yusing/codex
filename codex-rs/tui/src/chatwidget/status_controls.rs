@@ -74,12 +74,27 @@ impl ChatWidget {
         self.bottom_pane.set_status_line_hyperlink(url);
     }
 
-    /// Forwards the contextual active-agent label into the bottom-pane footer pipeline.
-    ///
-    /// `ChatWidget` stays a pass-through here so `App` remains the owner of "which thread is the
-    /// user actually looking at?" and the footer stack remains a pure renderer of that decision.
+    /// Sets the contextual active-agent label used by the footer.
     pub(crate) fn set_active_agent_label(&mut self, active_agent_label: Option<String>) {
+        if self.active_agent_label == active_agent_label {
+            return;
+        }
+        self.active_agent_label = active_agent_label.clone();
         self.bottom_pane.set_active_agent_label(active_agent_label);
+    }
+
+    /// Sets the live Orchestrated-mode internal role used by status-line model items.
+    pub(crate) fn set_active_orchestrated_role(
+        &mut self,
+        active_orchestrated_role: Option<String>,
+    ) {
+        if self.active_orchestrated_role == active_orchestrated_role {
+            return;
+        }
+        self.active_orchestrated_role = active_orchestrated_role;
+        if self.active_mode_kind() == ModeKind::Orchestrated {
+            self.refresh_status_surfaces();
+        }
     }
 
     /// Recomputes footer status-line content from config and current runtime state.
@@ -222,6 +237,7 @@ impl ChatWidget {
             .collect();
         let agents_summary =
             crate::status::compose_agents_summary(&self.config, &self.instruction_source_paths);
+        let orchestrated_metrics = self.orchestrated_status_metrics(token_info, total_usage);
         let (cell, handle) = crate::status::new_status_output_with_rate_limits_handle(
             &self.config,
             self.runtime_model_provider_base_url.as_deref(),
@@ -239,6 +255,7 @@ impl ChatWidget {
             collaboration_mode,
             reasoning_effort_override,
             agents_summary,
+            orchestrated_metrics,
             refreshing_rate_limits,
         );
         if let Some(request_id) = request_id {
@@ -284,6 +301,29 @@ impl ChatWidget {
         if updated_any {
             self.request_redraw();
         }
+    }
+
+    fn orchestrated_status_metrics(
+        &self,
+        token_info: Option<&TokenUsageInfo>,
+        total_usage: &TokenUsage,
+    ) -> Option<crate::status::StatusOrchestratedMetrics> {
+        if self.active_mode_kind() != ModeKind::Orchestrated {
+            return None;
+        }
+        let orchestrator = self.current_model().to_string();
+        let role_usages = token_info
+            .map(|info| info.orchestrated_role_token_usage.clone())
+            .unwrap_or_default();
+        Some(crate::status::StatusOrchestratedMetrics {
+            routing: crate::status::StatusOrchestratedRouting {
+                orchestrator,
+                worker: self.config.orchestrated_mode.worker_model.clone(),
+                explorer: self.config.orchestrated_mode.explorer_model.clone(),
+            },
+            total_usage: total_usage.clone(),
+            role_usages,
+        })
     }
 
     pub(super) fn open_status_line_setup(&mut self) {

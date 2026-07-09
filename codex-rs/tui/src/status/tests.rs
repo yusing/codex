@@ -1,3 +1,5 @@
+use super::StatusOrchestratedMetrics;
+use super::StatusOrchestratedRouting;
 use super::new_status_output;
 use super::new_status_output_with_rate_limits;
 use super::new_status_output_with_rate_limits_handle;
@@ -15,6 +17,7 @@ use crate::status::StatusAccountDisplay;
 use crate::status::remote_connection::RemoteConnectionStatus;
 use crate::test_support::PathBufExt;
 use crate::test_support::test_path_buf;
+use crate::token_usage::OrchestratedRoleTokenUsage;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
 use app_test_support::ChatGptAuthFixture;
@@ -158,6 +161,7 @@ fn token_info_for(model_slug: &str, config: &Config, usage: &TokenUsage) -> Toke
     TokenUsageInfo {
         total_token_usage: usage.clone(),
         last_token_usage: usage.clone(),
+        orchestrated_role_token_usage: Vec::new(),
         model_context_window: context_window,
     }
 }
@@ -380,6 +384,97 @@ async fn status_snapshot_shows_chatgpt_plan_without_email() {
     );
     let sanitized =
         sanitize_directory(render_lines(&composite.display_lines(/*width*/ 80))).join("\n");
+    assert_snapshot!(sanitized);
+}
+
+#[tokio::test]
+async fn status_snapshot_shows_orchestrated_current_thread_metrics() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model = Some("gpt-5.1-codex-max".to_string());
+    config.model_provider_id = "openai".to_string();
+    set_workspace_cwd(&mut config, test_path_buf("/workspace/tests").abs());
+
+    let usage = TokenUsage {
+        input_tokens: 3_200,
+        cached_input_tokens: 800,
+        output_tokens: 1_100,
+        reasoning_output_tokens: 400,
+        total_tokens: 4_700,
+    };
+    let model_slug = get_model_offline_for_tests(config.model.as_deref());
+    let token_info = token_info_for(&model_slug, &config, &usage);
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let orchestrated_metrics = StatusOrchestratedMetrics {
+        routing: StatusOrchestratedRouting {
+            orchestrator: "gpt-5.1-codex-max".to_string(),
+            worker: Some("gpt-5.4-mini".to_string()),
+            explorer: Some("gpt-5.2".to_string()),
+        },
+        total_usage: usage.clone(),
+        role_usages: vec![
+            OrchestratedRoleTokenUsage {
+                role: "explorer".to_string(),
+                model: "gpt-5.2".to_string(),
+                token_usage: TokenUsage {
+                    input_tokens: 1_100,
+                    cached_input_tokens: 300,
+                    output_tokens: 250,
+                    reasoning_output_tokens: 100,
+                    total_tokens: 1_350,
+                },
+            },
+            OrchestratedRoleTokenUsage {
+                role: "worker".to_string(),
+                model: "gpt-5.4-mini".to_string(),
+                token_usage: TokenUsage {
+                    input_tokens: 1_400,
+                    cached_input_tokens: 400,
+                    output_tokens: 350,
+                    reasoning_output_tokens: 100,
+                    total_tokens: 1_750,
+                },
+            },
+            OrchestratedRoleTokenUsage {
+                role: "orchestrator".to_string(),
+                model: "gpt-5.1-codex-max".to_string(),
+                token_usage: TokenUsage {
+                    input_tokens: 700,
+                    cached_input_tokens: 100,
+                    output_tokens: 500,
+                    reasoning_output_tokens: 200,
+                    total_tokens: 1_600,
+                },
+            },
+        ],
+    };
+
+    let (composite, _handle) = new_status_output_with_rate_limits_handle(
+        &config,
+        /*runtime_model_provider_base_url*/ None,
+        /*remote_connection*/ None,
+        test_status_account_display().as_ref(),
+        Some(&token_info),
+        &usage,
+        &None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
+        &[],
+        None,
+        captured_at,
+        &model_slug,
+        Some("Orchestrated"),
+        /*reasoning_effort_override*/ None,
+        "<none>".to_string(),
+        Some(orchestrated_metrics),
+        /*refreshing_rate_limits*/ false,
+    );
+    let sanitized =
+        sanitize_directory(render_lines(&composite.display_lines(/*width*/ 100))).join("\n");
+
     assert_snapshot!(sanitized);
 }
 
@@ -735,6 +830,7 @@ async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_lin
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ None,
         "<none>".to_string(),
+        /*orchestrated_metrics*/ None,
         /*refreshing_rate_limits*/ false,
     );
     let rendered = render_lines(&composite.display_lines(/*width*/ 120)).join("\n");
@@ -776,6 +872,7 @@ async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_lin
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ None,
         "<none>".to_string(),
+        /*orchestrated_metrics*/ None,
         /*refreshing_rate_limits*/ false,
     );
     let rendered = render_lines(&composite.display_lines(/*width*/ 120)).join("\n");
@@ -1566,6 +1663,7 @@ async fn status_snapshot_uses_default_reasoning_when_config_empty() {
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ Some(Some(ReasoningEffort::Medium)),
         "<none>".to_string(),
+        /*orchestrated_metrics*/ None,
         /*refreshing_rate_limits*/ false,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
@@ -2004,6 +2102,7 @@ async fn status_context_window_uses_last_usage() {
     let token_info = TokenUsageInfo {
         total_token_usage: total_usage.clone(),
         last_token_usage: last_usage,
+        orchestrated_role_token_usage: Vec::new(),
         model_context_window: config.model_context_window,
     };
     let composite = new_status_output(

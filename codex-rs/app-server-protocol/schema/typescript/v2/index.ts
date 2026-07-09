@@ -429,6 +429,7 @@ export type { ThreadMetadataGitInfoUpdateParams } from "./ThreadMetadataGitInfoU
 export type { ThreadMetadataUpdateParams } from "./ThreadMetadataUpdateParams";
 export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";
 export type { ThreadNameUpdatedNotification } from "./ThreadNameUpdatedNotification";
+export type { ThreadOrchestratedRoleTokenUsage } from "./ThreadOrchestratedRoleTokenUsage";
 export type { ThreadReadParams } from "./ThreadReadParams";
 export type { ThreadReadResponse } from "./ThreadReadResponse";
 export type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";
@@ -478,6 +479,7 @@ export type { ToolRequestUserInputQuestion } from "./ToolRequestUserInputQuestio
 export type { ToolRequestUserInputResponse } from "./ToolRequestUserInputResponse";
 export type { ToolsV2 } from "./ToolsV2";
 export type { Turn } from "./Turn";
+export type { TurnActiveRoleUpdatedNotification } from "./TurnActiveRoleUpdatedNotification";
 export type { TurnCompletedNotification } from "./TurnCompletedNotification";
 export type { TurnDiffUpdatedNotification } from "./TurnDiffUpdatedNotification";
 export type { TurnEnvironmentParams } from "./TurnEnvironmentParams";

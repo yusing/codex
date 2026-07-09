@@ -131,6 +131,7 @@ pub(super) async fn spawn_review_thread(
         app_server_client_name: parent_turn_context.app_server_client_name.clone(),
         developer_instructions: None,
         collaboration_mode: parent_turn_context.collaboration_mode.clone(),
+        orchestrated_role: None,
         multi_agent_version: MultiAgentVersion::Disabled,
         personality: parent_turn_context.personality,
         approval_policy: parent_turn_context.approval_policy.clone(),

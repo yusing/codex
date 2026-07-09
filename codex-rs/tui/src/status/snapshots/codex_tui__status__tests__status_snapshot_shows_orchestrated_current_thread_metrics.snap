@@ -1,0 +1,28 @@
+---
+source: tui/src/status/tests.rs
+expression: sanitized
+---
+/status
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────╮
+│  >_ OpenAI Codex (v0.0.0)                                                                    │
+│                                                                                              │
+│ Visit https://chatgpt.com/codex/settings/usage for up-to-date                                │
+│ information on rate limits and credits                                                       │
+│                                                                                              │
+│  Model:                gpt-5.1-codex-max (reasoning none, summaries auto)                    │
+│  Directory: [[workspace]]                                                                    │
+│  Permissions:          Custom (workspace with network access, Ask for approval)              │
+│  Agents.md:            <none>                                                                │
+│  Collaboration mode:   Orchestrated                                                          │
+│                                                                                              │
+│  Token usage:          3.5K total  (2.4K input + 1.1K output)                                │
+│  Context window:       100% left (4.7K used / 272K)                                          │
+│  Role defaults:        orchestrator=gpt-5.1-codex-max, worker=gpt-5.4-mini, explorer=gpt-5.2 │
+│  Observed tokens:      4.7K actual total (3 role rows)                                       │
+│  By role:              explorer gpt-5.2: 1.35K total (800 in + 300 cached + 250 out)         │
+│                        worker gpt-5.4-mini: 1.75K total (1K in + 400 cached + 350 out)       │
+│                        orchestrator gpt-5.1-codex-max: 1.6K total (600 in + 100 cached + 500 │
+│                        out)                                                                  │
+│  Limits:               data not available yet                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯

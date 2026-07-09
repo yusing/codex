@@ -1250,6 +1250,7 @@ impl GoalExtensionHarness {
         let token_usage = TokenUsageInfo {
             total_token_usage: usage.clone(),
             last_token_usage: TokenUsage::default(),
+            orchestrated_role_token_usage: Vec::new(),
             model_context_window: None,
         };
         for contributor in self.registry.token_usage_contributors() {

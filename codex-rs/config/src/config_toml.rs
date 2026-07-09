@@ -148,6 +148,18 @@ pub struct OrchestratorFeatureToml {
     pub enabled: Option<bool>,
 }
 
+/// Model routing defaults for Orchestrated collaboration mode.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct OrchestratedModeToml {
+    pub orchestrator_model: Option<String>,
+    pub orchestrator_reasoning_effort: Option<ReasoningEffort>,
+    pub worker_model: Option<String>,
+    pub worker_reasoning_effort: Option<ReasoningEffort>,
+    pub explorer_model: Option<String>,
+    pub explorer_reasoning_effort: Option<ReasoningEffort>,
+}
+
 /// Base config deserialized from ~/.codex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -351,6 +363,7 @@ pub struct ConfigToml {
 
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub plan_mode_reasoning_effort: Option<ReasoningEffort>,
+    pub orchestrated_mode: Option<OrchestratedModeToml>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,

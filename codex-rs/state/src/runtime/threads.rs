@@ -2897,6 +2897,7 @@ mod tests {
                         total_tokens: 321,
                     },
                     last_token_usage: codex_protocol::protocol::TokenUsage::default(),
+                    orchestrated_role_token_usage: Vec::new(),
                     model_context_window: None,
                 }),
                 rate_limits: None,

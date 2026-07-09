@@ -27,6 +27,11 @@ use codex_protocol::ThreadId;
 use ratatui::text::Span;
 use std::collections::HashMap;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActiveAgentContext {
+    pub(crate) label: Option<String>,
+}
+
 /// Small state container for multi-agent picker ordering and labeling.
 ///
 /// `App` owns thread lifecycle and UI side effects. This type keeps the pure rules for stable
@@ -260,20 +265,22 @@ impl AgentNavigationState {
     /// single-thread sessions do not waste footer space restating the obvious. When metadata for
     /// the displayed thread is missing, the label falls back to the same generic naming rules used
     /// by the picker.
-    pub(crate) fn active_agent_label(
+    pub(crate) fn active_agent_context(
         &self,
         current_displayed_thread_id: Option<ThreadId>,
         primary_thread_id: Option<ThreadId>,
-    ) -> Option<String> {
+    ) -> ActiveAgentContext {
         if self.threads.len() <= 1 {
-            return None;
+            return ActiveAgentContext { label: None };
         }
 
-        let thread_id = current_displayed_thread_id?;
+        let Some(thread_id) = current_displayed_thread_id else {
+            return ActiveAgentContext { label: None };
+        };
         let is_primary = primary_thread_id == Some(thread_id);
-        Some(
-            self.threads
-                .get(&thread_id)
+        let entry = self.threads.get(&thread_id);
+        let label = Some(
+            entry
                 .map(|entry| {
                     if !is_primary
                         && let Some(agent_path) = entry
@@ -294,7 +301,8 @@ impl AgentNavigationState {
                         /*agent_nickname*/ None, /*agent_role*/ None, is_primary,
                     )
                 }),
-        )
+        );
+        ActiveAgentContext { label }
     }
 
     /// Builds the `/agent` picker subtitle from the same canonical bindings used by key handling.
@@ -409,12 +417,29 @@ mod tests {
         let (state, main_thread_id, first_agent_id, _) = populated_state();
 
         assert_eq!(
-            state.active_agent_label(Some(first_agent_id), Some(main_thread_id)),
+            state
+                .active_agent_context(Some(first_agent_id), Some(main_thread_id))
+                .label,
             Some("Robie [explorer]".to_string())
         );
         assert_eq!(
-            state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),
+            state
+                .active_agent_context(Some(main_thread_id), Some(main_thread_id))
+                .label,
             Some("Main [default]".to_string())
+        );
+    }
+
+    #[test]
+    fn active_agent_context_uses_agent_path_label() {
+        let (mut state, main_thread_id, first_agent_id, _) = populated_state();
+        state.set_agent_path(first_agent_id, Some("/tmp/worker-agent".to_string()));
+
+        assert_eq!(
+            state.active_agent_context(Some(first_agent_id), Some(main_thread_id)),
+            ActiveAgentContext {
+                label: Some("`/tmp/worker-agent`".to_string()),
+            }
         );
     }
 }

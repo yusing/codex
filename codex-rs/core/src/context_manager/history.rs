@@ -290,6 +290,24 @@ impl ContextManager {
         );
     }
 
+    pub(crate) fn update_token_info_for_orchestrated_role(
+        &mut self,
+        role: &str,
+        model: &str,
+        usage: &TokenUsage,
+        model_context_window: Option<i64>,
+    ) {
+        let Some(mut token_info) = TokenUsageInfo::new_or_append(
+            &self.token_info,
+            &Some(usage.clone()),
+            model_context_window,
+        ) else {
+            return;
+        };
+        token_info.add_orchestrated_role_usage(role, model, usage);
+        self.token_info = Some(token_info);
+    }
+
     fn get_non_last_reasoning_items_tokens(&self) -> i64 {
         // Get reasoning items excluding all the ones after the last instruction boundary.
         let Some(last_user_index) = self.items.iter().rposition(is_user_turn_boundary) else {

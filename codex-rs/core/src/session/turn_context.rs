@@ -126,6 +126,7 @@ pub struct TurnContext {
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) developer_instructions: Option<String>,
     pub(crate) collaboration_mode: CollaborationMode,
+    pub(crate) orchestrated_role: Option<&'static str>,
     pub(crate) multi_agent_version: MultiAgentVersion,
     pub(crate) personality: Option<Personality>,
     pub(crate) approval_policy: Constrained<AskForApproval>,
@@ -244,6 +245,9 @@ impl TurnContext {
                 .or_else(|| model_info.default_reasoning_level.clone())
         };
         config.model_reasoning_effort = reasoning_effort.clone();
+        let reasoning_summary = config
+            .model_reasoning_summary
+            .unwrap_or(model_info.default_reasoning_summary);
 
         let collaboration_mode = self.collaboration_mode.with_updates(
             Some(model.clone()),
@@ -270,7 +274,7 @@ impl TurnContext {
                 .with_model(model.as_str(), model_info.slug.as_str()),
             provider: self.provider.clone(),
             reasoning_effort,
-            reasoning_summary: self.reasoning_summary,
+            reasoning_summary,
             session_source: self.session_source.clone(),
             history_mode: self.history_mode,
             parent_thread_id: self.parent_thread_id,
@@ -283,6 +287,7 @@ impl TurnContext {
             app_server_client_name: self.app_server_client_name.clone(),
             developer_instructions: self.developer_instructions.clone(),
             collaboration_mode,
+            orchestrated_role: self.orchestrated_role,
             multi_agent_version: self.multi_agent_version,
             personality: self.personality,
             approval_policy: self.approval_policy.clone(),
@@ -563,6 +568,7 @@ impl Session {
             app_server_client_name: session_configuration.app_server_client_name.clone(),
             developer_instructions: session_configuration.developer_instructions.clone(),
             collaboration_mode: session_configuration.collaboration_mode.clone(),
+            orchestrated_role: None,
             multi_agent_version,
             personality: session_configuration.personality,
             approval_policy: session_configuration.approval_policy.clone(),

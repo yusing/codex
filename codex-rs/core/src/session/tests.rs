@@ -2212,6 +2212,7 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
             reasoning_output_tokens: 0,
             total_tokens: 7,
         },
+        orchestrated_role_token_usage: Vec::new(),
         model_context_window: Some(1_000),
     };
     let info2 = TokenUsageInfo {
@@ -2229,6 +2230,7 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
             reasoning_output_tokens: 5,
             total_tokens: 35,
         },
+        orchestrated_role_token_usage: Vec::new(),
         model_context_window: Some(2_000),
     };
 
@@ -2318,6 +2320,7 @@ async fn recompute_token_usage_updates_model_context_window() {
         state.set_token_info(Some(TokenUsageInfo {
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
+            orchestrated_role_token_usage: Vec::new(),
             model_context_window: Some(258_400),
         }));
     }
@@ -2424,6 +2427,7 @@ async fn record_token_usage_info_notifies_extension_contributors() {
             token_usage: TokenUsageInfo {
                 total_token_usage: first_usage.clone(),
                 last_token_usage: first_usage,
+                orchestrated_role_token_usage: Vec::new(),
                 model_context_window: turn_context.model_context_window(),
             },
             saw_session_store: true,
@@ -2436,6 +2440,7 @@ async fn record_token_usage_info_notifies_extension_contributors() {
             token_usage: TokenUsageInfo {
                 total_token_usage: expected_total_usage,
                 last_token_usage: second_usage,
+                orchestrated_role_token_usage: Vec::new(),
                 model_context_window: turn_context.model_context_window(),
             },
             saw_session_store: true,
@@ -3978,6 +3983,7 @@ async fn includes_timed_out_message() {
 async fn turn_context_with_model_updates_model_fields() {
     let (session, mut turn_context) = make_session_and_context().await;
     turn_context.reasoning_effort = Some(ReasoningEffortConfig::Minimal);
+    turn_context.reasoning_summary = codex_protocol::config_types::ReasoningSummary::Detailed;
     let updated = turn_context
         .with_model("gpt-5.4".to_string(), &session.services.models_manager)
         .await;
@@ -4005,6 +4011,45 @@ async fn turn_context_with_model_updates_model_fields() {
         updated.config.model_reasoning_effort,
         Some(ReasoningEffortConfig::Medium)
     );
+    assert_eq!(
+        updated.reasoning_summary,
+        expected_model_info.default_reasoning_summary
+    );
+}
+
+#[tokio::test]
+async fn orchestrated_settings_update_applies_configured_orchestrator_defaults() {
+    let (session, _turn_context, _rx_event) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config.orchestrated_mode.orchestrator_model = Some("gpt-5.4".to_string());
+            config.orchestrated_mode.orchestrator_reasoning_effort =
+                Some(ReasoningEffortConfig::Low);
+        },
+    )
+    .await;
+    let current = session.collaboration_mode().await;
+    let orchestrated = CollaborationMode {
+        mode: ModeKind::Orchestrated,
+        settings: Settings {
+            model: current.model().to_string(),
+            reasoning_effort: current.reasoning_effort(),
+            developer_instructions: None,
+        },
+    };
+
+    session
+        .update_settings(SessionSettingsUpdate {
+            collaboration_mode: Some(orchestrated),
+            ..Default::default()
+        })
+        .await
+        .expect("settings update");
+
+    let updated = session.collaboration_mode().await;
+    assert_eq!(updated.model(), "gpt-5.4");
+    assert_eq!(updated.reasoning_effort(), Some(ReasoningEffortConfig::Low));
 }
 
 #[test]
@@ -10148,6 +10193,7 @@ async fn set_total_token_usage(sess: &Session, total_token_usage: TokenUsage) {
     state.set_token_info(Some(TokenUsageInfo {
         total_token_usage,
         last_token_usage: TokenUsage::default(),
+        orchestrated_role_token_usage: Vec::new(),
         model_context_window: None,
     }));
 }

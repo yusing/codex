@@ -188,10 +188,10 @@ impl App {
     /// intentionally hidden until there is more than one known thread so single-thread sessions do
     /// not spend footer space restating that the user is already on the main conversation.
     pub(super) fn sync_active_agent_label(&mut self) {
-        let label = self
+        let context = self
             .agent_navigation
-            .active_agent_label(self.current_displayed_thread_id(), self.primary_thread_id);
-        self.chat_widget.set_active_agent_label(label);
+            .active_agent_context(self.current_displayed_thread_id(), self.primary_thread_id);
+        self.chat_widget.set_active_agent_label(context.label);
         self.sync_side_thread_ui();
     }
 

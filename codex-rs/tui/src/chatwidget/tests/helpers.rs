@@ -27,6 +27,13 @@ pub(super) fn test_project_path() -> PathBuf {
     PathBuf::from(test_path_display("/tmp/project"))
 }
 
+pub(super) fn cache_missing_project_root(chat: &mut ChatWidget) {
+    chat.status_line_project_root_name_cache = Some(CachedProjectRootName {
+        cwd: chat.config.cwd.to_path_buf(),
+        root_name: None,
+    });
+}
+
 pub(super) fn truncated_path_variants(path: &str) -> Vec<String> {
     let chars: Vec<char> = path.chars().collect();
     (1..chars.len())
@@ -362,6 +369,7 @@ pub(super) fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUs
     TokenUsageInfo {
         total_token_usage: usage(total_tokens),
         last_token_usage: usage(total_tokens),
+        orchestrated_role_token_usage: Vec::new(),
         model_context_window: Some(context_window),
     }
 }
@@ -383,6 +391,17 @@ fn token_usage_breakdown(usage: TokenUsage) -> codex_app_server_protocol::TokenU
 pub(super) fn handle_token_count(chat: &mut ChatWidget, info: Option<TokenUsageInfo>) {
     match info {
         Some(info) => {
+            let orchestrated_role_usage = info
+                .orchestrated_role_token_usage
+                .into_iter()
+                .map(
+                    |usage| codex_app_server_protocol::ThreadOrchestratedRoleTokenUsage {
+                        role: usage.role,
+                        model: usage.model,
+                        token_usage: token_usage_breakdown(usage.token_usage),
+                    },
+                )
+                .collect();
             chat.handle_server_notification(
                 ServerNotification::ThreadTokenUsageUpdated(
                     codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
@@ -396,6 +415,7 @@ pub(super) fn handle_token_count(chat: &mut ChatWidget, info: Option<TokenUsageI
                             total: token_usage_breakdown(info.total_token_usage),
                             last: token_usage_breakdown(info.last_token_usage),
                             model_context_window: info.model_context_window,
+                            orchestrated_role_usage,
                         },
                     },
                 ),

@@ -118,7 +118,22 @@ struct StatusHistoryCell {
     session_id: Option<String>,
     forked_from: Option<String>,
     token_usage: StatusTokenUsageData,
+    orchestrated_metrics: Option<StatusOrchestratedMetrics>,
     rate_limit_state: Arc<RwLock<StatusRateLimitState>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StatusOrchestratedMetrics {
+    pub(crate) routing: StatusOrchestratedRouting,
+    pub(crate) total_usage: TokenUsage,
+    pub(crate) role_usages: Vec<crate::token_usage::OrchestratedRoleTokenUsage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StatusOrchestratedRouting {
+    pub(crate) orchestrator: String,
+    pub(crate) worker: Option<String>,
+    pub(crate) explorer: Option<String>,
 }
 
 #[cfg(test)]
@@ -192,6 +207,7 @@ pub(crate) fn new_status_output_with_rate_limits(
         collaboration_mode,
         reasoning_effort_override,
         "<none>".to_string(),
+        /*orchestrated_metrics*/ None,
         refreshing_rate_limits,
     )
     .0
@@ -215,6 +231,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
     collaboration_mode: Option<&str>,
     reasoning_effort_override: Option<Option<ReasoningEffort>>,
     agents_summary: String,
+    orchestrated_metrics: Option<StatusOrchestratedMetrics>,
     refreshing_rate_limits: bool,
 ) -> (CompositeHistoryCell, StatusHistoryHandle) {
     let command = PlainHistoryCell::new(vec!["/status".magenta().into()]);
@@ -235,6 +252,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
         collaboration_mode,
         reasoning_effort_override,
         agents_summary,
+        orchestrated_metrics,
         refreshing_rate_limits,
     );
 
@@ -263,6 +281,7 @@ impl StatusHistoryCell {
         collaboration_mode: Option<&str>,
         reasoning_effort_override: Option<Option<ReasoningEffort>>,
         agents_summary: String,
+        orchestrated_metrics: Option<StatusOrchestratedMetrics>,
         refreshing_rate_limits: bool,
     ) -> (Self, StatusHistoryHandle) {
         let approval_policy = AskForApproval::from(config.permissions.approval_policy.value());
@@ -366,6 +385,7 @@ impl StatusHistoryCell {
                 session_id,
                 forked_from,
                 token_usage,
+                orchestrated_metrics,
                 agents_summary,
                 rate_limit_state: rate_limit_state.clone(),
             },
@@ -772,6 +792,13 @@ impl HistoryCell for StatusHistoryCell {
         if self.token_usage.context_window.is_some() {
             push_label(&mut labels, &mut seen, "Context window");
         }
+        if self.orchestrated_metrics.is_some() {
+            push_label(&mut labels, &mut seen, "Role defaults");
+            if !matches!(self.account, Some(StatusAccountDisplay::ChatGpt { .. })) {
+                push_label(&mut labels, &mut seen, "Observed tokens");
+                push_label(&mut labels, &mut seen, "By role");
+            }
+        }
 
         self.collect_rate_limit_labels(&rate_limit_state, &mut seen, &mut labels);
 
@@ -860,6 +887,17 @@ impl HistoryCell for StatusHistoryCell {
         if let Some(spans) = self.context_window_spans() {
             lines.push(formatter.line("Context window", spans));
         }
+        if let Some(metrics) = self.orchestrated_metrics.as_ref() {
+            lines.push(formatter.line("Role defaults", orchestrated_routing_spans(metrics)));
+            if !matches!(self.account, Some(StatusAccountDisplay::ChatGpt { .. })) {
+                lines.push(formatter.line("Observed tokens", orchestrated_token_spans(metrics)));
+                let mut model_rows = orchestrated_by_role_lines(metrics, value_width.max(1));
+                if let Some(first) = model_rows.next() {
+                    lines.push(formatter.line("By role", first.spans));
+                    lines.extend(model_rows.map(|line| formatter.continuation(line.spans)));
+                }
+            }
+        }
 
         lines.extend(self.rate_limit_lines(&rate_limit_state, available_inner_width, &formatter));
 
@@ -908,6 +946,56 @@ impl HistoryCell for StatusHistoryCell {
     ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
         self.display_hyperlink_lines(width)
     }
+}
+
+fn orchestrated_routing_spans(metrics: &StatusOrchestratedMetrics) -> Vec<Span<'static>> {
+    let worker = metrics.routing.worker.as_deref().unwrap_or("inherit");
+    let explorer = metrics.routing.explorer.as_deref().unwrap_or("inherit");
+    vec![Span::from(format!(
+        "orchestrator={}, worker={worker}, explorer={explorer}",
+        metrics.routing.orchestrator
+    ))]
+}
+
+fn orchestrated_token_spans(metrics: &StatusOrchestratedMetrics) -> Vec<Span<'static>> {
+    let role_count = metrics.role_usages.len();
+    vec![
+        Span::from(format_tokens_compact(metrics.total_usage.total_tokens)),
+        Span::from(" actual total "),
+        Span::from(if role_count == 0 {
+            "(role split not available yet)".to_string()
+        } else {
+            format!("({role_count} role rows)")
+        })
+        .dim(),
+    ]
+}
+
+fn orchestrated_by_role_lines(
+    metrics: &StatusOrchestratedMetrics,
+    width: usize,
+) -> impl Iterator<Item = Line<'static>> {
+    let lines = if metrics.role_usages.is_empty() {
+        vec![Line::from(vec![Span::from("not available yet").dim()])]
+    } else {
+        metrics
+            .role_usages
+            .iter()
+            .map(|role_usage| {
+                let usage = &role_usage.token_usage;
+                Line::from(vec![Span::from(format!(
+                    "{} {}: {} total ({} in + {} cached + {} out)",
+                    role_usage.role,
+                    role_usage.model,
+                    format_tokens_compact(usage.total_tokens),
+                    format_tokens_compact(usage.non_cached_input()),
+                    format_tokens_compact(usage.cached_input()),
+                    format_tokens_compact(usage.output_tokens),
+                ))])
+            })
+            .collect()
+    };
+    word_wrap_lines(lines, RtOptions::new(width)).into_iter()
 }
 
 fn format_model_provider(config: &Config, runtime_base_url: Option<&str>) -> Option<String> {

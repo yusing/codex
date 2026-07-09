@@ -10,6 +10,8 @@ use crate::tools::context::ToolPayload;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseInputItem;
@@ -201,6 +203,21 @@ pub(crate) fn reject_full_fork_spawn_overrides(
         ));
     }
     Ok(())
+}
+
+pub(crate) fn inherited_spawn_collaboration_mode(
+    turn: &TurnContext,
+    config: &Config,
+) -> Option<CollaborationMode> {
+    if turn.collaboration_mode.mode != ModeKind::Orchestrated {
+        return None;
+    }
+
+    Some(turn.collaboration_mode.with_updates(
+        config.model.clone(),
+        Some(config.model_reasoning_effort.clone()),
+        Some(config.developer_instructions.clone()),
+    ))
 }
 
 /// Copies runtime-only turn state onto a child config before it is handed to `AgentControl`.

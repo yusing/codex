@@ -1322,6 +1322,9 @@ pub enum EventMsg {
     #[serde(rename = "task_started", alias = "turn_started")]
     TurnStarted(TurnStartedEvent),
 
+    /// Active inline role changed during an Orchestrated-mode turn.
+    OrchestratedRoleUpdated(OrchestratedRoleUpdatedEvent),
+
     /// Persistent thread-settings overrides from the correlated submission have
     /// been applied to the session configuration.
     ThreadSettingsApplied(ThreadSettingsAppliedEvent),
@@ -1987,6 +1990,14 @@ pub struct TurnStartedEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct OrchestratedRoleUpdatedEvent {
+    pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ThreadSettingsAppliedEvent {
     pub thread_settings: ThreadSettingsSnapshot,
 }
@@ -2031,9 +2042,18 @@ pub struct TokenUsage {
 pub struct TokenUsageInfo {
     pub total_token_usage: TokenUsage,
     pub last_token_usage: TokenUsage,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub orchestrated_role_token_usage: Vec<OrchestratedRoleTokenUsage>,
     // TODO(aibrahim): make this not optional
     #[ts(type = "number | null")]
     pub model_context_window: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct OrchestratedRoleTokenUsage {
+    pub role: String,
+    pub model: String,
+    pub token_usage: TokenUsage,
 }
 
 impl TokenUsageInfo {
@@ -2051,6 +2071,7 @@ impl TokenUsageInfo {
             None => Self {
                 total_token_usage: TokenUsage::default(),
                 last_token_usage: TokenUsage::default(),
+                orchestrated_role_token_usage: Vec::new(),
                 model_context_window,
             },
         };
@@ -2068,6 +2089,24 @@ impl TokenUsageInfo {
         self.last_token_usage = last.clone();
     }
 
+    pub fn add_orchestrated_role_usage(&mut self, role: &str, model: &str, usage: &TokenUsage) {
+        if let Some(role_usage) = self
+            .orchestrated_role_token_usage
+            .iter_mut()
+            .find(|usage| usage.role == role)
+        {
+            role_usage.model = model.to_string();
+            role_usage.token_usage.add_assign(usage);
+        } else {
+            self.orchestrated_role_token_usage
+                .push(OrchestratedRoleTokenUsage {
+                    role: role.to_string(),
+                    model: model.to_string(),
+                    token_usage: usage.clone(),
+                });
+        }
+    }
+
     pub fn fill_to_context_window(&mut self, context_window: i64) {
         let previous_total = self.total_token_usage.total_tokens;
         let delta = (context_window - previous_total).max(0);
@@ -2081,12 +2120,14 @@ impl TokenUsageInfo {
             total_tokens: delta,
             ..TokenUsage::default()
         };
+        self.orchestrated_role_token_usage.clear();
     }
 
     pub fn full_context_window(context_window: i64) -> Self {
         let mut info = Self {
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
+            orchestrated_role_token_usage: Vec::new(),
             model_context_window: Some(context_window),
         };
         info.fill_to_context_window(context_window);
@@ -6161,6 +6202,7 @@ mod tests {
         let initial = Some(TokenUsageInfo {
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
+            orchestrated_role_token_usage: Vec::new(),
             model_context_window: Some(258_400),
         });
         let last = Some(TokenUsage {
@@ -6182,6 +6224,7 @@ mod tests {
         let initial = Some(TokenUsageInfo {
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
+            orchestrated_role_token_usage: Vec::new(),
             model_context_window: Some(258_400),
         });
         let last = Some(TokenUsage {
