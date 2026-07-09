@@ -1,0 +1,6 @@
+**/*.lock
+**/*.bazel
+**/*.bz1
+third_party/
+**/*.sha256
+**/LICENSE
