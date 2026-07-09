@@ -5,6 +5,8 @@ use crate::shell::get_shell_by_model_provided_path;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+#[cfg(test)]
+use crate::tools::handlers::parse_arguments;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::PostToolUsePayload;
 use codex_exec_server::Environment;
@@ -13,9 +15,6 @@ use codex_tools::UnifiedExecShellMode;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-#[cfg(test)]
-use crate::tools::handlers::parse_arguments;
 
 mod exec_command;
 mod write_stdin;
@@ -48,9 +47,9 @@ pub(crate) struct ExecCommandArgs {
 }
 
 #[derive(Debug, Deserialize)]
-struct ExecCommandEnvironmentArgs {
+pub(super) struct ExecCommandEnvironmentArgs {
     #[serde(default)]
-    environment_id: Option<String>,
+    pub(super) environment_id: Option<String>,
     // Keep this raw until after environment selection; relative paths must be
     // resolved against the selected environment cwd, not the process cwd.
     #[serde(default)]

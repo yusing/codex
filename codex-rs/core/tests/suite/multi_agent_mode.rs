@@ -17,6 +17,7 @@ use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
+use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_message_item_added;
 use core_test_support::responses::ev_output_text_delta;
@@ -67,6 +68,36 @@ fn configure_custom_mode_hint(config: &mut Config) {
 fn configure_ultra(config: &mut Config) {
     configure_multi_agent_v2(config);
     config.model_reasoning_effort = Some(ReasoningEffort::Ultra);
+}
+
+async fn submit_orchestrated_user_input(
+    test: &core_test_support::test_codex::TestCodex,
+    text: String,
+) -> Result<()> {
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text,
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: ThreadSettingsOverrides {
+                collaboration_mode: Some(CollaborationMode {
+                    mode: ModeKind::Orchestrated,
+                    settings: Settings {
+                        model: test.session_configured.model.clone(),
+                        reasoning_effort: Some(ReasoningEffort::High),
+                        developer_instructions: None,
+                    },
+                }),
+                effort: Some(Some(ReasoningEffort::High)),
+                ..Default::default()
+            },
+        })
+        .await?;
+    Ok(())
 }
 
 fn developer_texts(input: &[Value]) -> Vec<&str> {
@@ -550,11 +581,14 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
         "explorer should not receive direct edit tool: {explorer_tools:?}"
     );
     assert!(
-        !explorer_tools.iter().any(|tool| matches!(
-            tool.as_str(),
-            "exec_command" | "shell_command" | "write_stdin"
-        )),
-        "explorer should not receive shell mutation tools: {explorer_tools:?}"
+        explorer_tools
+            .iter()
+            .any(|tool| matches!(tool.as_str(), "exec_command" | "shell_command")),
+        "explorer should receive read-only shell access: {explorer_tools:?}"
+    );
+    assert!(
+        !explorer_tools.iter().any(|tool| tool == "write_stdin"),
+        "explorer should not receive stdin transport: {explorer_tools:?}"
     );
     assert!(
         !explorer_tools.iter().any(|tool| tool == "spawn_agent"),
@@ -724,6 +758,120 @@ async fn orchestrated_mode_internal_roles_hide_legacy_collaboration_tools() -> R
             "internal Orchestrated role should not receive legacy collaboration tools: {tool_names:?}"
         );
     }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_explorer_can_run_read_only_shell_command() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "explorer-read-shell";
+    let args = serde_json::to_string(&json!({
+        "cmd": "echo explorer_allowed_marker",
+        "yield_time_ms": 1000,
+    }))?;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-explorer-shell-read-1"),
+                ev_function_call(call_id, "exec_command", &args),
+                ev_completed("resp-explorer-shell-read-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-explorer-shell-read-1", "explorer: read shell complete"),
+                ev_completed("resp-explorer-shell-read-2"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-worker-shell-read-1", "worker: no changes"),
+                ev_completed("resp-worker-shell-read-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-root-shell-read-1", "orc: done"),
+                ev_completed("resp-root-shell-read-1"),
+            ]),
+        ],
+    )
+    .await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+
+    submit_orchestrated_user_input(
+        &test,
+        "explorer should inspect with read-only shell".to_string(),
+    )
+    .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let output = responses
+        .function_call_output_text(call_id)
+        .expect("explorer read shell output should be returned");
+    assert!(
+        output.contains("explorer_allowed_marker"),
+        "unexpected explorer shell output: {output}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_explorer_blocks_mutating_shell_command() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "explorer-block-shell";
+    let blocked_file = "explorer_blocked_shell.txt";
+    let args = serde_json::to_string(&json!({
+        "cmd": format!("echo blocked > {blocked_file}"),
+        "yield_time_ms": 1000,
+    }))?;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-explorer-shell-block-1"),
+                ev_function_call(call_id, "exec_command", &args),
+                ev_completed("resp-explorer-shell-block-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-explorer-shell-block-1", "explorer: shell blocked"),
+                ev_completed("resp-explorer-shell-block-2"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-worker-shell-block-1", "worker: no changes"),
+                ev_completed("resp-worker-shell-block-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-root-shell-block-1", "orc: done"),
+                ev_completed("resp-root-shell-block-1"),
+            ]),
+        ],
+    )
+    .await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+
+    submit_orchestrated_user_input(&test, "explorer should reject mutating shell".to_string())
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let output = responses
+        .function_call_output_text(call_id)
+        .expect("explorer blocked shell output should be returned");
+    assert_eq!(
+        output,
+        "explorer role can only run read-only shell commands"
+    );
+    assert!(
+        !test.workspace_path(blocked_file).exists(),
+        "blocked explorer command should not create a file"
+    );
 
     Ok(())
 }

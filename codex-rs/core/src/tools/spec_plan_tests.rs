@@ -494,6 +494,39 @@ async fn shell_family_registers_visible_unified_exec_and_hidden_legacy_shell() {
 }
 
 #[tokio::test]
+async fn explorer_role_gets_read_only_shell_without_stdin_or_apply_patch() {
+    let plan = probe(|turn| {
+        set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);
+        set_feature(turn, Feature::ShellZshFork, /*enabled*/ false);
+        turn.model_info.shell_type = ConfigShellToolType::ShellCommand;
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+        turn.orchestrated_role = Some(super::EXPLORER_ROLE_NAME);
+    })
+    .await;
+
+    plan.assert_visible_contains(&["exec_command"]);
+    plan.assert_visible_lacks(&["shell_command", "write_stdin", "apply_patch"]);
+    plan.assert_registered_contains(&["exec_command", "shell_command"]);
+    plan.assert_registered_lacks(&["write_stdin", "apply_patch"]);
+    assert_eq!(plan.exposure("shell_command"), ToolExposure::Hidden);
+    let exec_command = plan.visible_spec("exec_command");
+    for forbidden in [
+        "shell",
+        "tty",
+        "login",
+        "sandbox_permissions",
+        "additional_permissions",
+        "justification",
+        "prefix_rule",
+    ] {
+        assert!(
+            !has_parameter(exec_command, forbidden),
+            "explorer exec_command schema should hide `{forbidden}`"
+        );
+    }
+}
+
+#[tokio::test]
 async fn shell_zsh_fork_stays_standalone_until_unified_exec_composition_is_enabled() {
     let standalone = probe(|turn| {
         set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);

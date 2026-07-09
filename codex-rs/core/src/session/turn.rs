@@ -17,6 +17,7 @@ use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
 use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
+use crate::config::Constrained;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
 use crate::feedback_tags;
@@ -93,11 +94,13 @@ use codex_protocol::items::build_hook_prompt_message;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentMessageContentDeltaEvent;
 use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
@@ -493,7 +496,7 @@ pub(crate) async fn run_turn(
     Ok(last_agent_message)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum OrchestratedInternalRole {
     Explorer,
     Worker,
@@ -694,6 +697,10 @@ async fn run_orchestrated_internal_role(
         .await;
     role_turn_context.orchestrated_role = Some(role.name());
     role_turn_context.final_output_json_schema = None;
+    if role == OrchestratedInternalRole::Explorer {
+        role_turn_context.permission_profile = PermissionProfile::read_only();
+        role_turn_context.approval_policy = Constrained::allow_only(AskForApproval::Never);
+    }
     if let Some(reasoning_effort) = role.reasoning_effort_override(&root_turn_context) {
         role_turn_context.reasoning_effort = Some(reasoning_effort);
         role_turn_context.collaboration_mode = role_turn_context.collaboration_mode.with_updates(

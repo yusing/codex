@@ -53,6 +53,7 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
+use crate::tools::handlers::wrap_explorer_shell_runtime;
 use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_web_search_tool;
 use crate::tools::registry::CoreToolRuntime;
@@ -126,13 +127,6 @@ impl PlannedTools {
     {
         self.runtimes
             .push(override_tool_exposure(Arc::new(handler), exposure));
-    }
-
-    fn add_dispatch_only<T>(&mut self, handler: T)
-    where
-        T: CoreToolRuntime + 'static,
-    {
-        self.add_with_exposure(handler, ToolExposure::Hidden);
     }
 
     fn add_hosted_spec(&mut self, spec: ToolSpec) {
@@ -639,17 +633,16 @@ fn tool_environment_mode(step_context: &StepContext) -> ToolEnvironmentMode {
 #[instrument(level = "trace", skip_all)]
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     let turn_context = context.step_context.turn.as_ref();
-    if turn_context.orchestrated_role == Some(EXPLORER_ROLE_NAME) {
-        return;
-    }
+    let explorer_shell = turn_context.orchestrated_role == Some(EXPLORER_ROLE_NAME);
     let features = turn_context.config.features.get();
     let environment_mode = tool_environment_mode(context.step_context);
     if !environment_mode.has_environment() {
         return;
     }
 
-    let allow_login_shell = turn_context.config.permissions.allow_login_shell;
-    let exec_permission_approvals_enabled = features.enabled(Feature::ExecPermissionApprovals);
+    let allow_login_shell = !explorer_shell && turn_context.config.permissions.allow_login_shell;
+    let exec_permission_approvals_enabled =
+        !explorer_shell && features.enabled(Feature::ExecPermissionApprovals);
     let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
     let shell_command_options = ShellCommandHandlerOptions {
         backend_config: shell_command_backend_for_features(features),
@@ -659,26 +652,40 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Planne
 
     match shell_type_for_model_and_features(&turn_context.model_info, features) {
         ConfigShellToolType::UnifiedExec => {
-            planned_tools.add(ExecCommandHandler::new(ExecCommandHandlerOptions {
-                allow_login_shell,
-                exec_permission_approvals_enabled,
-                include_environment_id,
-                include_shell_parameter: unified_exec_should_include_shell_parameter(
-                    turn_context,
-                    context.step_context,
-                ),
-            }));
-            planned_tools.add(WriteStdinHandler);
+            planned_tools.add_arc(wrap_explorer_shell_runtime(
+                Arc::new(ExecCommandHandler::new(ExecCommandHandlerOptions {
+                    allow_login_shell,
+                    exec_permission_approvals_enabled,
+                    include_environment_id,
+                    include_shell_parameter: unified_exec_should_include_shell_parameter(
+                        turn_context,
+                        context.step_context,
+                    ),
+                })),
+                explorer_shell,
+            ));
+            if !explorer_shell {
+                planned_tools.add(WriteStdinHandler);
+            }
 
             // Keep the legacy shell tool registered while unified exec is
             // model-visible.
-            planned_tools.add_dispatch_only(ShellCommandHandler::new(shell_command_options));
+            planned_tools.add_arc(override_tool_exposure(
+                wrap_explorer_shell_runtime(
+                    Arc::new(ShellCommandHandler::new(shell_command_options)),
+                    explorer_shell,
+                ),
+                ToolExposure::Hidden,
+            ));
         }
         ConfigShellToolType::Disabled => {}
         ConfigShellToolType::Default
         | ConfigShellToolType::Local
         | ConfigShellToolType::ShellCommand => {
-            planned_tools.add(ShellCommandHandler::new(shell_command_options));
+            planned_tools.add_arc(wrap_explorer_shell_runtime(
+                Arc::new(ShellCommandHandler::new(shell_command_options)),
+                explorer_shell,
+            ));
         }
     }
 }

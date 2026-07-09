@@ -1,6 +1,6 @@
-use crate::command_safety::is_safe_command::is_safe_git_command;
 use crate::command_safety::powershell_parser::PowershellParseOutcome;
 use crate::command_safety::powershell_parser::parse_with_powershell_ast;
+use crate::command_safety::powershell_safe_commands::is_safe_powershell_words;
 use std::path::Path;
 
 /// On Windows, we conservatively allow only clearly read-only PowerShell invocations
@@ -138,87 +138,6 @@ fn quote_argument(arg: &str) -> String {
     }
 
     format!("'{}'", arg.replace('\'', "''"))
-}
-
-/// Validates that a parsed PowerShell command stays within our read-only safelist.
-/// Everything before this is parsing, and rejecting things that make us feel uncomfortable.
-pub(crate) fn is_safe_powershell_words(words: &[String]) -> bool {
-    if words.is_empty() {
-        // Examples rejected here: "pwsh -Command ''" and "pwsh -Command \"\"".
-        return false;
-    }
-
-    // Reject nested unsafe cmdlets inside parentheses or arguments
-    for w in words.iter() {
-        let inner = w
-            .trim_matches(|c| c == '(' || c == ')')
-            .trim_start_matches('-')
-            .to_ascii_lowercase();
-        if matches!(
-            inner.as_str(),
-            "set-content"
-                | "add-content"
-                | "out-file"
-                | "new-item"
-                | "remove-item"
-                | "move-item"
-                | "copy-item"
-                | "rename-item"
-                | "start-process"
-                | "stop-process"
-        ) {
-            // Examples rejected here: "Write-Output (Set-Content foo6.txt 'abc')" and "Get-Content (New-Item bar.txt)".
-            return false;
-        }
-    }
-
-    let command = words[0]
-        .trim_matches(|c| c == '(' || c == ')')
-        .trim_start_matches('-')
-        .to_ascii_lowercase();
-    match command.as_str() {
-        "echo" | "write-output" | "write-host" => true, // (no redirection allowed)
-        "dir" | "ls" | "get-childitem" | "gci" => true,
-        "cat" | "type" | "gc" | "get-content" => true,
-        "select-string" | "sls" | "findstr" => true,
-        "measure-object" | "measure" => true,
-        "get-location" | "gl" | "pwd" => true,
-        "test-path" | "tp" => true,
-        "resolve-path" | "rvpa" => true,
-        "select-object" | "select" => true,
-        "get-item" => true,
-
-        "git" => is_safe_git_command(words),
-
-        "rg" => is_safe_ripgrep(words),
-
-        // Extra safety: explicitly prohibit common side-effecting cmdlets regardless of args.
-        "set-content" | "add-content" | "out-file" | "new-item" | "remove-item" | "move-item"
-        | "copy-item" | "rename-item" | "start-process" | "stop-process" => {
-            // Examples rejected here: "pwsh -Command 'Set-Content notes.txt data'" and "pwsh -Command 'Remove-Item temp.log'".
-            false
-        }
-
-        _ => {
-            // Examples rejected here: "pwsh -Command 'Invoke-WebRequest https://example.com'" and "pwsh -Command 'Start-Service Spooler'".
-            false
-        }
-    }
-}
-
-/// Checks that an `rg` invocation avoids options that can spawn arbitrary executables.
-fn is_safe_ripgrep(words: &[String]) -> bool {
-    const UNSAFE_RIPGREP_OPTIONS_WITH_ARGS: &[&str] = &["--pre", "--hostname-bin"];
-    const UNSAFE_RIPGREP_OPTIONS_WITHOUT_ARGS: &[&str] = &["--search-zip", "-z"];
-
-    !words.iter().skip(1).any(|arg| {
-        let arg_lc = arg.to_ascii_lowercase();
-        // Examples rejected here: "pwsh -Command 'rg --pre cat pattern'" and "pwsh -Command 'rg --search-zip pattern'".
-        UNSAFE_RIPGREP_OPTIONS_WITHOUT_ARGS.contains(&arg_lc.as_str())
-            || UNSAFE_RIPGREP_OPTIONS_WITH_ARGS
-                .iter()
-                .any(|opt| arg_lc == *opt || arg_lc.starts_with(&format!("{opt}=")))
-    })
 }
 
 #[cfg(all(test, windows))]
