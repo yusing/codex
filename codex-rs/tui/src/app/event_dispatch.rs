@@ -235,6 +235,7 @@ impl App {
             AppEvent::ConsolidateAgentMessage {
                 source,
                 cwd,
+                attribution,
                 scrollback_reflow,
                 deferred_history_cell,
             } => {
@@ -242,6 +243,7 @@ impl App {
                     tui,
                     source,
                     cwd,
+                    attribution,
                     scrollback_reflow,
                     deferred_history_cell,
                 )?;

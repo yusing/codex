@@ -58,6 +58,7 @@ fn streaming_agent_tail_blank_line_uses_one_viewport_row() {
             HyperlinkLine::from("second"),
         ],
         /*is_first_line*/ false,
+        crate::orchestrated_role::Attribution::Unattributed,
     );
 
     let lines = cell.display_lines(/*width*/ 80);
@@ -2601,13 +2602,62 @@ fn agent_messages_keep_links_aligned_after_styling_orchestrated_prefix() {
             color,
         );
 
-        let streamed =
-            AgentMessageCell::new_hyperlink_lines(vec![line.clone()], /*is_first_line*/ true);
+        let streamed = AgentMessageCell::new_hyperlink_lines(
+            vec![line.clone()],
+            /*is_first_line*/ true,
+            crate::orchestrated_role::Attribution::Unattributed,
+        );
         assert_role_prefixed_link(streamed.display_hyperlink_lines(/*width*/ 80), label, color);
 
-        let tail = StreamingAgentTailCell::new(vec![line], /*is_first_line*/ true);
+        let tail = StreamingAgentTailCell::new(
+            vec![line],
+            /*is_first_line*/ true,
+            crate::orchestrated_role::Attribution::Unattributed,
+        );
         assert_role_prefixed_link(tail.display_hyperlink_lines(/*width*/ 80), label, color);
     }
+}
+
+#[test]
+fn agent_messages_keep_links_aligned_with_orchestrated_attribution() {
+    let line = HyperlinkLine {
+        line: Line::from("documentation"),
+        hyperlinks: vec![crate::terminal_hyperlinks::TerminalHyperlink {
+            columns: 0.."documentation".width(),
+            destination: "https://example.com".to_string(),
+        }],
+    };
+    let attribution =
+        crate::orchestrated_role::Attribution::OrchestratedRole("explorer".to_string());
+
+    let completed = AgentMarkdownCell::new_with_attribution(
+        "[documentation](https://example.com)\n".to_string(),
+        &test_cwd(),
+        attribution.clone(),
+    );
+    assert_role_prefixed_link(
+        completed.display_hyperlink_lines(/*width*/ 80),
+        "Explorer",
+        Color::Cyan,
+    );
+
+    let streamed = AgentMessageCell::new_hyperlink_lines(
+        vec![line.clone()],
+        /*is_first_line*/ true,
+        attribution.clone(),
+    );
+    assert_role_prefixed_link(
+        streamed.display_hyperlink_lines(/*width*/ 80),
+        "Explorer",
+        Color::Cyan,
+    );
+
+    let tail = StreamingAgentTailCell::new(vec![line], /*is_first_line*/ true, attribution);
+    assert_role_prefixed_link(
+        tail.display_hyperlink_lines(/*width*/ 80),
+        "Explorer",
+        Color::Cyan,
+    );
 }
 
 #[test]

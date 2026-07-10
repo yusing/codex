@@ -584,6 +584,77 @@ async fn orchestrated_exec_cells_show_role_attribution() {
 }
 
 #[tokio::test]
+async fn orchestrated_commentary_shows_role_attribution() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_collaboration_mask(codex_protocol::config_types::CollaborationModeMask {
+        name: "Orchestrated".to_string(),
+        mode: Some(ModeKind::Orchestrated),
+        model: None,
+        reasoning_effort: None,
+        developer_instructions: None,
+    });
+    chat.on_task_started();
+    chat.set_active_orchestrated_role(Some("explorer".to_string()));
+
+    chat.on_agent_message_delta("I’ll trace the cited orchestration history.".to_string());
+    chat.flush_answer_stream_with_separator();
+
+    let history = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+
+    assert_chatwidget_snapshot!("orchestrated_commentary_shows_role_attribution", history);
+}
+
+#[tokio::test]
+async fn orchestrated_commentary_tail_keeps_originating_role_attribution() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_collaboration_mask(codex_protocol::config_types::CollaborationModeMask {
+        name: "Orchestrated".to_string(),
+        mode: Some(ModeKind::Orchestrated),
+        model: None,
+        reasoning_effort: None,
+        developer_instructions: None,
+    });
+    chat.on_task_started();
+    chat.set_active_orchestrated_role(Some("explorer".to_string()));
+    chat.on_agent_message_delta(
+        "| Name | Notes |\n| --- | --- |\n| history | Inspect orchestration |\n".to_string(),
+    );
+
+    chat.set_active_orchestrated_role(Some("worker".to_string()));
+    chat.sync_active_stream_tail();
+    let live_tail = active_blob(&chat);
+
+    chat.flush_answer_stream_with_separator();
+    let (attribution, deferred_history_cell) = loop {
+        match rx.try_recv().expect("consolidation event") {
+            AppEvent::ConsolidateAgentMessage {
+                attribution,
+                deferred_history_cell,
+                ..
+            } => break (attribution, deferred_history_cell),
+            _ => continue,
+        }
+    };
+    assert_eq!(
+        attribution,
+        crate::orchestrated_role::Attribution::OrchestratedRole("explorer".to_string())
+    );
+    let finalized_tail = lines_to_single_string(
+        &deferred_history_cell
+            .expect("table tail should be deferred for consolidation")
+            .display_lines(/*width*/ 80),
+    );
+    assert_eq!(finalized_tail, live_tail);
+    assert_chatwidget_snapshot!(
+        "orchestrated_commentary_tail_keeps_originating_role_attribution",
+        live_tail
+    );
+}
+
+#[tokio::test]
 async fn unified_exec_unknown_end_with_active_exploring_cell_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();

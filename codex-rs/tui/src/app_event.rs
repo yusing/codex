@@ -682,6 +682,7 @@ pub(crate) enum AppEvent {
     ConsolidateAgentMessage {
         source: String,
         cwd: PathBuf,
+        attribution: crate::orchestrated_role::Attribution,
         scrollback_reflow: ConsolidationScrollbackReflow,
         deferred_history_cell: Option<Box<dyn HistoryCell>>,
     },

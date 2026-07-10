@@ -367,6 +367,7 @@ async fn flush_answer_stream_keeps_default_reflow_for_plain_text_tail() {
         Some(80),
         cwd.as_path(),
         HistoryRenderMode::Rich,
+        crate::orchestrated_role::Attribution::Unattributed,
     );
     assert!(controller.push("plain response line\n"));
     chat.stream_controller = Some(controller);
@@ -415,6 +416,7 @@ async fn flush_answer_stream_requests_scrollback_reflow_for_live_table_tail() {
         Some(80),
         cwd.as_path(),
         HistoryRenderMode::Rich,
+        crate::orchestrated_role::Attribution::Unattributed,
     );
     controller.push("| Name | Notes |\n");
     controller.push("| --- | --- |\n");

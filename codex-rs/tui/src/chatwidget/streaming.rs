@@ -19,6 +19,7 @@ impl ChatWidget {
     pub(super) fn flush_answer_stream_with_separator(&mut self) {
         let had_stream_controller = self.stream_controller.is_some();
         if let Some(mut controller) = self.stream_controller.take() {
+            let attribution = controller.attribution().clone();
             let scrollback_reflow = if controller.has_live_tail() {
                 crate::app_event::ConsolidationScrollbackReflow::Required
             } else {
@@ -44,6 +45,7 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::ConsolidateAgentMessage {
                     source,
                     cwd: self.config.cwd.to_path_buf(),
+                    attribution,
                     scrollback_reflow,
                     deferred_history_cell,
                 });
@@ -407,10 +409,20 @@ impl ChatWidget {
                 // Reset the flag even if we don't show separator (no work was done)
                 self.transcript.needs_final_message_separator = false;
             }
+            let attribution = if self.active_mode_kind() == ModeKind::Orchestrated {
+                crate::orchestrated_role::Attribution::OrchestratedRole(
+                    self.active_orchestrated_role
+                        .clone()
+                        .unwrap_or_else(|| "orchestrator".to_string()),
+                )
+            } else {
+                crate::orchestrated_role::Attribution::Unattributed
+            };
             self.stream_controller = Some(StreamController::new(
                 self.current_stream_width(/*reserved_cols*/ 2),
                 &self.config.cwd,
                 self.history_render_mode(),
+                attribution,
             ));
         }
         if let Some(controller) = self.stream_controller.as_mut()
@@ -448,6 +460,7 @@ impl ChatWidget {
                 Some(Box::new(history_cell::StreamingAgentTailCell::new(
                     tail_lines,
                     controller.tail_starts_stream(),
+                    controller.attribution().clone(),
                 )));
             self.bump_active_cell_revision();
             return;

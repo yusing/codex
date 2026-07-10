@@ -9,6 +9,7 @@ use super::*;
 use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
+use crate::app_event::ConsolidationScrollbackReflow;
 
 use crate::chatwidget::ChatWidgetInit;
 use crate::chatwidget::create_initial_user_message;
@@ -180,6 +181,46 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
     );
 
     assert_eq!(app.transcript_cells.len(), 1);
+}
+
+#[tokio::test]
+async fn consolidate_agent_message_preserves_orchestrated_attribution() -> Result<()> {
+    let mut app = make_test_app().await;
+    app.transcript_cells.push(Arc::new(AgentMessageCell::new(
+        vec![Line::from("Inspect orchestration")],
+        /*is_first_line*/ true,
+    )));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await?;
+    let cwd = app.config.cwd.to_path_buf();
+
+    let control = Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ConsolidateAgentMessage {
+            source: "Inspect orchestration".to_string(),
+            cwd,
+            attribution: crate::orchestrated_role::Attribution::OrchestratedRole(
+                "explorer".to_string(),
+            ),
+            scrollback_reflow: ConsolidationScrollbackReflow::IfResizeReflowRan,
+            deferred_history_cell: None,
+        },
+    ))
+    .await?;
+
+    assert!(matches!(control, AppRunControl::Continue));
+    assert_eq!(app.transcript_cells.len(), 1);
+    assert_eq!(
+        lines_to_single_string(&app.transcript_cells[0].display_lines(/*width*/ 80)),
+        "• Explorer Inspect orchestration"
+    );
+
+    app_server.shutdown().await?;
+    Ok(())
 }
 
 #[test]

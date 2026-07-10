@@ -2,24 +2,7 @@
 
 use super::*;
 
-fn style_orchestrated_prefix(line: &mut HyperlinkLine) {
-    let Some(first_span) = line.line.spans.first() else {
-        return;
-    };
-    let Some((role, remainder)) = crate::orchestrated_role::packet_role_prefix(&first_span.content)
-    else {
-        return;
-    };
-
-    let trimmed_remainder = remainder.trim_start();
-    let protocol_prefix_width = first_span.content.width() - remainder.width();
-    let removed_width =
-        protocol_prefix_width + remainder[..remainder.len() - trimmed_remainder.len()].width();
-    let role_label = crate::orchestrated_role::role_label(role);
-    let has_separator = trimmed_remainder.len() != remainder.len();
-    let replacement_width =
-        role_label.width() + usize::from(!trimmed_remainder.is_empty() || has_separator);
-    let offset = replacement_width as isize - removed_width as isize;
+fn shift_hyperlinks(line: &mut HyperlinkLine, offset: isize) {
     for hyperlink in &mut line.hyperlinks {
         hyperlink.columns = if offset.is_negative() {
             let offset = offset.unsigned_abs();
@@ -29,18 +12,50 @@ fn style_orchestrated_prefix(line: &mut HyperlinkLine) {
             hyperlink.columns.start + offset..hyperlink.columns.end + offset
         };
     }
-    let mut spans = vec![role_label];
-    if !trimmed_remainder.is_empty() || has_separator {
-        spans.push(" ".into());
+}
+
+fn style_orchestrated_attribution(
+    line: &mut HyperlinkLine,
+    attribution: &crate::orchestrated_role::Attribution,
+) {
+    let Some(first_span) = line.line.spans.first() else {
+        return;
+    };
+    let first_span_style = first_span.style;
+    if let Some((role, remainder)) =
+        crate::orchestrated_role::packet_role_prefix(&first_span.content)
+    {
+        let trimmed_remainder = remainder.trim_start();
+        let protocol_prefix_width = first_span.content.width() - remainder.width();
+        let removed_width =
+            protocol_prefix_width + remainder[..remainder.len() - trimmed_remainder.len()].width();
+        let role_label = crate::orchestrated_role::role_label(role);
+        let has_separator = trimmed_remainder.len() != remainder.len();
+        let replacement_width =
+            role_label.width() + usize::from(!trimmed_remainder.is_empty() || has_separator);
+        let offset = replacement_width as isize - removed_width as isize;
+        let mut spans = vec![role_label];
+        if !trimmed_remainder.is_empty() || has_separator {
+            spans.push(" ".into());
+        }
+        if !trimmed_remainder.is_empty() {
+            spans.push(Span::styled(
+                trimmed_remainder.to_string(),
+                first_span_style,
+            ));
+        }
+        spans.extend(line.line.spans.iter().skip(1).cloned());
+        shift_hyperlinks(line, offset);
+        line.line.spans = spans;
+        return;
     }
-    if !trimmed_remainder.is_empty() {
-        spans.push(Span::styled(
-            trimmed_remainder.to_string(),
-            first_span.style,
-        ));
-    }
-    spans.extend(line.line.spans.iter().skip(1).cloned());
-    line.line.spans = spans;
+
+    let crate::orchestrated_role::Attribution::OrchestratedRole(role) = attribution else {
+        return;
+    };
+    let role_label = crate::orchestrated_role::role_label(role);
+    shift_hyperlinks(line, (role_label.width() + 1) as isize);
+    line.line.spans.splice(0..0, [role_label, " ".into()]);
 }
 
 #[derive(Debug)]
@@ -332,6 +347,7 @@ impl HistoryCell for ReasoningSummaryCell {
 pub(crate) struct AgentMessageCell {
     lines: Vec<HyperlinkLine>,
     is_first_line: bool,
+    attribution: crate::orchestrated_role::Attribution,
 }
 
 impl AgentMessageCell {
@@ -340,13 +356,19 @@ impl AgentMessageCell {
         Self {
             lines: plain_hyperlink_lines(lines),
             is_first_line,
+            attribution: crate::orchestrated_role::Attribution::Unattributed,
         }
     }
 
-    pub(crate) fn new_hyperlink_lines(lines: Vec<HyperlinkLine>, is_first_line: bool) -> Self {
+    pub(crate) fn new_hyperlink_lines(
+        lines: Vec<HyperlinkLine>,
+        is_first_line: bool,
+        attribution: crate::orchestrated_role::Attribution,
+    ) -> Self {
         Self {
             lines,
             is_first_line,
+            attribution,
         }
     }
 }
@@ -361,7 +383,7 @@ impl HistoryCell for AgentMessageCell {
         if self.is_first_line
             && let Some(first_line) = lines.first_mut()
         {
-            style_orchestrated_prefix(first_line);
+            style_orchestrated_attribution(first_line, &self.attribution);
         }
         let mut wrapped = Vec::new();
         for (index, line) in lines.iter().enumerate() {
@@ -412,6 +434,7 @@ impl HistoryCell for AgentMessageCell {
 pub(crate) struct AgentMarkdownCell {
     markdown_source: String,
     cwd: PathBuf,
+    attribution: crate::orchestrated_role::Attribution,
 }
 
 impl AgentMarkdownCell {
@@ -421,9 +444,22 @@ impl AgentMarkdownCell {
     /// wrapped terminal lines. Passing rendered lines here would make future resize reflow preserve
     /// stale wrapping instead of repairing it.
     pub(crate) fn new(markdown_source: String, cwd: &Path) -> Self {
+        Self::new_with_attribution(
+            markdown_source,
+            cwd,
+            crate::orchestrated_role::Attribution::Unattributed,
+        )
+    }
+
+    pub(crate) fn new_with_attribution(
+        markdown_source: String,
+        cwd: &Path,
+        attribution: crate::orchestrated_role::Attribution,
+    ) -> Self {
         Self {
             markdown_source,
             cwd: cwd.to_path_buf(),
+            attribution,
         }
     }
 }
@@ -453,7 +489,7 @@ impl HistoryCell for AgentMarkdownCell {
         );
         let mut lines = lines;
         if let Some(first_line) = lines.first_mut() {
-            style_orchestrated_prefix(first_line);
+            style_orchestrated_attribution(first_line, &self.attribution);
         }
         prefix_hyperlink_lines(lines, "• ".dim(), "  ".into())
     }
@@ -476,13 +512,19 @@ impl HistoryCell for AgentMarkdownCell {
 pub(crate) struct StreamingAgentTailCell {
     lines: Vec<HyperlinkLine>,
     is_first_line: bool,
+    attribution: crate::orchestrated_role::Attribution,
 }
 
 impl StreamingAgentTailCell {
-    pub(crate) fn new(lines: Vec<HyperlinkLine>, is_first_line: bool) -> Self {
+    pub(crate) fn new(
+        lines: Vec<HyperlinkLine>,
+        is_first_line: bool,
+        attribution: crate::orchestrated_role::Attribution,
+    ) -> Self {
         Self {
             lines,
             is_first_line,
+            attribution,
         }
     }
 }
@@ -499,7 +541,7 @@ impl HistoryCell for StreamingAgentTailCell {
         if self.is_first_line
             && let Some(first_line) = source_lines.first_mut()
         {
-            style_orchestrated_prefix(first_line);
+            style_orchestrated_attribution(first_line, &self.attribution);
         }
         let mut lines = prefix_hyperlink_lines(
             source_lines,
