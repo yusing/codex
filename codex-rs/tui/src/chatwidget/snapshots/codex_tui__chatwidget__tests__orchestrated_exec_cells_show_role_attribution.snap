@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/exec_flow.rs
+expression: history
+---
+• Explorer · Explored
+  └ List ls
+
+• Worker · Explored
+  └ Read README.md
+
+• Orchestrator · Ran echo orchestrator
+  └ (no output)

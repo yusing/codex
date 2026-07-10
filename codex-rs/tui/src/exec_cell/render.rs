@@ -3,6 +3,7 @@ use std::time::Instant;
 use super::model::CommandOutput;
 use super::model::ExecCall;
 use super::model::ExecCell;
+use super::model::ExecCellAttribution;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::plain_lines;
@@ -47,9 +48,10 @@ pub(crate) fn new_active_exec_command(
     parsed: Vec<ParsedCommand>,
     source: ExecCommandSource,
     interaction_input: Option<String>,
+    attribution: ExecCellAttribution,
     animations_enabled: bool,
 ) -> ExecCell {
-    ExecCell::new(
+    let mut cell = ExecCell::new(
         ExecCall {
             call_id,
             command,
@@ -61,7 +63,9 @@ pub(crate) fn new_active_exec_command(
             interaction_input,
         },
         animations_enabled,
-    )
+    );
+    cell.attribution = attribution;
+    cell
 }
 
 fn format_unified_exec_interaction(command: &[String], input: Option<&str>) -> String {
@@ -251,6 +255,22 @@ impl HistoryCell for ExecCell {
 }
 
 impl ExecCell {
+    fn attribution_spans(&self) -> Vec<Span<'static>> {
+        let ExecCellAttribution::OrchestratedRole(role) = &self.attribution else {
+            return Vec::new();
+        };
+        let label = match role.as_str() {
+            "task-contract" => "Task contract",
+            "explorer" => "Explorer",
+            "worker-plan" => "Worker plan",
+            "plan-review" => "Plan review",
+            "worker" => "Worker",
+            "orchestrator" => "Orchestrator",
+            role => role,
+        };
+        vec![label.to_string().cyan(), " · ".dim()]
+    }
+
     fn output_ellipsis_text(omitted: usize) -> String {
         format!("… +{omitted} lines ({TRANSCRIPT_HINT})")
     }
@@ -261,19 +281,21 @@ impl ExecCell {
 
     fn exploring_display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut out: Vec<Line<'static>> = Vec::new();
-        out.push(Line::from(vec![
+        let mut header = vec![
             if self.is_active() {
                 activity_marker(self.active_start_time(), self.animations_enabled())
             } else {
                 "•".dim()
             },
             " ".into(),
-            if self.is_active() {
-                "Exploring".bold()
-            } else {
-                "Explored".bold()
-            },
-        ]));
+        ];
+        header.extend(self.attribution_spans());
+        header.push(if self.is_active() {
+            "Exploring".bold()
+        } else {
+            "Explored".bold()
+        });
+        out.push(Line::from(header));
 
         let mut calls = self.calls.clone();
         let mut out_indented = Vec::new();
@@ -384,11 +406,12 @@ impl ExecCell {
             "Ran"
         };
 
-        let mut header_line = if is_interaction {
-            Line::from(vec![bullet.clone(), " ".into()])
-        } else {
-            Line::from(vec![bullet.clone(), " ".into(), title.bold(), " ".into()])
-        };
+        let mut header_spans = vec![bullet.clone(), " ".into()];
+        header_spans.extend(self.attribution_spans());
+        if !is_interaction {
+            header_spans.extend([title.bold(), " ".into()]);
+        }
+        let mut header_line = Line::from(header_spans);
         let header_prefix_width = header_line.width();
 
         let cmd_display = if call.is_unified_exec_interaction() {

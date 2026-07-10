@@ -3,12 +3,14 @@
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
 use codex_protocol::parse_command::ParsedCommand;
 
+use crate::exec_cell::ExecCellAttribution;
 use crate::exec_command::split_command_string;
 
 pub(super) struct RunningCommand {
     pub(super) command: Vec<String>,
     pub(super) parsed_cmd: Vec<ParsedCommand>,
     pub(super) source: ExecCommandSource,
+    pub(super) attribution: ExecCellAttribution,
 }
 
 pub(super) struct UnifiedExecProcessSummary {

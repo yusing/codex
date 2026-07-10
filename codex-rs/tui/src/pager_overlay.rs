@@ -1224,6 +1224,7 @@ mod tests {
             vec![ParsedCommand::Unknown { cmd: "ls".into() }],
             ExecCommandSource::Agent,
             /*interaction_input*/ None,
+            crate::exec_cell::ExecCellAttribution::Unattributed,
             /*animations_enabled*/ true,
         );
         exec_cell.complete_call(

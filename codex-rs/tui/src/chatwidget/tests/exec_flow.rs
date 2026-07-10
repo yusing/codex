@@ -552,6 +552,37 @@ async fn exec_history_shows_unified_exec_tool_calls() {
 }
 
 #[tokio::test]
+async fn orchestrated_exec_cells_show_role_attribution() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_collaboration_mask(codex_protocol::config_types::CollaborationModeMask {
+        name: "Orchestrated".to_string(),
+        mode: Some(ModeKind::Orchestrated),
+        model: None,
+        reasoning_effort: None,
+        developer_instructions: None,
+    });
+    chat.on_task_started();
+
+    chat.set_active_orchestrated_role(Some("explorer".to_string()));
+    let explorer = begin_exec(&mut chat, "call-explorer", "ls");
+    end_exec(&mut chat, explorer, "", "", /*exit_code*/ 0);
+
+    chat.set_active_orchestrated_role(Some("worker".to_string()));
+    let worker = begin_exec(&mut chat, "call-worker", "cat README.md");
+    end_exec(&mut chat, worker, "", "", /*exit_code*/ 0);
+
+    chat.set_active_orchestrated_role(/*active_orchestrated_role*/ None);
+    let orchestrator = begin_exec(&mut chat, "call-orchestrator", "echo orchestrator");
+    end_exec(&mut chat, orchestrator, "", "", /*exit_code*/ 0);
+
+    let history = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<String>();
+    assert_chatwidget_snapshot!("orchestrated_exec_cells_show_role_attribution", history);
+}
+
+#[tokio::test]
 async fn unified_exec_unknown_end_with_active_exploring_cell_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();

@@ -4,8 +4,22 @@
 //! exec-cell grouping and unified exec wait state.
 
 use super::*;
+use crate::exec_cell::ExecCellAttribution;
 
 impl ChatWidget {
+    fn exec_cell_attribution(&self, source: ExecCommandSource) -> ExecCellAttribution {
+        if source == ExecCommandSource::UserShell
+            || self.active_mode_kind() != ModeKind::Orchestrated
+        {
+            return ExecCellAttribution::Unattributed;
+        }
+        ExecCellAttribution::OrchestratedRole(
+            self.active_orchestrated_role
+                .clone()
+                .unwrap_or_else(|| "orchestrator".to_string()),
+        )
+    }
+
     pub(super) fn flush_unified_exec_wait_streak(&mut self) {
         let Some(wait) = self.unified_exec_wait_streak.take() else {
             return;
@@ -256,12 +270,14 @@ impl ChatWidget {
         // Ensure the status indicator is visible while the command runs.
         self.bottom_pane.ensure_status_indicator();
         let parsed_cmd = self.annotate_skill_reads_in_parsed_cmd(parsed_cmd);
+        let attribution = self.exec_cell_attribution(source);
         self.running_commands.insert(
             id.clone(),
             RunningCommand {
                 command: command.clone(),
                 parsed_cmd: parsed_cmd.clone(),
                 source,
+                attribution: attribution.clone(),
             },
         );
         let is_wait_interaction = matches!(source, ExecCommandSource::UnifiedExecInteraction);
@@ -291,6 +307,7 @@ impl ChatWidget {
                 parsed_cmd.clone(),
                 source,
                 /*interaction_input*/ None,
+                attribution.clone(),
             )
         {
             *cell = new_exec;
@@ -304,6 +321,7 @@ impl ChatWidget {
                 parsed_cmd,
                 source,
                 /*interaction_input*/ None,
+                attribution,
                 self.config.animations,
             )));
             self.bump_active_cell_revision();
@@ -358,9 +376,12 @@ impl ChatWidget {
         if self.suppressed_exec_calls.remove(&id) {
             return;
         }
-        let (command, parsed, source) = match running {
-            Some(rc) => (rc.command, rc.parsed_cmd, rc.source),
-            None => (event_command, event_parsed, source),
+        let (command, parsed, source, attribution) = match running {
+            Some(rc) => (rc.command, rc.parsed_cmd, rc.source, rc.attribution),
+            None => {
+                let attribution = self.exec_cell_attribution(source);
+                (event_command, event_parsed, source, attribution)
+            }
         };
         let parsed = self.annotate_skill_reads_in_parsed_cmd(parsed);
         let is_unified_exec_interaction =
@@ -420,6 +441,7 @@ impl ChatWidget {
                     parsed,
                     source,
                     /*interaction_input*/ None,
+                    attribution,
                     self.config.animations,
                 );
                 let completed = orphan.complete_call(&id, output, duration);
@@ -437,6 +459,7 @@ impl ChatWidget {
                     parsed,
                     source,
                     /*interaction_input*/ None,
+                    attribution,
                     self.config.animations,
                 );
                 let completed = cell.complete_call(&id, output, duration);
