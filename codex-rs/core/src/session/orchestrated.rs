@@ -11,12 +11,15 @@ use crate::agent::role::WORKER_ROLE_NAME;
 use crate::client::ModelClientSession;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::tools::context::SharedTurnDiffTracker;
+use codex_config::Constrained;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::OrchestratedRoleUpdatedEvent;
 use codex_utils_output_truncation::approx_bytes_for_tokens;
@@ -62,6 +65,13 @@ pub(super) enum Outcome {
 struct PhasePacket {
     text: String,
     truncated: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum WorkerStatus {
+    Complete,
+    Incomplete,
+    Invalid,
 }
 
 impl Phase {
@@ -193,18 +203,53 @@ async fn run_phases(
     client_session: &mut ModelClientSession,
     cancellation_token: CancellationToken,
 ) -> CodexResult<()> {
-    for phase in [Phase::TaskContract, Phase::Explorer] {
-        let _ = run_phase(
-            Arc::clone(&sess),
-            Arc::clone(&turn_context),
-            Arc::clone(&turn_extension_data),
-            Arc::clone(&turn_diff_tracker),
-            phase,
-            client_session,
-            cancellation_token.child_token(),
-        )
-        .await?;
+    let task_contract = run_phase(
+        Arc::clone(&sess),
+        Arc::clone(&turn_context),
+        Arc::clone(&turn_extension_data),
+        Arc::clone(&turn_diff_tracker),
+        Phase::TaskContract,
+        client_session,
+        cancellation_token.child_token(),
+    )
+    .await?;
+    if !task_contract.truncated
+        && packet_has_status(&task_contract.text, TASK_CONTRACT_ROLE_NAME, "direct")
+    {
+        turn_context
+            .orchestrated_execution_approved
+            .store(true, Ordering::Relaxed);
+        for _ in 0..=MAX_WORK_REVISIONS {
+            let worker_packet = run_phase(
+                Arc::clone(&sess),
+                Arc::clone(&turn_context),
+                Arc::clone(&turn_extension_data),
+                Arc::clone(&turn_diff_tracker),
+                Phase::WorkerExec,
+                client_session,
+                cancellation_token.child_token(),
+            )
+            .await?;
+            if !worker_packet.truncated
+                && worker_status(&worker_packet.text) == WorkerStatus::Complete
+            {
+                break;
+            }
+        }
+        emit_role_update(&sess, &turn_context, None).await;
+        return Ok(());
     }
+
+    let _ = run_phase(
+        Arc::clone(&sess),
+        Arc::clone(&turn_context),
+        Arc::clone(&turn_extension_data),
+        Arc::clone(&turn_diff_tracker),
+        Phase::Explorer,
+        client_session,
+        cancellation_token.child_token(),
+    )
+    .await?;
 
     for _ in 0..=MAX_PLAN_REVISIONS {
         let worker_plan = run_phase(
@@ -268,6 +313,10 @@ async fn run_phases(
                     cancellation_token.child_token(),
                 )
                 .await?;
+                let worker_status = worker_status(&worker_packet.text);
+                if worker_packet.truncated || worker_status == WorkerStatus::Invalid {
+                    continue;
+                }
                 let review_packet = run_phase(
                     Arc::clone(&sess),
                     Arc::clone(&turn_context),
@@ -278,8 +327,7 @@ async fn run_phases(
                     cancellation_token.child_token(),
                 )
                 .await?;
-                if !worker_packet.truncated
-                    && worker_completed(&worker_packet.text)
+                if worker_status == WorkerStatus::Complete
                     && !review_packet.truncated
                     && review_approved(&review_packet.text, RESULT_REVIEW_ROLE_NAME)
                 {
@@ -302,12 +350,18 @@ fn review_requests_evidence(packet: &str) -> bool {
     packet_has_status(packet, PLAN_REVIEW_ROLE_NAME, "evidence-needed")
 }
 
-fn worker_completed(packet: &str) -> bool {
+fn worker_status(packet: &str) -> WorkerStatus {
     let packet = packet
         .strip_prefix("orc:")
         .map(str::trim_start)
         .unwrap_or(packet);
-    packet_has_status(packet, WORKER_ROLE_NAME, "complete")
+    if packet_has_status(packet, WORKER_ROLE_NAME, "complete") {
+        WorkerStatus::Complete
+    } else if packet_has_status(packet, WORKER_ROLE_NAME, "incomplete") {
+        WorkerStatus::Incomplete
+    } else {
+        WorkerStatus::Invalid
+    }
 }
 
 fn packet_has_status(packet: &str, role: &str, status: &str) -> bool {
@@ -371,6 +425,10 @@ async fn run_phase(
         .await;
     role_turn_context.orchestrated_role = Some(phase.name());
     role_turn_context.final_output_json_schema = None;
+    if matches!(phase, Phase::Explorer | Phase::PlanEvidence) {
+        role_turn_context.approval_policy = Constrained::allow_only(AskForApproval::Never);
+        role_turn_context.permission_profile = PermissionProfile::read_only();
+    }
     if let Some(reasoning_effort) = phase.reasoning_effort_override(&root_turn_context) {
         role_turn_context.reasoning_effort = Some(reasoning_effort);
         role_turn_context.collaboration_mode = role_turn_context.collaboration_mode.with_updates(

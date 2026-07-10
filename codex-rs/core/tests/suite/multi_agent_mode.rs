@@ -4,7 +4,6 @@ use codex_core::config::Constrained;
 use codex_features::Feature;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
-use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -16,7 +15,6 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use codex_utils_output_truncation::approx_token_count;
@@ -382,6 +380,177 @@ async fn orchestrated_mode_accepts_orchestrator_prefix_on_completed_worker_packe
         count_containing(
             &developer_texts(&requests[6].input()),
             "You are the orchestrator role for the remainder of this Orchestrated-mode turn.",
+        ),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_runs_direct_contract_without_planning_or_review() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse(
+                "resp-contract",
+                "task-contract: direct\nfix the already-proven documentation mismatch",
+            ),
+            assistant_sse(
+                "resp-worker",
+                "worker: complete\ndocumentation fixed and verified",
+            ),
+            assistant_sse("resp-orchestrator", "orc: Complete."),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(configure_multi_agent_v2)
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_orchestrated_user_input(&test, "fix".to_string()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[1].input()),
+            "You are the worker-execution phase in Orchestrated mode.",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[2].input()),
+            "You are the orchestrator role for the remainder of this Orchestrated-mode turn.",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[2].input()),
+            "only when the latest worker packet begins `worker: complete` and is not marked truncated",
+        ),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_retries_malformed_worker_before_result_review() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse("resp-contract", "task-contract: update repository"),
+            assistant_sse("resp-explorer", "explorer: repository inspected"),
+            assistant_sse("resp-worker-plan", "worker-plan: update safely"),
+            assistant_sse("resp-plan-review", "plan-review: approved"),
+            assistant_sse("resp-worker-malformed", "orc: repository updated"),
+            assistant_sse(
+                "resp-worker-complete",
+                "worker: complete\nrepository updated and verified",
+            ),
+            assistant_sse("resp-result-review", "result-review: approved"),
+            assistant_sse("resp-orchestrator", "orc: Complete."),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(configure_multi_agent_v2)
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_orchestrated_user_input(&test, "update repository".to_string()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 8);
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[5].input()),
+            "You are the worker-execution phase in Orchestrated mode.",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[6].input()),
+            "You are the orchestrator result-review phase in Orchestrated mode.",
+        ),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_does_not_approve_exhausted_direct_worker_retries() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let oversized_worker_packet = format!("worker: complete\n{}", "details ".repeat(2_000));
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse("resp-contract", "task-contract: direct\nfix known typo"),
+            assistant_sse("resp-worker-truncated", &oversized_worker_packet),
+            assistant_sse("resp-worker-malformed", "orc: fixed"),
+            assistant_sse(
+                "resp-worker-incomplete",
+                "worker: incomplete\nverification failed",
+            ),
+            assistant_sse("resp-orchestrator", "orc: Work was not completed."),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(configure_multi_agent_v2)
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_orchestrated_user_input(&test, "fix".to_string()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 5);
+    for request in requests.iter().take(4).skip(1) {
+        assert_eq!(
+            count_containing(
+                &developer_texts(&request.input()),
+                "You are the worker-execution phase in Orchestrated mode.",
+            ),
+            1
+        );
+    }
+    assert_eq!(
+        count_containing(
+            &message_texts(&requests[4].input(), "assistant"),
+            "[packet truncated: phase output exceeded the 8192-byte hard limit]",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[4].input()),
+            "only when the latest worker packet begins `worker: complete` and is not marked truncated",
         ),
         1
     );
@@ -1229,14 +1398,6 @@ async fn orchestrated_mode_revises_plan_before_worker_execution() -> Result<()> 
                 ev_completed("resp-gate-worker-2"),
             ]),
             sse(vec![
-                ev_response_created("resp-gate-result-review-2"),
-                ev_assistant_message(
-                    "msg-gate-result-review-2",
-                    "result-review: approved; but worker packet was truncated",
-                ),
-                ev_completed("resp-gate-result-review-2"),
-            ]),
-            sse(vec![
                 ev_response_created("resp-gate-worker-3"),
                 ev_assistant_message("msg-gate-worker-3", "worker: complete; required tests pass"),
                 ev_completed("resp-gate-worker-3"),
@@ -1266,7 +1427,7 @@ async fn orchestrated_mode_revises_plan_before_worker_execution() -> Result<()> 
     .await;
 
     let requests = responses.requests();
-    assert_eq!(requests.len(), 13);
+    assert_eq!(requests.len(), 12);
     for request in requests.iter().take(6) {
         assert_eq!(
             count_containing(
@@ -1302,14 +1463,14 @@ async fn orchestrated_mode_revises_plan_before_worker_execution() -> Result<()> 
     );
     assert_eq!(
         count_containing(
-            &message_texts(&requests[10].input(), "assistant"),
+            &message_texts(&requests[9].input(), "assistant"),
             "[packet truncated: phase output exceeded the 8192-byte hard limit]",
         ),
         1
     );
     assert_eq!(
         count_containing(
-            &message_texts(&requests[12].input(), "assistant"),
+            &message_texts(&requests[11].input(), "assistant"),
             "result-review: approved; complete",
         ),
         1
@@ -1555,44 +1716,33 @@ async fn orchestrated_mode_explorer_can_run_shell_command() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn orchestrated_mode_explorer_respects_shell_permission_modes() -> Result<()> {
+async fn orchestrated_mode_explorer_is_read_only_across_parent_permission_modes() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
 
-    for (mode, approval_policy, permission_profile, reviewer) in [
+    for (mode, approval_policy, permission_profile) in [
         (
             "ask",
             AskForApproval::OnRequest,
             PermissionProfile::read_only(),
-            ApprovalsReviewer::User,
         ),
         (
-            "auto-review",
+            "workspace",
             AskForApproval::OnRequest,
-            PermissionProfile::read_only(),
-            ApprovalsReviewer::AutoReview,
+            PermissionProfile::workspace_write(),
         ),
-        (
-            "yolo",
-            AskForApproval::Never,
-            PermissionProfile::Disabled,
-            ApprovalsReviewer::User,
-        ),
+        ("yolo", AskForApproval::Never, PermissionProfile::Disabled),
     ] {
         let server = start_mock_server().await;
         let call_id = format!("explorer-{mode}-shell");
         let output_file = format!("explorer_{mode}_shell.txt");
-        let mut args = json!({
+        let args = json!({
             "cmd": format!("echo {mode} > {output_file}"),
             "yield_time_ms": 1000,
         });
-        if approval_policy == AskForApproval::OnRequest {
-            args["sandbox_permissions"] = json!("require_escalated");
-            args["justification"] = json!("Exercise configured approval routing.");
-        }
         let contract_response = format!("resp-contract-{mode}-shell");
         let explorer_response = format!("resp-explorer-{mode}-shell");
-        let mut response_sequence = vec![
+        let response_sequence = vec![
             sse(vec![
                 ev_response_created(&contract_response),
                 ev_assistant_message(
@@ -1606,24 +1756,6 @@ async fn orchestrated_mode_explorer_respects_shell_permission_modes() -> Result<
                 ev_function_call(&call_id, "exec_command", &serde_json::to_string(&args)?),
                 ev_completed(&explorer_response),
             ]),
-        ];
-        if reviewer == ApprovalsReviewer::AutoReview {
-            response_sequence.push(sse(vec![
-                ev_response_created("resp-guardian-shell"),
-                ev_assistant_message(
-                    "msg-guardian-shell",
-                    &json!({
-                        "risk_level": "high",
-                        "user_authorization": "low",
-                        "outcome": "deny",
-                        "rationale": "The explorer write should be denied by Auto Review.",
-                    })
-                    .to_string(),
-                ),
-                ev_completed("resp-guardian-shell"),
-            ]));
-        }
-        response_sequence.extend([
             sse(vec![
                 ev_assistant_message("msg-explorer-shell", "explorer: shell complete"),
                 ev_completed("resp-explorer-shell-complete"),
@@ -1648,15 +1780,14 @@ async fn orchestrated_mode_explorer_respects_shell_permission_modes() -> Result<
                 ev_assistant_message("msg-root-shell", "orc: done"),
                 ev_completed("resp-root-shell"),
             ]),
-        ]);
+        ];
         let responses = mount_sse_sequence(&server, response_sequence).await;
-        let permission_profile_for_config = permission_profile.clone();
         let test = test_codex()
             .with_config(move |config| {
                 config.permissions.approval_policy = Constrained::allow_any(approval_policy);
                 config
                     .permissions
-                    .set_permission_profile(permission_profile_for_config)
+                    .set_permission_profile(permission_profile)
                     .expect("set permission profile");
                 config
                     .features
@@ -1666,69 +1797,38 @@ async fn orchestrated_mode_explorer_respects_shell_permission_modes() -> Result<
             .build_with_auto_env(&server)
             .await?;
 
-        test.codex
-            .submit(Op::UserInput {
-                items: vec![UserInput::Text {
-                    text: format!("respect {mode} shell permissions"),
-                    text_elements: Vec::new(),
-                }],
-                final_output_json_schema: None,
-                responsesapi_client_metadata: None,
-                additional_context: Default::default(),
-                thread_settings: ThreadSettingsOverrides {
-                    approvals_reviewer: Some(reviewer),
-                    collaboration_mode: Some(CollaborationMode {
-                        mode: ModeKind::Orchestrated,
-                        settings: Settings {
-                            model: test.session_configured.model.clone(),
-                            reasoning_effort: Some(ReasoningEffort::High),
-                            developer_instructions: None,
-                        },
-                    }),
-                    effort: Some(Some(ReasoningEffort::High)),
-                    ..Default::default()
-                },
-            })
-            .await?;
+        submit_orchestrated_user_input(&test, format!("respect {mode} shell permissions")).await?;
 
-        if reviewer == ApprovalsReviewer::User && approval_policy == AskForApproval::OnRequest {
-            let approval_event = wait_for_event(&test.codex, |event| {
-                matches!(
-                    event,
-                    EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
-                )
-            })
-            .await;
-            let EventMsg::ExecApprovalRequest(approval) = approval_event else {
-                panic!("expected user approval request before completion");
-            };
-            assert_eq!(approval.call_id, call_id);
-            test.codex
-                .submit(Op::ExecApproval {
-                    id: approval.effective_approval_id(),
-                    turn_id: None,
-                    decision: ReviewDecision::Approved,
-                })
-                .await?;
-        }
         wait_for_event(&test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })
         .await;
 
-        let output_path = test.workspace_path(&output_file);
-        if reviewer == ApprovalsReviewer::AutoReview {
-            assert!(
-                !output_path.exists(),
-                "Auto Review should deny explorer write"
-            );
-            let output = responses
-                .function_call_output_text(&call_id)
-                .expect("Auto Review denial should be returned to explorer");
-            assert!(output.contains("explorer write should be denied"));
-        } else {
-            assert_eq!(std::fs::read_to_string(output_path)?, format!("{mode}\n"));
-        }
+        let output_uri = test
+            .executor_environment()
+            .selection()
+            .cwd
+            .join(&output_file)?;
+        assert!(
+            test.fs()
+                .read_file_text(&output_uri, /*sandbox*/ None)
+                .await
+                .is_err(),
+            "explorer write should fail for parent permission mode {mode}"
+        );
+        let output = responses
+            .function_call_output_text(&call_id)
+            .expect("explorer should receive failed command output");
+        let exit_code = output
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("Exit code: "))
+            .and_then(|exit_code| exit_code.trim().parse::<i32>().ok());
+        assert_ne!(
+            exit_code,
+            Some(0),
+            "explorer write should return a failing exit code: {output}"
+        );
     }
 
     Ok(())
@@ -1739,9 +1839,10 @@ async fn orchestrated_mode_gathers_bounded_plan_evidence_before_approval() -> Re
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let call_id = "plan-evidence-read-shell";
+    let call_id = "plan-evidence-write-shell";
+    let output_file = "plan_evidence_write.txt";
     let args = serde_json::to_string(&json!({
-        "cmd": "echo plan_evidence_marker",
+        "cmd": format!("echo plan_evidence_marker > {output_file}"),
         "yield_time_ms": 1000,
     }))?;
     let evidence_packet = "plan-evidence: complete\nquery: ResolveArguments\nscope: internal/recipe\ntotal: 1\nreturned: 1\nomitted: 0\ninternal/recipe/recipe.go:951";
@@ -1789,6 +1890,11 @@ async fn orchestrated_mode_gathers_bounded_plan_evidence_before_approval() -> Re
     let test = test_codex()
         .with_config(|config| {
             configure_multi_agent_v2(config);
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::Disabled)
+                .expect("set permission profile");
             config.orchestrated_mode.explorer_model = Some("gpt-5.4-mini".to_string());
             config.orchestrated_mode.explorer_reasoning_effort = Some(ReasoningEffort::Low);
         })
@@ -1831,7 +1937,31 @@ async fn orchestrated_mode_gathers_bounded_plan_evidence_before_approval() -> Re
         ),
         1
     );
-    requests[5].function_call_output(call_id);
+    let output = requests[5]
+        .function_call_output_text(call_id)
+        .expect("plan evidence should receive failed command output");
+    let exit_code = output
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("Exit code: "))
+        .and_then(|exit_code| exit_code.trim().parse::<i32>().ok());
+    assert_ne!(
+        exit_code,
+        Some(0),
+        "plan-evidence write should return a failing exit code: {output}"
+    );
+    let output_uri = test
+        .executor_environment()
+        .selection()
+        .cwd
+        .join(output_file)?;
+    assert!(
+        test.fs()
+            .read_file_text(&output_uri, /*sandbox*/ None)
+            .await
+            .is_err(),
+        "plan evidence should remain read-only under a permissive parent profile"
+    );
 
     let second_review = requests[6].body_json();
     assert_eq!(request_tool_names(&second_review), Vec::<String>::new());
