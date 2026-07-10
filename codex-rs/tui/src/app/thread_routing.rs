@@ -369,7 +369,11 @@ impl App {
             return;
         }
         self.chat_widget
-            .add_to_history(history_cell::new_patch_event(changes.clone(), cwd));
+            .add_to_history(history_cell::new_patch_event(
+                changes.clone(),
+                cwd,
+                history_cell::PatchAttribution::Unattributed,
+            ));
     }
 
     pub(super) async fn pending_inactive_thread_requests(&self) -> Vec<(ThreadId, ServerRequest)> {

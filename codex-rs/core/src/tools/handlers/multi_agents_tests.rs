@@ -27,6 +27,7 @@ use codex_model_provider_info::built_in_model_providers;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::models::BaseInstructions;
@@ -4535,6 +4536,69 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
         .set_permission_profile(permission_profile)
         .expect("permission profile set");
     assert_eq!(config, expected);
+}
+
+#[tokio::test]
+async fn orchestrated_leaf_spawn_resolves_model_pair_without_nested_orchestration() {
+    let (_session, mut turn) = make_session_and_context().await;
+    turn.collaboration_mode.mode = ModeKind::Orchestrated;
+    let mut parent_config = (*turn.config).clone();
+    parent_config.orchestrated_mode.worker_model = Some("gpt-worker".to_string());
+    parent_config.orchestrated_mode.worker_reasoning_effort = Some(ReasoningEffort::Medium);
+    turn.config = Arc::new(parent_config);
+
+    let mut child_config = build_agent_spawn_config(
+        &BaseInstructions {
+            text: "base".to_string(),
+        },
+        &turn,
+    )
+    .expect("spawn config");
+    let (model, reasoning_effort) = orchestrated_leaf_model_overrides(
+        &turn,
+        Some(crate::agent::role::WORKER_ROLE_NAME),
+        /*requested_model*/ None,
+        /*requested_reasoning_effort*/ None,
+    );
+    assert_eq!(model.as_deref(), Some("gpt-worker"));
+    assert_eq!(reasoning_effort, Some(ReasoningEffort::Medium));
+    assert_eq!(
+        orchestrated_leaf_model_overrides(
+            &turn,
+            Some(crate::agent::role::WORKER_ROLE_NAME),
+            Some("requested-model"),
+            /*requested_reasoning_effort*/ None,
+        ),
+        (
+            Some("requested-model".to_string()),
+            Some(ReasoningEffort::Medium),
+        )
+    );
+    assert_eq!(
+        orchestrated_leaf_model_overrides(
+            &turn,
+            Some(crate::agent::role::WORKER_ROLE_NAME),
+            /*requested_model*/ None,
+            Some(ReasoningEffort::High),
+        ),
+        (Some("gpt-worker".to_string()), Some(ReasoningEffort::High))
+    );
+    child_config.model = model;
+    child_config.model_reasoning_effort = reasoning_effort;
+    assert_eq!(
+        inherited_spawn_collaboration_mode(
+            &turn,
+            &child_config,
+            Some(crate::agent::role::WORKER_ROLE_NAME),
+        ),
+        None
+    );
+    assert_eq!(
+        inherited_spawn_collaboration_mode(&turn, &child_config, /*agent_role*/ None)
+            .expect("untyped child should inherit orchestration")
+            .mode,
+        ModeKind::Orchestrated
+    );
 }
 
 #[tokio::test]

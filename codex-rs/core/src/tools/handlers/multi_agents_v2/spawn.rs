@@ -71,12 +71,18 @@ async fn handle_spawn_agent(
             args.reasoning_effort.clone(),
         )?;
     } else {
+        let (model, reasoning_effort) = orchestrated_leaf_model_overrides(
+            turn.as_ref(),
+            role_name,
+            args.model.as_deref(),
+            args.reasoning_effort.clone(),
+        );
         apply_requested_spawn_agent_model_overrides(
             &session,
             turn.as_ref(),
             &mut config,
-            args.model.as_deref(),
-            args.reasoning_effort.clone(),
+            model.as_deref(),
+            reasoning_effort,
         )
         .await?;
         apply_role_to_config(&mut config, role_name)
@@ -91,7 +97,7 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
-    let collaboration_mode = inherited_spawn_collaboration_mode(turn.as_ref(), &config);
+    let collaboration_mode = inherited_spawn_collaboration_mode(turn.as_ref(), &config, role_name);
 
     let spawn_source = thread_spawn_source(
         session.thread_id,

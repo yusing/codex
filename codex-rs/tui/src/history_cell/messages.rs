@@ -2,32 +2,38 @@
 
 use super::*;
 
-const ORCHESTRATOR_PROTOCOL_PREFIX: &str = "orc:";
-const ORCHESTRATOR_DISPLAY_LABEL: &str = "Orchestrator";
-
-fn style_orchestrator_prefix(line: &mut HyperlinkLine) {
+fn style_orchestrated_prefix(line: &mut HyperlinkLine) {
     let Some(first_span) = line.line.spans.first() else {
         return;
     };
-    let Some(remainder) = first_span
-        .content
-        .strip_prefix(ORCHESTRATOR_PROTOCOL_PREFIX)
+    let Some((role, remainder)) = crate::orchestrated_role::packet_role_prefix(&first_span.content)
     else {
         return;
     };
 
     let trimmed_remainder = remainder.trim_start();
-    let removed_width = ORCHESTRATOR_PROTOCOL_PREFIX.width()
-        + remainder[..remainder.len() - trimmed_remainder.len()].width();
+    let protocol_prefix_width = first_span.content.width() - remainder.width();
+    let removed_width =
+        protocol_prefix_width + remainder[..remainder.len() - trimmed_remainder.len()].width();
+    let role_label = crate::orchestrated_role::role_label(role);
+    let has_separator = trimmed_remainder.len() != remainder.len();
     let replacement_width =
-        ORCHESTRATOR_DISPLAY_LABEL.width() + usize::from(!trimmed_remainder.is_empty());
-    let offset = replacement_width - removed_width;
+        role_label.width() + usize::from(!trimmed_remainder.is_empty() || has_separator);
+    let offset = replacement_width as isize - removed_width as isize;
     for hyperlink in &mut line.hyperlinks {
-        hyperlink.columns = hyperlink.columns.start + offset..hyperlink.columns.end + offset;
+        hyperlink.columns = if offset.is_negative() {
+            let offset = offset.unsigned_abs();
+            hyperlink.columns.start - offset..hyperlink.columns.end - offset
+        } else {
+            let offset = offset as usize;
+            hyperlink.columns.start + offset..hyperlink.columns.end + offset
+        };
     }
-    let mut spans = vec![ORCHESTRATOR_DISPLAY_LABEL.magenta().bold()];
-    if !trimmed_remainder.is_empty() {
+    let mut spans = vec![role_label];
+    if !trimmed_remainder.is_empty() || has_separator {
         spans.push(" ".into());
+    }
+    if !trimmed_remainder.is_empty() {
         spans.push(Span::styled(
             trimmed_remainder.to_string(),
             first_span.style,
@@ -355,7 +361,7 @@ impl HistoryCell for AgentMessageCell {
         if self.is_first_line
             && let Some(first_line) = lines.first_mut()
         {
-            style_orchestrator_prefix(first_line);
+            style_orchestrated_prefix(first_line);
         }
         let mut wrapped = Vec::new();
         for (index, line) in lines.iter().enumerate() {
@@ -447,7 +453,7 @@ impl HistoryCell for AgentMarkdownCell {
         );
         let mut lines = lines;
         if let Some(first_line) = lines.first_mut() {
-            style_orchestrator_prefix(first_line);
+            style_orchestrated_prefix(first_line);
         }
         prefix_hyperlink_lines(lines, "• ".dim(), "  ".into())
     }
@@ -493,7 +499,7 @@ impl HistoryCell for StreamingAgentTailCell {
         if self.is_first_line
             && let Some(first_line) = source_lines.first_mut()
         {
-            style_orchestrator_prefix(first_line);
+            style_orchestrated_prefix(first_line);
         }
         let mut lines = prefix_hyperlink_lines(
             source_lines,

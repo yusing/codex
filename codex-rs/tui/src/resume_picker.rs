@@ -5794,7 +5794,7 @@ session_picker_view = "dense"
                     },
                     ThreadItem::AgentMessage {
                         id: String::from("agent-1"),
-                        text: String::from("hello from assistant"),
+                        text: String::from("orc: [documentation](https://example.com)"),
                         phase: None,
                         memory_citation: None,
                     },
@@ -5811,7 +5811,23 @@ session_picker_view = "dense"
             }],
         };
 
-        let rendered = thread_to_transcript_cells(&thread, RawReasoningVisibility::Visible)
+        let cells = thread_to_transcript_cells(&thread, RawReasoningVisibility::Visible);
+        let agent_lines = cells[1].transcript_hyperlink_lines(/*width*/ 80);
+        assert!(
+            agent_lines[0]
+                .line
+                .to_string()
+                .starts_with("• Orchestrator documentation")
+        );
+        let link_start = UnicodeWidthStr::width("• Orchestrator ");
+        assert!(agent_lines[0].hyperlinks.contains(
+            &crate::terminal_hyperlinks::TerminalHyperlink {
+                columns: link_start..link_start + UnicodeWidthStr::width("documentation"),
+                destination: "https://example.com".to_string(),
+            }
+        ));
+
+        let rendered = cells
             .into_iter()
             .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
             .map(|line| line.to_string())
@@ -5819,7 +5835,7 @@ session_picker_view = "dense"
             .join("\n");
 
         assert!(rendered.contains("hello from user"));
-        assert!(rendered.contains("hello from assistant"));
+        assert!(rendered.contains("Orchestrator documentation"));
         assert!(rendered.contains("Proposed Plan"));
         assert!(rendered.contains("Do the thing"));
     }

@@ -2,6 +2,7 @@ use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::EXPLORER_ROLE_NAME;
 use crate::agent::role::PLAN_REVIEW_ROLE_NAME;
+use crate::agent::role::RESULT_REVIEW_ROLE_NAME;
 use crate::agent::role::TASK_CONTRACT_ROLE_NAME;
 use crate::agent::role::WORKER_PLAN_ROLE_NAME;
 use crate::agent::role::WORKER_ROLE_NAME;
@@ -198,7 +199,10 @@ fn build_tool_specs_and_registry(
     add_tool_sources(&context, &mut planned_tools);
     apply_direct_model_only_namespace_overrides(turn_context, &mut planned_tools);
     append_tool_search_executor(&context, &mut planned_tools);
-    if !orchestrated_phase_has_no_tools(turn_context.orchestrated_role) {
+    if !(orchestrated_phase_has_no_tools(turn_context.orchestrated_role)
+        || turn_context.collaboration_mode.mode == ModeKind::Orchestrated
+            && turn_context.orchestrated_role.is_none())
+    {
         prepend_code_mode_executors(&context, &mut planned_tools);
     }
     build_model_visible_specs_and_registry(turn_context, planned_tools)
@@ -613,10 +617,13 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
 
     if turn_context.collaboration_mode.mode == ModeKind::Orchestrated
         && turn_context.orchestrated_role.is_none()
-        && !turn_context
+    {
+        if turn_context
             .orchestrated_execution_approved
             .load(Ordering::Relaxed)
-    {
+        {
+            add_collaboration_tools(context, planned_tools);
+        }
         return;
     }
 
@@ -645,7 +652,12 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
 fn orchestrated_phase_has_no_tools(role: Option<&str>) -> bool {
     matches!(
         role,
-        Some(TASK_CONTRACT_ROLE_NAME | WORKER_PLAN_ROLE_NAME | PLAN_REVIEW_ROLE_NAME)
+        Some(
+            TASK_CONTRACT_ROLE_NAME
+                | WORKER_PLAN_ROLE_NAME
+                | PLAN_REVIEW_ROLE_NAME
+                | RESULT_REVIEW_ROLE_NAME
+        )
     )
 }
 

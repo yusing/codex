@@ -2510,36 +2510,130 @@ fn agent_markdown_cell_renders_source_at_different_widths() {
 }
 
 #[test]
-fn agent_messages_render_orchestrator_prefix_as_a_styled_label() {
-    let cell = AgentMarkdownCell::new(
-        "orc: reviewing the completed work\n".to_string(),
+fn agent_messages_render_orchestrated_prefixes_as_styled_labels() {
+    let messages = [
+        (
+            "task-contract: task constraints",
+            "Task Contract",
+            Color::Cyan,
+        ),
+        ("explorer: repository evidence", "Explorer", Color::Cyan),
+        ("worker-plan: intended change", "Worker Plan", Color::Cyan),
+        ("plan-review: revise the plan", "Plan Review", Color::Cyan),
+        (
+            "result-review: approve the result",
+            "Result Review",
+            Color::Magenta,
+        ),
+        ("worker: verification passed", "Worker", Color::Cyan),
+        ("orc: completed work", "Orchestrator", Color::Magenta),
+    ];
+    let rendered = messages
+        .iter()
+        .map(|(message, label, color)| {
+            let cell = AgentMarkdownCell::new(format!("{message}\n"), &test_cwd());
+            let lines = cell.display_lines(/*width*/ 80);
+            assert_eq!(lines[0].spans[1].content, *label);
+            assert_eq!(lines[0].spans[1].style.fg, Some(*color));
+            assert!(
+                lines[0].spans[1]
+                    .style
+                    .add_modifier
+                    .contains(Modifier::BOLD)
+            );
+            render_lines(&lines).join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    insta::assert_snapshot!(rendered, @"
+• Task Contract task constraints
+• Explorer repository evidence
+• Worker Plan intended change
+• Plan Review revise the plan
+• Result Review approve the result
+• Worker verification passed
+• Orchestrator completed work
+");
+}
+
+fn role_prefixed_link_line(prefix: &str) -> HyperlinkLine {
+    let text = format!("{prefix} documentation");
+    let link_start = prefix.width() + 1;
+    HyperlinkLine {
+        line: Line::from(text),
+        hyperlinks: vec![crate::terminal_hyperlinks::TerminalHyperlink {
+            columns: link_start..link_start + "documentation".width(),
+            destination: "https://example.com".to_string(),
+        }],
+    }
+}
+
+fn assert_role_prefixed_link(lines: Vec<HyperlinkLine>, label: &str, color: Color) {
+    assert_eq!(lines.len(), 1);
+    let line = &lines[0];
+    assert_eq!(line.line.spans[1].content, label);
+    assert_eq!(line.line.spans[1].style.fg, Some(color));
+    let link_start = format!("• {label} ").width();
+    assert!(
+        line.hyperlinks
+            .contains(&crate::terminal_hyperlinks::TerminalHyperlink {
+                columns: link_start..link_start + "documentation".width(),
+                destination: "https://example.com".to_string(),
+            })
+    );
+}
+
+#[test]
+fn agent_messages_keep_links_aligned_after_styling_orchestrated_prefix() {
+    for (prefix, label, color) in [
+        ("worker:", "Worker", Color::Cyan),
+        ("orc:", "Orchestrator", Color::Magenta),
+    ] {
+        let line = role_prefixed_link_line(prefix);
+        let completed = AgentMarkdownCell::new(
+            format!("{prefix} [documentation](https://example.com)\n"),
+            &test_cwd(),
+        );
+        assert_role_prefixed_link(
+            completed.display_hyperlink_lines(/*width*/ 80),
+            label,
+            color,
+        );
+
+        let streamed =
+            AgentMessageCell::new_hyperlink_lines(vec![line.clone()], /*is_first_line*/ true);
+        assert_role_prefixed_link(streamed.display_hyperlink_lines(/*width*/ 80), label, color);
+
+        let tail = StreamingAgentTailCell::new(vec![line], /*is_first_line*/ true);
+        assert_role_prefixed_link(tail.display_hyperlink_lines(/*width*/ 80), label, color);
+    }
+}
+
+#[test]
+fn orchestrated_patch_history_shows_role_attribution() {
+    let changes = HashMap::from([(
+        PathBuf::from("handler.rs"),
+        FileChange::Update {
+            unified_diff: String::new(),
+            move_path: None,
+        },
+    )]);
+    let cell = new_patch_event(
+        changes,
         &test_cwd(),
+        PatchAttribution::OrchestratedRole("worker".to_string()),
     );
 
     let lines = cell.display_lines(/*width*/ 80);
-    insta::assert_snapshot!(render_lines(&lines).join("\n"), @"• Orchestrator reviewing the completed work");
-    assert_eq!(lines[0].spans[1].content, "Orchestrator");
-    assert_eq!(lines[0].spans[1].style.fg, Some(Color::Magenta));
+    insta::assert_snapshot!(render_lines(&lines).join("\n"), @"• Worker · Edited handler.rs (+0 -0)");
+    assert_eq!(lines[0].spans[1].content, "Worker");
+    assert_eq!(lines[0].spans[1].style.fg, Some(Color::Cyan));
     assert!(
         lines[0].spans[1]
             .style
             .add_modifier
             .contains(Modifier::BOLD)
-    );
-}
-
-#[test]
-fn agent_messages_keep_links_aligned_after_styling_orchestrator_prefix() {
-    let cell = AgentMarkdownCell::new(
-        "orc: [documentation](https://example.com)\n".to_string(),
-        &test_cwd(),
-    );
-
-    let lines = cell.display_hyperlink_lines(/*width*/ 80);
-    let link_start = "• Orchestrator ".width();
-    assert_eq!(
-        lines[0].hyperlinks[0].columns,
-        link_start..link_start + "documentation".width()
     );
 }
 

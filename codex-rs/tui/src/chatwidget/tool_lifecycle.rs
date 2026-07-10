@@ -9,7 +9,20 @@ use codex_utils_path_uri::LegacyAppPathString;
 impl ChatWidget {
     pub(super) fn on_patch_apply_begin(&mut self, changes: HashMap<PathBuf, FileChange>) {
         self.record_visible_turn_activity();
-        self.add_to_history(history_cell::new_patch_event(changes, &self.config.cwd));
+        let attribution = if self.active_mode_kind() == ModeKind::Orchestrated {
+            history_cell::PatchAttribution::OrchestratedRole(
+                self.active_orchestrated_role
+                    .clone()
+                    .unwrap_or_else(|| "orchestrator".to_string()),
+            )
+        } else {
+            history_cell::PatchAttribution::Unattributed
+        };
+        self.add_to_history(history_cell::new_patch_event(
+            changes,
+            &self.config.cwd,
+            attribution,
+        ));
     }
 
     pub(super) fn on_view_image_tool_call(&mut self, path: LegacyAppPathString) {

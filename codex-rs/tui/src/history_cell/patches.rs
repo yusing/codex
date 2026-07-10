@@ -3,23 +3,43 @@
 use super::*;
 use codex_utils_path_uri::LegacyAppPathString;
 
+#[derive(Debug, Default)]
+pub(crate) enum PatchAttribution {
+    #[default]
+    Unattributed,
+    OrchestratedRole(String),
+}
+
 #[derive(Debug)]
 pub(crate) struct PatchHistoryCell {
     changes: HashMap<PathBuf, FileChange>,
     cwd: PathBuf,
+    attribution: PatchAttribution,
+}
+
+impl PatchHistoryCell {
+    fn summary_lines(&self, width: usize) -> Vec<Line<'static>> {
+        let mut lines = create_diff_summary(&self.changes, &self.cwd, width);
+        let PatchAttribution::OrchestratedRole(role) = &self.attribution else {
+            return lines;
+        };
+        if let Some(header) = lines.first_mut() {
+            header.spans.insert(1, " · ".dim());
+            header
+                .spans
+                .insert(1, crate::orchestrated_role::role_label(role));
+        }
+        lines
+    }
 }
 
 impl HistoryCell for PatchHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        create_diff_summary(&self.changes, &self.cwd, width as usize)
+        self.summary_lines(width as usize)
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        plain_lines(create_diff_summary(
-            &self.changes,
-            &self.cwd,
-            RAW_DIFF_SUMMARY_WIDTH,
-        ))
+        plain_lines(self.summary_lines(RAW_DIFF_SUMMARY_WIDTH))
     }
 }
 /// Create a new `PendingPatch` cell that lists the file‑level summary of
@@ -28,10 +48,12 @@ impl HistoryCell for PatchHistoryCell {
 pub(crate) fn new_patch_event(
     changes: HashMap<PathBuf, FileChange>,
     cwd: &Path,
+    attribution: PatchAttribution,
 ) -> PatchHistoryCell {
     PatchHistoryCell {
         changes,
         cwd: cwd.to_path_buf(),
+        attribution,
     }
 }
 

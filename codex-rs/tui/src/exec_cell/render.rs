@@ -259,21 +259,7 @@ impl ExecCell {
         let ExecCellAttribution::OrchestratedRole(role) = &self.attribution else {
             return Vec::new();
         };
-        let label = match role.as_str() {
-            "task-contract" => "Task contract",
-            "explorer" => "Explorer",
-            "worker-plan" => "Worker plan",
-            "plan-review" => "Plan review",
-            "worker" => "Worker",
-            "orchestrator" => "Orchestrator",
-            role => role,
-        };
-        let label = if role == "orchestrator" {
-            label.to_string().magenta()
-        } else {
-            label.to_string().cyan()
-        };
-        vec![label, " · ".dim()]
+        vec![crate::orchestrated_role::role_label(role), " · ".dim()]
     }
 
     fn output_ellipsis_text(omitted: usize) -> String {

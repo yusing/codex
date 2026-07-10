@@ -533,6 +533,7 @@ async fn pre_execution_orchestrated_phases_have_no_tools() {
         super::TASK_CONTRACT_ROLE_NAME,
         super::WORKER_PLAN_ROLE_NAME,
         super::PLAN_REVIEW_ROLE_NAME,
+        super::RESULT_REVIEW_ROLE_NAME,
     ] {
         let plan = probe(|turn| {
             set_features(
@@ -566,13 +567,15 @@ async fn orchestrated_root_tools_require_plan_approval() {
     assert_eq!(unapproved.registered_names, Vec::<String>::new());
 
     let approved = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
         turn.collaboration_mode.mode = ModeKind::Orchestrated;
         turn.orchestrated_execution_approved
             .store(true, std::sync::atomic::Ordering::Relaxed);
         turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
     })
     .await;
-    approved.assert_visible_contains(&["apply_patch"]);
+    approved.assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE]);
+    approved.assert_visible_lacks(&["apply_patch", "exec_command", "shell_command"]);
 }
 
 #[tokio::test]
