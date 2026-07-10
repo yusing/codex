@@ -7,6 +7,10 @@ use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::items::AgentMessageContent;
+use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::TurnItem;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -117,6 +121,16 @@ fn message_texts<'a>(input: &'a [Value], role: &str) -> Vec<&'a str> {
         .filter_map(|item| item.get("content")?.as_array())
         .flatten()
         .filter_map(|content| content.get("text")?.as_str())
+        .collect()
+}
+
+fn agent_message_text(message: &AgentMessageItem) -> String {
+    message
+        .content
+        .iter()
+        .map(|content| match content {
+            AgentMessageContent::Text { text } => text.as_str(),
+        })
         .collect()
 }
 
@@ -1710,6 +1724,196 @@ async fn orchestrated_mode_explorer_can_run_shell_command() -> Result<()> {
     assert!(
         output.contains("explorer_allowed_marker"),
         "unexpected explorer shell output: {output}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_hides_phase_messages_from_clients() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "explorer-verify-provisional-finding";
+    let args = serde_json::to_string(&json!({
+        "cmd": "echo verified",
+        "yield_time_ms": 1000,
+    }))?;
+    let provisional_prefix = "### P1 — ";
+    let provisional_delta = "unsafe empty-enum finding";
+    let provisional_finding = format!("{provisional_prefix}{provisional_delta}");
+    let progress_commentary = "I’m checking empty-skill schema construction before concluding.";
+    let accepted_explorer_packet = "explorer: hypothesis disproved";
+    let final_response = "orc: Complete.";
+    let internal_packets = [
+        "task-contract: review repository",
+        accepted_explorer_packet,
+        "worker-plan: finish review",
+        "plan-review: approved",
+        "worker: complete\nno findings",
+        "result-review: approved",
+    ];
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse("resp-contract", "task-contract: review repository"),
+            sse(vec![
+                ev_response_created("resp-explorer-provisional"),
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "message",
+                        "role": "assistant",
+                        "id": "msg-explorer-progress",
+                        "phase": "commentary",
+                        "content": [{"type": "output_text", "text": progress_commentary}]
+                    }
+                }),
+                ev_message_item_added("msg-explorer-provisional", provisional_prefix),
+                ev_output_text_delta(provisional_delta),
+                ev_assistant_message("msg-explorer-provisional", &provisional_finding),
+                ev_function_call(call_id, "exec_command", &args),
+                ev_completed("resp-explorer-provisional"),
+            ]),
+            assistant_sse("resp-explorer-accepted", accepted_explorer_packet),
+            assistant_sse("resp-worker-plan", "worker-plan: finish review"),
+            assistant_sse("resp-plan-review", "plan-review: approved"),
+            assistant_sse("resp-worker", "worker: complete\nno findings"),
+            assistant_sse("resp-result-review", "result-review: approved"),
+            assistant_sse("resp-orchestrator", final_response),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(configure_multi_agent_v2)
+        .build_with_auto_env(&server)
+        .await?;
+    let rollout_path = test
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
+
+    submit_orchestrated_user_input(&test, "review repository".to_string()).await?;
+
+    let mut visible_messages = Vec::new();
+    let mut saw_exec_command_begin = false;
+    let mut saw_exec_command_end = false;
+    loop {
+        let event = test
+            .codex
+            .next_event()
+            .await
+            .expect("stream ended unexpectedly")
+            .msg;
+        match event {
+            EventMsg::AgentMessage(event) => visible_messages.push(event.message),
+            EventMsg::AgentMessageContentDelta(event) => visible_messages.push(event.delta),
+            EventMsg::ItemStarted(event) => {
+                if let TurnItem::AgentMessage(message) = event.item {
+                    visible_messages.push(agent_message_text(&message));
+                }
+            }
+            EventMsg::ItemCompleted(event) => {
+                if let TurnItem::AgentMessage(message) = event.item {
+                    visible_messages.push(agent_message_text(&message));
+                }
+            }
+            EventMsg::RawResponseItem(event) => {
+                if let codex_protocol::models::ResponseItem::Message { role, content, .. } =
+                    event.item
+                    && role == "assistant"
+                {
+                    visible_messages.extend(content.into_iter().filter_map(
+                        |content| match content {
+                            ContentItem::OutputText { text } => Some(text),
+                            _ => None,
+                        },
+                    ));
+                }
+            }
+            EventMsg::ExecCommandBegin(_) => saw_exec_command_begin = true,
+            EventMsg::ExecCommandEnd(_) => saw_exec_command_end = true,
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+
+    assert!(
+        visible_messages
+            .iter()
+            .any(|message| message.contains(progress_commentary)),
+        "phase progress commentary should remain visible: {visible_messages:#?}"
+    );
+    assert!(
+        visible_messages.iter().all(|message| {
+            !message.contains(provisional_prefix)
+                && !message.contains(provisional_delta)
+                && !message.contains(&provisional_finding)
+        }),
+        "provisional phase output leaked to clients: {visible_messages:#?}"
+    );
+    for internal_packet in internal_packets {
+        assert!(
+            visible_messages
+                .iter()
+                .all(|message| !message.contains(internal_packet)),
+            "internal phase packet leaked to clients: {visible_messages:#?}"
+        );
+    }
+    assert!(
+        visible_messages
+            .iter()
+            .any(|message| message.contains(final_response)),
+        "root final response should remain visible: {visible_messages:#?}"
+    );
+    assert!(
+        saw_exec_command_begin && saw_exec_command_end,
+        "phase tool lifecycle should remain visible"
+    );
+    assert!(
+        responses
+            .function_call_output_text(call_id)
+            .is_some_and(|output| output.contains("verified")),
+        "phase should continue through tool execution"
+    );
+    let rollout = std::fs::read_to_string(rollout_path)?;
+    assert_eq!(rollout.matches(&provisional_finding).count(), 0);
+    assert_eq!(rollout.matches(accepted_explorer_packet).count(), 1);
+    let requests = responses.requests();
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[1].input()),
+            "Do not state findings, severity, conclusions, or proposed fixes",
+        ),
+        1,
+        "explorer commentary must remain progress-only"
+    );
+    let orchestrator_input = requests.last().expect("orchestrator request").input();
+    assert_eq!(
+        count_containing(
+            &message_texts(&orchestrator_input, "assistant"),
+            accepted_explorer_packet,
+        ),
+        1,
+        "root should receive the compact disposition packet"
+    );
+    let orchestrator_instructions = developer_texts(&orchestrator_input);
+    assert_eq!(
+        count_containing(
+            &orchestrator_instructions,
+            "Internal phase packets are not client-visible",
+        ),
+        1,
+        "root must know that it owns the only user-visible assistant result"
+    );
+    assert_eq!(
+        count_containing(
+            &orchestrator_instructions,
+            "state that disposition briefly instead of returning an unexplained `no findings`",
+        ),
+        1,
+        "root must explain why a material candidate finding was rejected"
     );
 
     Ok(())

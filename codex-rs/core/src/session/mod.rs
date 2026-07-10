@@ -343,6 +343,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::LocalImagePreparation;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -1772,8 +1773,38 @@ impl Session {
             ));
     }
 
-    /// Persist the event to rollout and send it to clients.
+    /// Persist the event to rollout and send it to clients. Internal orchestrated
+    /// final or unknown-phase assistant output is excluded; commentary remains visible.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        let suppress_orchestrated_phase_message = turn_context.orchestrated_role.is_some()
+            && match &msg {
+                EventMsg::AgentMessage(event) => {
+                    !matches!(event.phase, Some(MessagePhase::Commentary))
+                }
+                EventMsg::AgentMessageContentDelta(_) => true,
+                EventMsg::ItemStarted(event) => match &event.item {
+                    TurnItem::AgentMessage(message) => {
+                        !matches!(message.phase, Some(MessagePhase::Commentary))
+                    }
+                    _ => false,
+                },
+                EventMsg::ItemCompleted(event) => match &event.item {
+                    TurnItem::AgentMessage(message) => {
+                        !matches!(message.phase, Some(MessagePhase::Commentary))
+                    }
+                    _ => false,
+                },
+                EventMsg::RawResponseItem(event) => matches!(
+                    &event.item,
+                    ResponseItem::Message { role, phase, .. }
+                        if role == "assistant"
+                            && !matches!(phase, Some(MessagePhase::Commentary))
+                ),
+                _ => false,
+            };
+        if suppress_orchestrated_phase_message {
+            return;
+        }
         let legacy_source = msg.clone();
         if let EventMsg::Error(error) = &legacy_source
             && error
