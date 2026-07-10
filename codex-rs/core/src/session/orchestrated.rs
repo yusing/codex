@@ -131,10 +131,12 @@ pub(super) async fn run_for_input(
     client_session: &mut ModelClientSession,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Outcome> {
-    let has_user_input = input.iter().any(
-        |input_item| matches!(input_item, TurnInput::UserInput { content, .. } if !content.is_empty()),
-    );
-    if turn_context.collaboration_mode.mode != ModeKind::Orchestrated || !has_user_input {
+    let starts_orchestrated_flow = input.iter().any(|input_item| match input_item {
+        TurnInput::UserInput { content, .. } => !content.is_empty(),
+        TurnInput::InterAgentCommunication(communication) => communication.trigger_turn,
+        TurnInput::ResponseItem(_) => false,
+    });
+    if turn_context.collaboration_mode.mode != ModeKind::Orchestrated || !starts_orchestrated_flow {
         return Ok(Outcome::Skipped);
     }
     turn_context

@@ -35,6 +35,7 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::time::Duration;
 use tokio::sync::oneshot;
 
 const NO_SPAWN_TEXT: &str = "Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.";
@@ -128,6 +129,21 @@ fn request_contains(request: &wiremock::Request, text: &str) -> bool {
                     .flat_map(|role| message_texts(input, role))
                     .any(|message| message.contains(text))
             })
+    })
+}
+
+fn request_last_developer_message_contains(request: &wiremock::Request, text: &str) -> bool {
+    serde_json::from_slice::<Value>(&request.body).is_ok_and(|body| {
+        body.get("input")
+            .and_then(Value::as_array)
+            .and_then(|input| message_texts(input, "developer").last().copied())
+            .is_some_and(|message| message.contains(text))
+    })
+}
+
+fn request_is_collab_spawn(request: &wiremock::Request) -> bool {
+    serde_json::from_slice::<Value>(&request.body).is_ok_and(|body| {
+        body["client_metadata"]["x-openai-subagent"].as_str() == Some("collab_spawn")
     })
 }
 
@@ -315,7 +331,7 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
         &server,
         |request: &wiremock::Request| {
             request_contains(request, "spawn child in orchestrated mode")
-                && request_contains(
+                && request_last_developer_message_contains(
                     request,
                     "You are the task-contract phase in Orchestrated mode.",
                 )
@@ -331,7 +347,10 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
         &server,
         |request: &wiremock::Request| {
             request_contains(request, "spawn child in orchestrated mode")
-                && request_contains(request, "You are the explorer phase in Orchestrated mode.")
+                && request_last_developer_message_contains(
+                    request,
+                    "You are the explorer phase in Orchestrated mode.",
+                )
         },
         sse(vec![
             ev_response_created("parent-explorer"),
@@ -344,7 +363,7 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
         &server,
         |request: &wiremock::Request| {
             request_contains(request, "spawn child in orchestrated mode")
-                && request_contains(
+                && request_last_developer_message_contains(
                     request,
                     "You are the worker-plan phase in Orchestrated mode.",
                 )
@@ -363,7 +382,7 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
         &server,
         |request: &wiremock::Request| {
             request_contains(request, "spawn child in orchestrated mode")
-                && request_contains(
+                && request_last_developer_message_contains(
                     request,
                     "You are the orchestrator plan-review phase in Orchestrated mode.",
                 )
@@ -382,7 +401,7 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
         &server,
         |request: &wiremock::Request| {
             request_contains(request, "spawn child in orchestrated mode")
-                && request_contains(
+                && request_last_developer_message_contains(
                     request,
                     "You are the worker-execution phase in Orchestrated mode.",
                 )
@@ -402,7 +421,7 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
         &server,
         |request: &wiremock::Request| {
             request_contains(request, "spawn child in orchestrated mode")
-                && request_contains(
+                && request_last_developer_message_contains(
                     request,
                     "You are the orchestrator role for the remainder of this Orchestrated-mode turn.",
                 )
@@ -433,8 +452,8 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
     let _child_contract = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
-            request_contains(request, "child inherited orchestration task")
-                && request_contains(
+            request_is_collab_spawn(request)
+                && request_last_developer_message_contains(
                     request,
                     "You are the task-contract phase in Orchestrated mode.",
                 )
@@ -449,8 +468,11 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
     let _child_explorer = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
-            request_contains(request, "child inherited orchestration task")
-                && request_contains(request, "You are the explorer phase in Orchestrated mode.")
+            request_is_collab_spawn(request)
+                && request_last_developer_message_contains(
+                    request,
+                    "You are the explorer phase in Orchestrated mode.",
+                )
         },
         sse(vec![
             ev_response_created("child-explorer"),
@@ -462,8 +484,8 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
     let _child_worker_plan = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
-            request_contains(request, "child inherited orchestration task")
-                && request_contains(
+            request_is_collab_spawn(request)
+                && request_last_developer_message_contains(
                     request,
                     "You are the worker-plan phase in Orchestrated mode.",
                 )
@@ -478,8 +500,8 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
     let _child_plan_review = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
-            request_contains(request, "child inherited orchestration task")
-                && request_contains(
+            request_is_collab_spawn(request)
+                && request_last_developer_message_contains(
                     request,
                     "You are the orchestrator plan-review phase in Orchestrated mode.",
                 )
@@ -491,11 +513,11 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
         ]),
     )
     .await;
-    let _child_worker = mount_sse_once_match(
+    let child_worker = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
-            request_contains(request, "child inherited orchestration task")
-                && request_contains(
+            request_is_collab_spawn(request)
+                && request_last_developer_message_contains(
                     request,
                     "You are the worker-execution phase in Orchestrated mode.",
                 )
@@ -507,11 +529,11 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
         ]),
     )
     .await;
-    let _child_orchestrator = mount_sse_once_match(
+    let child_orchestrator = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
-            request_contains(request, "child inherited orchestration task")
-                && request_contains(
+            request_is_collab_spawn(request)
+                && request_last_developer_message_contains(
                     request,
                     "You are the orchestrator role for the remainder of this Orchestrated-mode turn.",
                 )
@@ -580,6 +602,44 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
     assert_eq!(
         child_snapshot.collaboration_mode.mode,
         ModeKind::Orchestrated
+    );
+    let child_orchestrator_request = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(request) = child_orchestrator.last_request() {
+                let body = request.body_json();
+                if body["client_metadata"]["x-openai-subagent"].as_str()
+                    == Some("collab_spawn")
+                    && body
+                        .get("input")
+                        .and_then(Value::as_array)
+                        .and_then(|input| message_texts(input, "developer").last().copied())
+                        .is_some_and(|message| {
+                            message.contains(
+                                "You are the orchestrator role for the remainder of this Orchestrated-mode turn.",
+                            )
+                        })
+                {
+                    break body;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for spawned Orchestrated execution requests");
+    let child_worker_request = child_worker
+        .last_request()
+        .expect("spawned Orchestrated worker request")
+        .body_json();
+    let child_worker_tools = request_tool_names(&child_worker_request);
+    assert!(
+        !child_worker_tools.is_empty(),
+        "spawned Orchestrated worker should receive tools"
+    );
+    let child_orchestrator_tools = request_tool_names(&child_orchestrator_request);
+    assert!(
+        !child_orchestrator_tools.is_empty(),
+        "spawned Orchestrated root should receive tools after plan approval"
     );
 
     Ok(())
