@@ -234,10 +234,32 @@ async fn run_phases(
                 cancellation_token.child_token(),
             )
             .await?;
-            if !worker_packet.truncated
-                && worker_status(&worker_packet.text) == WorkerStatus::Complete
-            {
+            let worker_status = worker_status(&worker_packet.text);
+            if !worker_packet.truncated && worker_status == WorkerStatus::Complete {
                 break;
+            }
+            if !worker_packet.truncated
+                && worker_status == WorkerStatus::Incomplete
+                && worker_packet
+                    .text
+                    .lines()
+                    .any(|line| line.trim_start().starts_with("evidence-needed:"))
+            {
+                let evidence_packet = run_phase(
+                    Arc::clone(&sess),
+                    Arc::clone(&turn_context),
+                    Arc::clone(&turn_extension_data),
+                    Arc::clone(&turn_diff_tracker),
+                    Phase::Explorer,
+                    client_session,
+                    cancellation_token.child_token(),
+                )
+                .await?;
+                if evidence_packet.truncated {
+                    break;
+                }
+                previous_retry_signature = None;
+                continue;
             }
             let retry_signature = worker_retry_signature(&worker_packet);
             if previous_retry_signature.as_ref() == Some(&retry_signature) {
@@ -343,17 +365,32 @@ async fn run_phases(
                 {
                     break;
                 }
-                if matches!(
-                    correction_owner(&review_packet.text),
-                    Some(CorrectionOwner::Root | CorrectionOwner::User)
-                ) {
-                    break;
+                match correction_owner(&review_packet.text) {
+                    Some(CorrectionOwner::Worker) => {
+                        let retry_signature = retry_signature(&worker_packet, &review_packet);
+                        if previous_retry_signature.as_ref() == Some(&retry_signature) {
+                            break;
+                        }
+                        previous_retry_signature = Some(retry_signature);
+                    }
+                    Some(CorrectionOwner::Explorer) => {
+                        let evidence_packet = run_phase(
+                            Arc::clone(&sess),
+                            Arc::clone(&turn_context),
+                            Arc::clone(&turn_extension_data),
+                            Arc::clone(&turn_diff_tracker),
+                            Phase::Explorer,
+                            client_session,
+                            cancellation_token.child_token(),
+                        )
+                        .await?;
+                        if evidence_packet.truncated {
+                            break;
+                        }
+                        previous_retry_signature = None;
+                    }
+                    Some(CorrectionOwner::Root | CorrectionOwner::User) | None => break,
                 }
-                let retry_signature = retry_signature(&worker_packet, &review_packet);
-                if previous_retry_signature.as_ref() == Some(&retry_signature) {
-                    break;
-                }
-                previous_retry_signature = Some(retry_signature);
             }
             break;
         }
@@ -381,6 +418,7 @@ fn worker_retry_signature(worker_packet: &PhasePacket) -> String {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum CorrectionOwner {
     Worker,
+    Explorer,
     Root,
     User,
 }
@@ -392,6 +430,7 @@ fn correction_owner(packet: &str) -> Option<CorrectionOwner> {
     }
     match lines.next()?.trim() {
         "owner: worker" => Some(CorrectionOwner::Worker),
+        "owner: explorer" => Some(CorrectionOwner::Explorer),
         "owner: root" => Some(CorrectionOwner::Root),
         "owner: user" => Some(CorrectionOwner::User),
         _ => None,

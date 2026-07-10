@@ -666,6 +666,217 @@ async fn orchestrated_mode_routes_root_owned_correction_without_worker_retry() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_routes_explorer_owned_correction_back_to_worker() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse(
+                "explorer-owner-contract",
+                "task-contract: implement bounded change",
+            ),
+            assistant_sse(
+                "explorer-owner-initial-explorer",
+                "explorer: initial implementation evidence",
+            ),
+            assistant_sse(
+                "explorer-owner-plan",
+                "worker-plan: implement using established evidence",
+            ),
+            assistant_sse("explorer-owner-plan-review", "plan-review: approved"),
+            assistant_sse(
+                "explorer-owner-worker-1",
+                "worker: incomplete\nevidence-needed: locate the structured error owner",
+            ),
+            assistant_sse(
+                "explorer-owner-result-review-1",
+                "result-review: revise\nowner: explorer\nquestion: Which type owns structured errors?\nscope: core/src/tools",
+            ),
+            assistant_sse(
+                "explorer-owner-correction-evidence",
+                "explorer: structured errors are owned by core/src/tools/context.rs:80",
+            ),
+            assistant_sse(
+                "explorer-owner-worker-2",
+                "worker: complete\nimplemented with correction evidence",
+            ),
+            assistant_sse(
+                "explorer-owner-result-review-2",
+                "result-review: approved",
+            ),
+            assistant_sse("explorer-owner-root", "orc: completed"),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(configure_multi_agent_v2)
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_orchestrated_user_input(&test, "implement with focused evidence".to_string()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 10);
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[6].input()),
+            "You are the explorer phase in Orchestrated mode.",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &message_texts(&requests[6].input(), "assistant"),
+            "owner: explorer",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[7].input()),
+            "You are the worker-execution phase in Orchestrated mode.",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &message_texts(&requests[7].input(), "assistant"),
+            "explorer: structured errors are owned by core/src/tools/context.rs:80",
+        ),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_does_not_default_missing_correction_owner_to_worker() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse("missing-owner-contract", "task-contract: bounded change"),
+            assistant_sse("missing-owner-explorer", "explorer: evidence"),
+            assistant_sse("missing-owner-plan", "worker-plan: implement"),
+            assistant_sse("missing-owner-plan-review", "plan-review: approved"),
+            assistant_sse(
+                "missing-owner-worker",
+                "worker: incomplete\nevidence-needed: locate behavior owner",
+            ),
+            assistant_sse(
+                "missing-owner-result-review",
+                "result-review: revise\nlocate behavior owner",
+            ),
+            assistant_sse("missing-owner-root", "orc: correction owner was missing"),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(configure_multi_agent_v2)
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_orchestrated_user_input(&test, "do not infer correction ownership".to_string()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 7);
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[6].input()),
+            "You are the worker-execution phase in Orchestrated mode.",
+        ),
+        0
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[6].input()),
+            "You are the orchestrator role for the remainder of this Orchestrated-mode turn.",
+        ),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_routes_direct_worker_evidence_request_through_explorer() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse(
+                "direct-explorer-contract",
+                "task-contract: direct\napply established correction",
+            ),
+            assistant_sse(
+                "direct-explorer-worker-1",
+                "worker: incomplete\nevidence-needed: confirm the exact call site\nscope: core/src/session",
+            ),
+            assistant_sse(
+                "direct-explorer-evidence",
+                "explorer: exact call site is core/src/session/orchestrated.rs:226",
+            ),
+            assistant_sse(
+                "direct-explorer-worker-2",
+                "worker: complete\napplied established correction",
+            ),
+            assistant_sse("direct-explorer-root", "orc: completed"),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(configure_multi_agent_v2)
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_orchestrated_user_input(&test, "apply established correction".to_string()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[2].input()),
+            "You are the explorer phase in Orchestrated mode.",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[3].input()),
+            "You are the worker-execution phase in Orchestrated mode.",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &message_texts(&requests[3].input(), "assistant"),
+            "explorer: exact call site is core/src/session/orchestrated.rs:226",
+        ),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn orchestrated_mode_stops_stagnant_direct_worker_retries() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -1556,7 +1767,7 @@ async fn orchestrated_mode_revises_plan_before_worker_execution() -> Result<()> 
                 ev_response_created("resp-gate-result-review-1"),
                 ev_assistant_message(
                     "msg-gate-result-review-1",
-                    "result-review: revise; run required tests",
+                    "result-review: revise\nowner: worker\nrun required tests",
                 ),
                 ev_completed("resp-gate-result-review-1"),
             ]),
@@ -1625,7 +1836,7 @@ async fn orchestrated_mode_revises_plan_before_worker_execution() -> Result<()> 
     assert_eq!(
         count_containing(
             &message_texts(&corrected_worker_input, "assistant"),
-            "result-review: revise; run required tests",
+            "result-review: revise\nowner: worker\nrun required tests",
         ),
         1
     );
