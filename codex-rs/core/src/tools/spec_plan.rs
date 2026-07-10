@@ -1,6 +1,9 @@
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::EXPLORER_ROLE_NAME;
+use crate::agent::role::PLAN_REVIEW_ROLE_NAME;
+use crate::agent::role::TASK_CONTRACT_ROLE_NAME;
+use crate::agent::role::WORKER_PLAN_ROLE_NAME;
 use crate::agent::role::WORKER_ROLE_NAME;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
@@ -65,6 +68,7 @@ use crate::tools::router::ToolRouterParams;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_mcp::ToolInfo;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -94,6 +98,7 @@ use codex_tools::shell_type_for_model_and_features;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tracing::instrument;
 use tracing::warn;
 
@@ -193,7 +198,9 @@ fn build_tool_specs_and_registry(
     add_tool_sources(&context, &mut planned_tools);
     apply_direct_model_only_namespace_overrides(turn_context, &mut planned_tools);
     append_tool_search_executor(&context, &mut planned_tools);
-    prepend_code_mode_executors(&context, &mut planned_tools);
+    if !orchestrated_phase_has_no_tools(turn_context.orchestrated_role) {
+        prepend_code_mode_executors(&context, &mut planned_tools);
+    }
     build_model_visible_specs_and_registry(turn_context, planned_tools)
 }
 
@@ -579,8 +586,8 @@ fn code_mode_namespace_descriptions(
 
 #[instrument(level = "trace", skip_all)]
 fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
+    let turn_context = context.step_context.turn.as_ref();
     if crate::guardian::is_guardian_reviewer_source(&context.step_context.turn.session_source) {
-        let turn_context = context.step_context.turn.as_ref();
         let environment_mode = tool_environment_mode(context.step_context);
         if environment_mode.has_environment() {
             let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
@@ -604,6 +611,25 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
         return;
     }
 
+    if turn_context.collaboration_mode.mode == ModeKind::Orchestrated
+        && turn_context.orchestrated_role.is_none()
+        && !turn_context
+            .orchestrated_execution_approved
+            .load(Ordering::Relaxed)
+    {
+        return;
+    }
+
+    match context.step_context.turn.orchestrated_role {
+        Some(EXPLORER_ROLE_NAME) => {
+            add_shell_tools(context, planned_tools);
+            return;
+        }
+        role if orchestrated_phase_has_no_tools(role) => return,
+        Some(WORKER_ROLE_NAME) | None => {}
+        Some(_) => return,
+    }
+
     add_shell_tools(context, planned_tools);
     add_mcp_resource_tools(context, planned_tools);
     add_core_utility_tools(context, planned_tools);
@@ -614,6 +640,13 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
     for spec in hosted_model_tool_specs(context) {
         planned_tools.add_hosted_spec(spec);
     }
+}
+
+fn orchestrated_phase_has_no_tools(role: Option<&str>) -> bool {
+    matches!(
+        role,
+        Some(TASK_CONTRACT_ROLE_NAME | WORKER_PLAN_ROLE_NAME | PLAN_REVIEW_ROLE_NAME)
+    )
 }
 
 fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {

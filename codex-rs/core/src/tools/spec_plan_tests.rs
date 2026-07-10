@@ -8,6 +8,7 @@ use codex_mcp::ToolInfo;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ApplyPatchToolType;
@@ -524,6 +525,54 @@ async fn explorer_role_gets_read_only_shell_without_stdin_or_apply_patch() {
             "explorer exec_command schema should hide `{forbidden}`"
         );
     }
+}
+
+#[tokio::test]
+async fn pre_execution_orchestrated_phases_have_no_tools() {
+    for role in [
+        super::TASK_CONTRACT_ROLE_NAME,
+        super::WORKER_PLAN_ROLE_NAME,
+        super::PLAN_REVIEW_ROLE_NAME,
+    ] {
+        let plan = probe(|turn| {
+            set_features(
+                turn,
+                &[
+                    Feature::ShellTool,
+                    Feature::UnifiedExec,
+                    Feature::CodeMode,
+                    Feature::CodeModeOnly,
+                ],
+            );
+            turn.model_info.shell_type = ConfigShellToolType::ShellCommand;
+            turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+            turn.orchestrated_role = Some(role);
+        })
+        .await;
+
+        assert_eq!(plan.visible_names, Vec::<String>::new(), "phase: {role}");
+        assert_eq!(plan.registered_names, Vec::<String>::new(), "phase: {role}");
+    }
+}
+
+#[tokio::test]
+async fn orchestrated_root_tools_require_plan_approval() {
+    let unapproved = probe(|turn| {
+        turn.collaboration_mode.mode = ModeKind::Orchestrated;
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    })
+    .await;
+    assert_eq!(unapproved.visible_names, Vec::<String>::new());
+    assert_eq!(unapproved.registered_names, Vec::<String>::new());
+
+    let approved = probe(|turn| {
+        turn.collaboration_mode.mode = ModeKind::Orchestrated;
+        turn.orchestrated_execution_approved
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    })
+    .await;
+    approved.assert_visible_contains(&["apply_patch"]);
 }
 
 #[tokio::test]

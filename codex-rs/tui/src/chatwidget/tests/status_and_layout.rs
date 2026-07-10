@@ -156,6 +156,19 @@ async fn status_line_model_shows_active_orchestrated_role_model() {
         ServerNotification::TurnActiveRoleUpdated(TurnActiveRoleUpdatedNotification {
             thread_id: "thread".to_string(),
             turn_id: "turn".to_string(),
+            role: Some("worker-plan".to_string()),
+        }),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(
+        status_line_text(&chat),
+        Some("gpt-5.3-codex-spark".to_string())
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::TurnActiveRoleUpdated(TurnActiveRoleUpdatedNotification {
+            thread_id: "thread".to_string(),
+            turn_id: "turn".to_string(),
             role: None,
         }),
         /*replay_kind*/ None,

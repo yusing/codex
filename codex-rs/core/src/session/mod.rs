@@ -207,6 +207,7 @@ mod input_queue;
 mod mcp;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
+mod orchestrated;
 mod review;
 mod rollout_budget;
 mod rollout_reconstruction;
@@ -1796,7 +1797,8 @@ impl Session {
             id: turn_context.sub_id.clone(),
             msg,
         };
-        self.send_event_raw(event).await;
+        let persist = turn_context.orchestrated_role.is_none();
+        self.send_event_raw_with_persistence(event, persist).await;
         self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
             .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
@@ -1813,7 +1815,8 @@ impl Session {
                 id: turn_context.sub_id.clone(),
                 msg: legacy,
             };
-            self.send_event_raw(legacy_event).await;
+            self.send_event_raw_with_persistence(legacy_event, persist)
+                .await;
         }
     }
 
@@ -2849,8 +2852,28 @@ impl Session {
                 turn_context.model_info.truncation_policy.into(),
             );
         }
-        self.persist_rollout_response_items(items).await;
+        if turn_context.orchestrated_role.is_none() {
+            self.persist_rollout_response_items(items).await;
+        }
         self.send_raw_response_items(turn_context, items).await;
+    }
+
+    pub(crate) async fn replace_orchestrated_phase_history(
+        &self,
+        turn_context: &TurnContext,
+        mut baseline: Vec<ResponseItem>,
+        packet: ResponseItem,
+    ) {
+        let packet = [packet];
+        let prepared_packet = self.prepare_conversation_items_for_history(turn_context, &packet);
+        baseline.extend_from_slice(prepared_packet.as_ref());
+        {
+            let mut state = self.state.lock().await;
+            let reference_context_item = state.reference_context_item();
+            state.replace_history(baseline, reference_context_item);
+        }
+        self.persist_rollout_response_items(prepared_packet.as_ref())
+            .await;
     }
 
     pub(crate) async fn record_step_world_state_if_changed(

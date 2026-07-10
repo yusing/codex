@@ -29,6 +29,9 @@ use toml::Value as TomlValue;
 pub const DEFAULT_ROLE_NAME: &str = "default";
 pub(crate) const WORKER_ROLE_NAME: &str = "worker";
 pub(crate) const EXPLORER_ROLE_NAME: &str = "explorer";
+pub(crate) const TASK_CONTRACT_ROLE_NAME: &str = "task-contract";
+pub(crate) const WORKER_PLAN_ROLE_NAME: &str = "worker-plan";
+pub(crate) const PLAN_REVIEW_ROLE_NAME: &str = "plan-review";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
 /// Applies a named role layer to `config` while preserving caller-owned provider settings.

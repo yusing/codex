@@ -912,7 +912,7 @@ impl ChatWidget {
             return (current_model, current_effort);
         }
         match self.active_orchestrated_role.as_deref() {
-            Some("worker") => (
+            Some("worker" | "worker-plan") => (
                 self.config
                     .orchestrated_mode
                     .worker_model
