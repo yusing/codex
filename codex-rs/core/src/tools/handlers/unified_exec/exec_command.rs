@@ -1,6 +1,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::agent::role::WORKER_ROLE_NAME;
+use crate::context::OrchestratedCommandKey;
+use crate::context::OrchestratedCommandStart;
 use crate::function_tool::FunctionCallError;
 use crate::maybe_emit_implicit_skill_invocation;
 use crate::tools::context::ExecCommandToolOutput;
@@ -139,10 +142,11 @@ impl ExecCommandHandler {
             ));
         };
         let native_environment_cwd = turn_environment.cwd().clone();
-        let cwd = environment_args
+        let workdir = environment_args
             .workdir
             .as_deref()
-            .filter(|workdir| !workdir.is_empty())
+            .filter(|workdir| !workdir.is_empty());
+        let cwd = workdir
             .map_or_else(
                 || Ok(native_environment_cwd.clone()),
                 |workdir| native_environment_cwd.join(workdir),
@@ -190,6 +194,64 @@ impl ExecCommandHandler {
             }
         };
         let hook_command = args.cmd.clone();
+        let command_key = (turn.orchestrated_role == Some(WORKER_ROLE_NAME)).then(|| {
+            OrchestratedCommandKey::new(
+                &hook_command,
+                &cwd.to_string(),
+                turn_environment
+                    .shell
+                    .as_ref()
+                    .map(|shell| shell.shell_type),
+            )
+        });
+        let mut command_attempt = if let Some(command_key) = command_key {
+            match turn
+                .orchestrated_execution_ledger
+                .lock()
+                .await
+                .begin_command(&command_key)
+            {
+                OrchestratedCommandStart::Execute(generation) => Some((generation, command_key)),
+                OrchestratedCommandStart::Suppress(fact) => {
+                    return Ok(boxed_tool_output(ExecCommandToolOutput {
+                        event_call_id: context.call_id.clone(),
+                        chunk_id: generate_chunk_id(),
+                        wall_time: std::time::Duration::ZERO,
+                        raw_output: fact.suppression_diagnostic().into_bytes(),
+                        truncation_policy: turn.model_info.truncation_policy.into(),
+                        max_output_tokens: args.max_output_tokens,
+                        process_id: None,
+                        exit_code: Some(fact.exit_code()),
+                        original_token_count: None,
+                        hook_command: None,
+                    }));
+                }
+            }
+        } else {
+            None
+        };
+        if workdir.is_some()
+            && let Some(native_cwd) = native_cwd.as_ref()
+            && !native_cwd.is_dir()
+            && let Some((generation, command_key)) = command_attempt.take()
+        {
+            turn.orchestrated_execution_ledger
+                .lock()
+                .await
+                .record_invalid_working_directory(generation, command_key);
+            return Ok(boxed_tool_output(ExecCommandToolOutput {
+                event_call_id: context.call_id.clone(),
+                chunk_id: generate_chunk_id(),
+                wall_time: std::time::Duration::ZERO,
+                raw_output: format!("invalid working directory: {cwd}").into_bytes(),
+                truncation_policy: turn.model_info.truncation_policy.into(),
+                max_output_tokens: args.max_output_tokens,
+                process_id: None,
+                exit_code: Some(1),
+                original_token_count: None,
+                hook_command: None,
+            }));
+        }
         // TODO(anp) wire PathUri through implicit skills instead of skipping on foreign paths
         if let Some(native_cwd) = native_cwd.as_ref() {
             maybe_emit_implicit_skill_invocation(
@@ -366,7 +428,20 @@ impl ExecCommandHandler {
             )
             .await
         {
-            Ok(response) => Ok(boxed_tool_output(response)),
+            Ok(response) => {
+                if let (Some((generation, command_key)), Some(exit_code)) =
+                    (command_attempt, response.exit_code)
+                    && exit_code != 0
+                {
+                    turn.orchestrated_execution_ledger.lock().await.record_exit(
+                        generation,
+                        command_key,
+                        exit_code,
+                        &response.raw_output,
+                    );
+                }
+                Ok(boxed_tool_output(response))
+            }
             Err(UnifiedExecError::SandboxDenied { output, .. }) => {
                 let output_text = output.aggregated_output.text;
                 let original_token_count = approx_token_count(&output_text);

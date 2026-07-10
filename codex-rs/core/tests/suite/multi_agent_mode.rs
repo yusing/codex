@@ -245,6 +245,14 @@ fn assistant_sse(id: &str, text: &str) -> String {
     ])
 }
 
+fn function_sse(id: &str, name: &str, arguments: &str) -> String {
+    sse(vec![
+        ev_response_created(id),
+        ev_function_call(id, name, arguments),
+        ev_completed(id),
+    ])
+}
+
 fn incomplete_stream_chunk() -> StreamingSseChunk {
     StreamingSseChunk {
         gate: None,
@@ -513,19 +521,165 @@ async fn orchestrated_mode_retries_malformed_worker_before_result_review() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn orchestrated_mode_does_not_approve_exhausted_direct_worker_retries() -> Result<()> {
+async fn orchestrated_mode_retains_and_suppresses_repeated_unavailable_executable() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let oversized_worker_packet = format!("worker: complete\n{}", "details ".repeat(2_000));
+    let executable = "codex_missing_orchestrated_test_executable";
+    let args = serde_json::to_string(&json!({
+        "cmd": format!("{executable} --password super-secret-value"),
+        "yield_time_ms": 1_000,
+    }))?;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse(
+                "execution-facts-contract",
+                "task-contract: fix retry behavior",
+            ),
+            assistant_sse("execution-facts-explorer", "explorer: retry path located"),
+            assistant_sse(
+                "execution-facts-plan",
+                "worker-plan: verify unavailable command",
+            ),
+            assistant_sse("execution-facts-plan-review", "plan-review: approved"),
+            function_sse("execution-facts-call-1", "exec_command", &args),
+            function_sse("execution-facts-call-2", "exec_command", &args),
+            assistant_sse(
+                "execution-facts-worker-result-1",
+                "worker: incomplete; required executable unavailable",
+            ),
+            assistant_sse(
+                "execution-facts-result-review-1",
+                "result-review: revise\nowner: worker\nretry required command",
+            ),
+            function_sse("execution-facts-list-call", "list_agents", "{}"),
+            function_sse("execution-facts-call-3", "exec_command", &args),
+            assistant_sse(
+                "execution-facts-worker-result-2",
+                "worker: incomplete; required executable unavailable",
+            ),
+            assistant_sse(
+                "execution-facts-result-review-2",
+                "result-review: revise\nowner: worker\nretry required command",
+            ),
+            assistant_sse("execution-facts-root", "orc: executable unavailable"),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(configure_multi_agent_v2)
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_orchestrated_user_input(&test, "fix repeated command retries".to_string()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 13);
+    assert!(!body_has_function_call_output(
+        &requests[7].body_json(),
+        "execution-facts-call-1"
+    ));
+    let first_review_user_text = message_texts(requests[7].input().as_slice(), "user").join("\n");
+    assert!(first_review_user_text.contains("outcome=executableUnavailable"));
+    assert!(first_review_user_text.contains(&format!("executable=\"{executable}\"")));
+    assert!(!first_review_user_text.contains("super-secret-value"));
+
+    let retry_input = requests[8].input();
+    assert!(
+        message_texts(&retry_input, "user")
+            .iter()
+            .any(|text| text.contains("outcome=executableUnavailable"))
+    );
+    let repeated_output = responses
+        .function_call_output_text("execution-facts-call-2")
+        .expect("repeated command output");
+    assert!(repeated_output.contains("suppressed unchanged deterministic failure"));
+    let revalidated_output = responses
+        .function_call_output_text("execution-facts-call-3")
+        .expect("revalidated command output");
+    assert!(!revalidated_output.contains("suppressed unchanged deterministic failure"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_routes_root_owned_correction_without_worker_retry() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse(
+                "root-owner-contract",
+                "task-contract: review implementation",
+            ),
+            assistant_sse("root-owner-explorer", "explorer: implementation located"),
+            assistant_sse("root-owner-plan", "worker-plan: implement and review"),
+            assistant_sse("root-owner-plan-review", "plan-review: approved"),
+            assistant_sse(
+                "root-owner-worker",
+                "worker: incomplete; required post-work subagent review unavailable",
+            ),
+            assistant_sse(
+                "root-owner-result-review",
+                "result-review: revise\nowner: root\nrun required post-work subagent review",
+            ),
+            assistant_sse("root-owner-root", "orc: root-owned review required"),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(configure_multi_agent_v2)
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_orchestrated_user_input(&test, "review implementation".to_string()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 7);
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[6].input()),
+            "You are the worker-execution phase in Orchestrated mode.",
+        ),
+        0
+    );
+    assert_eq!(
+        count_containing(
+            &message_texts(&requests[6].input(), "assistant"),
+            "owner: root",
+        ),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_stops_stagnant_direct_worker_retries() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
     let responses = mount_sse_sequence(
         &server,
         vec![
             assistant_sse("resp-contract", "task-contract: direct\nfix known typo"),
-            assistant_sse("resp-worker-truncated", &oversized_worker_packet),
-            assistant_sse("resp-worker-malformed", "orc: fixed"),
             assistant_sse(
-                "resp-worker-incomplete",
+                "resp-worker-incomplete-1",
+                "worker: incomplete\nverification failed",
+            ),
+            assistant_sse(
+                "resp-worker-incomplete-2",
                 "worker: incomplete\nverification failed",
             ),
             assistant_sse("resp-orchestrator", "orc: Work was not completed."),
@@ -544,8 +698,8 @@ async fn orchestrated_mode_does_not_approve_exhausted_direct_worker_retries() ->
     .await;
 
     let requests = responses.requests();
-    assert_eq!(requests.len(), 5);
-    for request in requests.iter().take(4).skip(1) {
+    assert_eq!(requests.len(), 4);
+    for request in requests.iter().take(3).skip(1) {
         assert_eq!(
             count_containing(
                 &developer_texts(&request.input()),
@@ -556,14 +710,14 @@ async fn orchestrated_mode_does_not_approve_exhausted_direct_worker_retries() ->
     }
     assert_eq!(
         count_containing(
-            &message_texts(&requests[4].input(), "assistant"),
-            "[packet truncated: phase output exceeded the 8192-byte hard limit]",
+            &message_texts(&requests[3].input(), "assistant"),
+            "worker: incomplete\nverification failed",
         ),
-        1
+        2
     );
     assert_eq!(
         count_containing(
-            &developer_texts(&requests[4].input()),
+            &developer_texts(&requests[3].input()),
             "only when the latest worker packet begins `worker: complete` and is not marked truncated",
         ),
         1

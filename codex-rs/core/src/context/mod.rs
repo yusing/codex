@@ -19,6 +19,7 @@ mod legacy_unified_exec_process_limit_warning;
 mod model_switch_instructions;
 mod multi_agent_mode_instructions;
 mod network_rule_saved;
+mod orchestrated_execution_facts;
 mod permissions_instructions;
 mod personality_spec_instructions;
 mod plugin_instructions;
@@ -61,6 +62,10 @@ pub(crate) use legacy_unified_exec_process_limit_warning::LegacyUnifiedExecProce
 pub(crate) use model_switch_instructions::ModelSwitchInstructions;
 pub(crate) use multi_agent_mode_instructions::MultiAgentModeInstructions;
 pub(crate) use network_rule_saved::NetworkRuleSaved;
+pub(crate) use orchestrated_execution_facts::OrchestratedCommandKey;
+pub(crate) use orchestrated_execution_facts::OrchestratedCommandStart;
+pub(crate) use orchestrated_execution_facts::OrchestratedExecutionFacts;
+pub(crate) use orchestrated_execution_facts::OrchestratedExecutionLedger;
 pub use permissions_instructions::ApprovalPromptContext;
 pub use permissions_instructions::PermissionsInstructions;
 pub(crate) use personality_spec_instructions::PersonalitySpecInstructions;

@@ -9,6 +9,8 @@ use crate::agent::role::TASK_CONTRACT_ROLE_NAME;
 use crate::agent::role::WORKER_PLAN_ROLE_NAME;
 use crate::agent::role::WORKER_ROLE_NAME;
 use crate::client::ModelClientSession;
+use crate::context::ContextualUserFragment;
+use crate::context::OrchestratedExecutionFacts;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::tools::context::SharedTurnDiffTracker;
 use codex_config::Constrained;
@@ -65,6 +67,7 @@ pub(super) enum Outcome {
 struct PhasePacket {
     text: String,
     truncated: bool,
+    execution_facts: OrchestratedExecutionFacts,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -219,6 +222,7 @@ async fn run_phases(
         turn_context
             .orchestrated_execution_approved
             .store(true, Ordering::Relaxed);
+        let mut previous_retry_signature = None;
         for _ in 0..=MAX_WORK_REVISIONS {
             let worker_packet = run_phase(
                 Arc::clone(&sess),
@@ -235,6 +239,11 @@ async fn run_phases(
             {
                 break;
             }
+            let retry_signature = worker_retry_signature(&worker_packet);
+            if previous_retry_signature.as_ref() == Some(&retry_signature) {
+                break;
+            }
+            previous_retry_signature = Some(retry_signature);
         }
         emit_role_update(&sess, &turn_context, None).await;
         return Ok(());
@@ -302,6 +311,7 @@ async fn run_phases(
             turn_context
                 .orchestrated_execution_approved
                 .store(true, Ordering::Relaxed);
+            let mut previous_retry_signature = None;
             for _ in 0..=MAX_WORK_REVISIONS {
                 let worker_packet = run_phase(
                     Arc::clone(&sess),
@@ -333,6 +343,17 @@ async fn run_phases(
                 {
                     break;
                 }
+                if matches!(
+                    correction_owner(&review_packet.text),
+                    Some(CorrectionOwner::Root | CorrectionOwner::User)
+                ) {
+                    break;
+                }
+                let retry_signature = retry_signature(&worker_packet, &review_packet);
+                if previous_retry_signature.as_ref() == Some(&retry_signature) {
+                    break;
+                }
+                previous_retry_signature = Some(retry_signature);
             }
             break;
         }
@@ -340,6 +361,41 @@ async fn run_phases(
     emit_role_update(&sess, &turn_context, None).await;
 
     Ok(())
+}
+
+fn retry_signature(worker_packet: &PhasePacket, review_packet: &PhasePacket) -> String {
+    let worker_signature = worker_retry_signature(worker_packet);
+    format!("{}\n{}", worker_signature, review_packet.text.trim(),)
+}
+
+fn worker_retry_signature(worker_packet: &PhasePacket) -> String {
+    let facts = worker_packet.execution_facts.progress_signature();
+    format!(
+        "{}\n{}\n{}",
+        worker_status(&worker_packet.text) as u8,
+        worker_packet.text.trim(),
+        facts
+    )
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum CorrectionOwner {
+    Worker,
+    Root,
+    User,
+}
+
+fn correction_owner(packet: &str) -> Option<CorrectionOwner> {
+    let mut lines = packet.lines();
+    if !packet_has_status(lines.next()?, RESULT_REVIEW_ROLE_NAME, "revise") {
+        return None;
+    }
+    match lines.next()?.trim() {
+        "owner: worker" => Some(CorrectionOwner::Worker),
+        "owner: root" => Some(CorrectionOwner::Root),
+        "owner: user" => Some(CorrectionOwner::User),
+        _ => None,
+    }
 }
 
 fn review_approved(packet: &str, role: &str) -> bool {
@@ -515,9 +571,25 @@ async fn compact_phase_history(
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     };
-    sess.replace_orchestrated_phase_history(turn_context, baseline, packet_item)
+    let mut execution_facts_update = None;
+    let execution_facts = if phase == Phase::WorkerExec {
+        let mut ledger = turn_context.orchestrated_execution_ledger.lock().await;
+        let facts = ledger.facts();
+        execution_facts_update = ledger.take_update();
+        facts
+    } else {
+        OrchestratedExecutionFacts::default()
+    };
+    let mut retained_items = vec![packet_item];
+    if let Some(execution_facts_update) = execution_facts_update {
+        retained_items.push(ContextualUserFragment::into(execution_facts_update));
+    }
+    sess.replace_orchestrated_phase_history(turn_context, baseline, retained_items)
         .await;
-    packet
+    PhasePacket {
+        execution_facts,
+        ..packet
+    }
 }
 
 fn phase_packet(phase: Phase, phase_items: &[ResponseItem]) -> String {
@@ -569,6 +641,7 @@ fn truncate_packet(text: &str, phase: Phase) -> PhasePacket {
         return PhasePacket {
             text: text.to_string(),
             truncated: false,
+            execution_facts: OrchestratedExecutionFacts::default(),
         };
     }
     let mut end = max_bytes.saturating_sub(suffix.len());
@@ -578,5 +651,6 @@ fn truncate_packet(text: &str, phase: Phase) -> PhasePacket {
     PhasePacket {
         text: format!("{}{}", &text[..end], suffix),
         truncated: true,
+        execution_facts: OrchestratedExecutionFacts::default(),
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::context::OrchestratedExecutionLedger;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
 use codex_core_skills::HostSkillsSnapshot;
@@ -128,6 +129,7 @@ pub struct TurnContext {
     pub(crate) collaboration_mode: CollaborationMode,
     pub(crate) orchestrated_role: Option<&'static str>,
     pub(crate) orchestrated_execution_approved: AtomicBool,
+    pub(crate) orchestrated_execution_ledger: Arc<Mutex<OrchestratedExecutionLedger>>,
     pub(crate) multi_agent_version: MultiAgentVersion,
     pub(crate) personality: Option<Personality>,
     pub(crate) approval_policy: Constrained<AskForApproval>,
@@ -292,6 +294,7 @@ impl TurnContext {
             orchestrated_execution_approved: AtomicBool::new(
                 self.orchestrated_execution_approved.load(Ordering::Relaxed),
             ),
+            orchestrated_execution_ledger: Arc::clone(&self.orchestrated_execution_ledger),
             multi_agent_version: self.multi_agent_version,
             personality: self.personality,
             approval_policy: self.approval_policy.clone(),
@@ -574,6 +577,9 @@ impl Session {
             collaboration_mode: session_configuration.collaboration_mode.clone(),
             orchestrated_role: None,
             orchestrated_execution_approved: AtomicBool::new(false),
+            orchestrated_execution_ledger: Arc::new(Mutex::new(
+                OrchestratedExecutionLedger::default(),
+            )),
             multi_agent_version,
             personality: session_configuration.personality,
             approval_policy: session_configuration.approval_policy.clone(),

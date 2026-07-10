@@ -2893,10 +2893,9 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         mut baseline: Vec<ResponseItem>,
-        packet: ResponseItem,
+        packets: Vec<ResponseItem>,
     ) {
-        let packet = [packet];
-        let prepared_packet = self.prepare_conversation_items_for_history(turn_context, &packet);
+        let prepared_packet = self.prepare_conversation_items_for_history(turn_context, &packets);
         baseline.extend_from_slice(prepared_packet.as_ref());
         {
             let mut state = self.state.lock().await;

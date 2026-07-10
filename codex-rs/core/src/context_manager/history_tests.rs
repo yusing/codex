@@ -445,6 +445,15 @@ fn legacy_inter_agent_assistant_messages_are_not_turn_boundaries() {
 }
 
 #[test]
+fn orchestrated_execution_facts_are_not_turn_boundaries() {
+    let item = user_input_text_msg(
+        "<orchestrated_execution_facts>\n- none\n</orchestrated_execution_facts>",
+    );
+
+    assert!(!is_user_turn_boundary(&item));
+}
+
+#[test]
 fn total_token_usage_includes_all_items_after_last_model_generated_item() {
     let mut history = create_history_with_items(vec![assistant_msg("already counted by API")]);
     history.update_token_info(

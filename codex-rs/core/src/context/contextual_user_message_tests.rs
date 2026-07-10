@@ -84,6 +84,13 @@ fn detects_recommended_plugins_fragment() {
 }
 
 #[test]
+fn detects_orchestrated_execution_facts_fragment() {
+    assert!(is_contextual_user_fragment(&ContentItem::InputText {
+        text: "<orchestrated_execution_facts>\n- none\n</orchestrated_execution_facts>".to_string(),
+    }));
+}
+
+#[test]
 fn detects_legacy_goal_context_fragment() {
     assert!(is_contextual_user_fragment(&ContentItem::InputText {
         text: "<goal_context>\nContinue working toward the active thread goal.\n</goal_context>"
