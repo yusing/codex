@@ -268,7 +268,12 @@ impl ExecCell {
             "orchestrator" => "Orchestrator",
             role => role,
         };
-        vec![label.to_string().cyan(), " · ".dim()]
+        let label = if role == "orchestrator" {
+            label.to_string().magenta()
+        } else {
+            label.to_string().cyan()
+        };
+        vec![label, " · ".dim()]
     }
 
     fn output_ellipsis_text(omitted: usize) -> String {
@@ -291,9 +296,9 @@ impl ExecCell {
         ];
         header.extend(self.attribution_spans());
         header.push(if self.is_active() {
-            "Exploring".bold()
+            "Exploring".cyan().bold()
         } else {
-            "Explored".bold()
+            "Explored".green().bold()
         });
         out.push(Line::from(header));
 

@@ -2,6 +2,41 @@
 
 use super::*;
 
+const ORCHESTRATOR_PROTOCOL_PREFIX: &str = "orc:";
+const ORCHESTRATOR_DISPLAY_LABEL: &str = "Orchestrator";
+
+fn style_orchestrator_prefix(line: &mut HyperlinkLine) {
+    let Some(first_span) = line.line.spans.first() else {
+        return;
+    };
+    let Some(remainder) = first_span
+        .content
+        .strip_prefix(ORCHESTRATOR_PROTOCOL_PREFIX)
+    else {
+        return;
+    };
+
+    let trimmed_remainder = remainder.trim_start();
+    let removed_width = ORCHESTRATOR_PROTOCOL_PREFIX.width()
+        + remainder[..remainder.len() - trimmed_remainder.len()].width();
+    let replacement_width =
+        ORCHESTRATOR_DISPLAY_LABEL.width() + usize::from(!trimmed_remainder.is_empty());
+    let offset = replacement_width - removed_width;
+    for hyperlink in &mut line.hyperlinks {
+        hyperlink.columns = hyperlink.columns.start + offset..hyperlink.columns.end + offset;
+    }
+    let mut spans = vec![ORCHESTRATOR_DISPLAY_LABEL.magenta().bold()];
+    if !trimmed_remainder.is_empty() {
+        spans.push(" ".into());
+        spans.push(Span::styled(
+            trimmed_remainder.to_string(),
+            first_span.style,
+        ));
+    }
+    spans.extend(line.line.spans.iter().skip(1).cloned());
+    line.line.spans = spans;
+}
+
 #[derive(Debug)]
 pub(crate) struct UserHistoryCell {
     pub message: String,
@@ -316,8 +351,14 @@ impl HistoryCell for AgentMessageCell {
     }
 
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
+        let mut lines = self.lines.clone();
+        if self.is_first_line
+            && let Some(first_line) = lines.first_mut()
+        {
+            style_orchestrator_prefix(first_line);
+        }
         let mut wrapped = Vec::new();
-        for (index, line) in self.lines.iter().enumerate() {
+        for (index, line) in lines.iter().enumerate() {
             let initial_indent = if index == 0 && self.is_first_line {
                 "• ".dim().into()
             } else {
@@ -404,6 +445,10 @@ impl HistoryCell for AgentMarkdownCell {
             Some(wrap_width),
             Some(self.cwd.as_path()),
         );
+        let mut lines = lines;
+        if let Some(first_line) = lines.first_mut() {
+            style_orchestrator_prefix(first_line);
+        }
         prefix_hyperlink_lines(lines, "• ".dim(), "  ".into())
     }
 
@@ -444,8 +489,14 @@ impl HistoryCell for StreamingAgentTailCell {
     fn display_hyperlink_lines(&self, _width: u16) -> Vec<HyperlinkLine> {
         // Tail lines are already rendered at the controller's current stream width.
         // Re-wrapping them here can split table borders and produce malformed in-flight rows.
+        let mut source_lines = self.lines.clone();
+        if self.is_first_line
+            && let Some(first_line) = source_lines.first_mut()
+        {
+            style_orchestrator_prefix(first_line);
+        }
         let mut lines = prefix_hyperlink_lines(
-            self.lines.clone(),
+            source_lines,
             if self.is_first_line {
                 "• ".dim()
             } else {

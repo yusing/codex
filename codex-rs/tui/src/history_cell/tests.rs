@@ -21,10 +21,12 @@ use dirs::home_dir;
 use pretty_assertions::assert_eq;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use reqwest::StatusCode;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use unicode_width::UnicodeWidthStr;
 
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
 use codex_protocol::mcp::CallToolResult;
@@ -2504,6 +2506,40 @@ fn agent_markdown_cell_renders_source_at_different_widths() {
     assert!(
         lines_32.len() > lines_80.len(),
         "narrower width should produce more wrapped lines: {lines_32:?}",
+    );
+}
+
+#[test]
+fn agent_messages_render_orchestrator_prefix_as_a_styled_label() {
+    let cell = AgentMarkdownCell::new(
+        "orc: reviewing the completed work\n".to_string(),
+        &test_cwd(),
+    );
+
+    let lines = cell.display_lines(/*width*/ 80);
+    insta::assert_snapshot!(render_lines(&lines).join("\n"), @"• Orchestrator reviewing the completed work");
+    assert_eq!(lines[0].spans[1].content, "Orchestrator");
+    assert_eq!(lines[0].spans[1].style.fg, Some(Color::Magenta));
+    assert!(
+        lines[0].spans[1]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD)
+    );
+}
+
+#[test]
+fn agent_messages_keep_links_aligned_after_styling_orchestrator_prefix() {
+    let cell = AgentMarkdownCell::new(
+        "orc: [documentation](https://example.com)\n".to_string(),
+        &test_cwd(),
+    );
+
+    let lines = cell.display_hyperlink_lines(/*width*/ 80);
+    let link_start = "• Orchestrator ".width();
+    assert_eq!(
+        lines[0].hyperlinks[0].columns,
+        link_start..link_start + "documentation".width()
     );
 }
 

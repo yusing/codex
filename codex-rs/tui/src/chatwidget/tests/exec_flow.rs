@@ -1,5 +1,6 @@
 use super::*;
 use pretty_assertions::assert_eq;
+use ratatui::style::Color;
 
 #[tokio::test]
 async fn exec_approval_emits_proposed_command_and_decision_history() {
@@ -575,11 +576,17 @@ async fn orchestrated_exec_cells_show_role_attribution() {
     let orchestrator = begin_exec(&mut chat, "call-orchestrator", "echo orchestrator");
     end_exec(&mut chat, orchestrator, "", "", /*exit_code*/ 0);
 
-    let history = drain_insert_history(&mut rx)
+    let cells = drain_insert_history(&mut rx);
+    let history = cells
         .iter()
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
     assert_chatwidget_snapshot!("orchestrated_exec_cells_show_role_attribution", history);
+    assert_eq!(cells[0][0].spans[2].style.fg, Some(Color::Cyan));
+    assert_eq!(cells[0][0].spans[4].style.fg, Some(Color::Green));
+    assert_eq!(cells[1][0].spans[2].style.fg, Some(Color::Cyan));
+    assert_eq!(cells[1][0].spans[4].style.fg, Some(Color::Green));
+    assert_eq!(cells[2][0].spans[2].style.fg, Some(Color::Magenta));
 }
 
 #[tokio::test]
