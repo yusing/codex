@@ -60,7 +60,7 @@ use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 pub use current_time::CurrentTimeHandler;
 pub use dynamic::DynamicToolHandler;
-pub(crate) use explorer_shell::wrap_explorer_shell_runtime;
+pub(crate) use explorer_shell::wrap_read_only_shell_runtime;
 pub use get_context_remaining::GetContextRemainingHandler;
 pub use list_available_plugins_to_install::ListAvailablePluginsToInstallHandler;
 pub use mcp::McpHandler;

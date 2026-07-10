@@ -1,6 +1,7 @@
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::EXPLORER_ROLE_NAME;
+use crate::agent::role::PLAN_EVIDENCE_ROLE_NAME;
 use crate::agent::role::PLAN_REVIEW_ROLE_NAME;
 use crate::agent::role::RESULT_REVIEW_ROLE_NAME;
 use crate::agent::role::TASK_CONTRACT_ROLE_NAME;
@@ -57,7 +58,7 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
-use crate::tools::handlers::wrap_explorer_shell_runtime;
+use crate::tools::handlers::wrap_read_only_shell_runtime;
 use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_web_search_tool;
 use crate::tools::registry::CoreToolRuntime;
@@ -628,7 +629,7 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
     }
 
     match context.step_context.turn.orchestrated_role {
-        Some(EXPLORER_ROLE_NAME) => {
+        role if orchestrated_phase_has_read_only_shell(role) => {
             add_shell_tools(context, planned_tools);
             return;
         }
@@ -661,6 +662,10 @@ fn orchestrated_phase_has_no_tools(role: Option<&str>) -> bool {
     )
 }
 
+fn orchestrated_phase_has_read_only_shell(role: Option<&str>) -> bool {
+    matches!(role, Some(EXPLORER_ROLE_NAME | PLAN_EVIDENCE_ROLE_NAME))
+}
+
 fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
     namespace_tools_enabled(turn_context)
         && (turn_context.model_info.use_responses_lite
@@ -678,16 +683,18 @@ fn tool_environment_mode(step_context: &StepContext) -> ToolEnvironmentMode {
 #[instrument(level = "trace", skip_all)]
 fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     let turn_context = context.step_context.turn.as_ref();
-    let explorer_shell = turn_context.orchestrated_role == Some(EXPLORER_ROLE_NAME);
+    let read_only_inspection_shell =
+        orchestrated_phase_has_read_only_shell(turn_context.orchestrated_role);
     let features = turn_context.config.features.get();
     let environment_mode = tool_environment_mode(context.step_context);
     if !environment_mode.has_environment() {
         return;
     }
 
-    let allow_login_shell = !explorer_shell && turn_context.config.permissions.allow_login_shell;
+    let allow_login_shell =
+        !read_only_inspection_shell && turn_context.config.permissions.allow_login_shell;
     let exec_permission_approvals_enabled =
-        !explorer_shell && features.enabled(Feature::ExecPermissionApprovals);
+        !read_only_inspection_shell && features.enabled(Feature::ExecPermissionApprovals);
     let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
     let shell_command_options = ShellCommandHandlerOptions {
         backend_config: shell_command_backend_for_features(features),
@@ -697,7 +704,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Planne
 
     match shell_type_for_model_and_features(&turn_context.model_info, features) {
         ConfigShellToolType::UnifiedExec => {
-            planned_tools.add_arc(wrap_explorer_shell_runtime(
+            planned_tools.add_arc(wrap_read_only_shell_runtime(
                 Arc::new(ExecCommandHandler::new(ExecCommandHandlerOptions {
                     allow_login_shell,
                     exec_permission_approvals_enabled,
@@ -707,18 +714,18 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Planne
                         context.step_context,
                     ),
                 })),
-                explorer_shell,
+                read_only_inspection_shell,
             ));
-            if !explorer_shell {
+            if !read_only_inspection_shell {
                 planned_tools.add(WriteStdinHandler);
             }
 
             // Keep the legacy shell tool registered while unified exec is
             // model-visible.
             planned_tools.add_arc(override_tool_exposure(
-                wrap_explorer_shell_runtime(
+                wrap_read_only_shell_runtime(
                     Arc::new(ShellCommandHandler::new(shell_command_options)),
-                    explorer_shell,
+                    read_only_inspection_shell,
                 ),
                 ToolExposure::Hidden,
             ));
@@ -727,9 +734,9 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Planne
         ConfigShellToolType::Default
         | ConfigShellToolType::Local
         | ConfigShellToolType::ShellCommand => {
-            planned_tools.add_arc(wrap_explorer_shell_runtime(
+            planned_tools.add_arc(wrap_read_only_shell_runtime(
                 Arc::new(ShellCommandHandler::new(shell_command_options)),
-                explorer_shell,
+                read_only_inspection_shell,
             ));
         }
     }
@@ -816,9 +823,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         ));
     }
 
-    if environment_mode.has_environment()
-        && turn_context.model_info.apply_patch_tool_type.is_some()
-        && turn_context.orchestrated_role != Some(EXPLORER_ROLE_NAME)
+    if environment_mode.has_environment() && turn_context.model_info.apply_patch_tool_type.is_some()
     {
         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         planned_tools.add(ApplyPatchHandler::new(include_environment_id));

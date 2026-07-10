@@ -81,9 +81,9 @@ fn payload_rejects_execution_widening_options() {
 
 #[tokio::test]
 async fn runtime_skips_pre_hook_for_invalid_or_widening_payloads() {
-    let runtime = wrap_explorer_shell_runtime(
+    let runtime = wrap_read_only_shell_runtime(
         Arc::new(ExecCommandHandler::default()),
-        /*explorer_shell*/ true,
+        /*read_only_shell*/ true,
     );
 
     for arguments in [
@@ -127,9 +127,9 @@ async fn runtime_blocks_hook_rewrite_to_mutating_command() {
                 .expect("serialize exec command args"),
         },
     };
-    let runtime = wrap_explorer_shell_runtime(
+    let runtime = wrap_read_only_shell_runtime(
         Arc::new(ExecCommandHandler::default()),
-        /*explorer_shell*/ true,
+        /*read_only_shell*/ true,
     );
 
     let err =

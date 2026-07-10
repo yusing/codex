@@ -14,6 +14,7 @@ use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
+use codex_utils_output_truncation::approx_token_count;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
@@ -216,6 +217,14 @@ fn streaming_chunk(events: Vec<Value>) -> StreamingSseChunk {
         gate: None,
         body: sse(events),
     }
+}
+
+fn assistant_sse(id: &str, text: &str) -> String {
+    sse(vec![
+        ev_response_created(id),
+        ev_assistant_message(&format!("{id}-msg"), text),
+        ev_completed(id),
+    ])
 }
 
 fn incomplete_stream_chunk() -> StreamingSseChunk {
@@ -1578,6 +1587,220 @@ async fn orchestrated_mode_explorer_blocks_mutating_shell_command() -> Result<()
         !test.workspace_path(blocked_file).exists(),
         "blocked explorer command should not create a file"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_gathers_bounded_plan_evidence_before_approval() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let call_id = "plan-evidence-read-shell";
+    let args = serde_json::to_string(&json!({
+        "cmd": "echo plan_evidence_marker",
+        "yield_time_ms": 1000,
+    }))?;
+    let evidence_packet = "plan-evidence: complete\nquery: ResolveArguments\nscope: internal/recipe\ntotal: 1\nreturned: 1\nomitted: 0\ninternal/recipe/recipe.go:951";
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse(
+                "plan-evidence-contract",
+                "task-contract: remove dead wrapper",
+            ),
+            assistant_sse(
+                "plan-evidence-explorer",
+                "explorer: inspect argument resolution",
+            ),
+            assistant_sse(
+                "plan-evidence-worker-plan",
+                "worker-plan: remove ResolveArguments",
+            ),
+            assistant_sse(
+                "plan-evidence-review-request",
+                "plan-review: evidence-needed\nquestion: Does ResolveArguments have callers?\nscope: internal/recipe",
+            ),
+            sse(vec![
+                ev_response_created("plan-evidence-shell"),
+                ev_function_call(call_id, "exec_command", &args),
+                ev_completed("plan-evidence-shell"),
+            ]),
+            assistant_sse("plan-evidence-result", evidence_packet),
+            assistant_sse(
+                "plan-evidence-review-approved",
+                "plan-review: approved; definition-only evidence is complete",
+            ),
+            assistant_sse(
+                "plan-evidence-worker",
+                "worker: complete; removed dead wrapper",
+            ),
+            assistant_sse(
+                "plan-evidence-result-review",
+                "result-review: approved; verified",
+            ),
+            assistant_sse("plan-evidence-orchestrator", "orc: done"),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            configure_multi_agent_v2(config);
+            config.orchestrated_mode.explorer_model = Some("gpt-5.4-mini".to_string());
+            config.orchestrated_mode.explorer_reasoning_effort = Some(ReasoningEffort::Low);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_orchestrated_user_input(&test, "verify the plan before editing".to_string()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 10);
+
+    let first_review = requests[3].body_json();
+    assert_eq!(request_tool_names(&first_review), Vec::<String>::new());
+
+    let evidence_request = requests[4].body_json();
+    assert_eq!(evidence_request["model"].as_str(), Some("gpt-5.4-mini"));
+    assert_eq!(
+        evidence_request["reasoning"]["effort"].as_str(),
+        Some("low")
+    );
+    let evidence_tools = request_tool_names(&evidence_request);
+    assert!(
+        evidence_tools.iter().any(|tool| tool == "exec_command"),
+        "plan evidence should receive guarded shell: {evidence_tools:?}"
+    );
+    assert!(
+        !evidence_tools
+            .iter()
+            .any(|tool| { matches!(tool.as_str(), "apply_patch" | "write_stdin" | "spawn_agent") }),
+        "plan evidence should receive only read-only inspection tools: {evidence_tools:?}"
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[4].input()),
+            "You are the plan-evidence phase in Orchestrated mode.",
+        ),
+        1
+    );
+    requests[5].function_call_output(call_id);
+
+    let second_review = requests[6].body_json();
+    assert_eq!(request_tool_names(&second_review), Vec::<String>::new());
+    assert!(
+        !body_has_function_call_output(&second_review, call_id),
+        "plan review should receive compact evidence, not raw tool output"
+    );
+    assert_eq!(
+        count_containing(
+            &message_texts(&requests[6].input(), "assistant"),
+            evidence_packet
+        ),
+        1
+    );
+
+    let orchestrator = requests[9].body_json();
+    assert!(
+        !body_has_function_call_output(&orchestrator, call_id),
+        "orchestrator should receive compact evidence, not raw tool output"
+    );
+    assert_eq!(
+        count_containing(
+            &message_texts(&requests[9].input(), "assistant"),
+            evidence_packet
+        ),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_caps_plan_evidence_at_one_round_per_plan() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let oversized_evidence = format!(
+        "plan-evidence: complete\n{}",
+        "matching evidence ".repeat(2_000)
+    );
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse("evidence-cap-contract", "task-contract: bounded review"),
+            assistant_sse("evidence-cap-explorer", "explorer: initial evidence"),
+            assistant_sse("evidence-cap-plan-1", "worker-plan: first plan"),
+            assistant_sse(
+                "evidence-cap-review-1",
+                "plan-review: evidence-needed; first question",
+            ),
+            assistant_sse("evidence-cap-result-1", &oversized_evidence),
+            assistant_sse(
+                "evidence-cap-review-2",
+                "plan-review: approved; evidence supports the first plan",
+            ),
+            assistant_sse("evidence-cap-plan-2", "worker-plan: second plan"),
+            assistant_sse(
+                "evidence-cap-review-3",
+                "plan-review: evidence-needed; second-plan question",
+            ),
+            assistant_sse(
+                "evidence-cap-result-2",
+                "plan-evidence: complete; second-plan evidence",
+            ),
+            assistant_sse(
+                "evidence-cap-review-4",
+                "plan-review: evidence-needed; repeated second-plan question",
+            ),
+            assistant_sse("evidence-cap-plan-3", "worker-plan: final plan"),
+            assistant_sse(
+                "evidence-cap-review-5",
+                "plan-review: approved; final plan needs no evidence",
+            ),
+            assistant_sse(
+                "evidence-cap-worker",
+                "worker: complete; final plan applied",
+            ),
+            assistant_sse("evidence-cap-result-review", "result-review: approved"),
+            assistant_sse("evidence-cap-orchestrator", "orc: done"),
+        ],
+    )
+    .await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+
+    submit_orchestrated_user_input(&test, "keep evidence retrieval bounded".to_string()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 15);
+    let revised_review_input = requests[5].input();
+    let truncated_evidence = message_texts(&revised_review_input, "assistant")
+        .into_iter()
+        .find(|text| text.starts_with("plan-evidence:"))
+        .expect("first revised review should receive plan evidence");
+    assert!(truncated_evidence.contains("plan evidence exceeded the 1000-token hard limit"));
+    assert!(approx_token_count(truncated_evidence) <= 1_000);
+    let phase_count = |prompt| {
+        requests
+            .iter()
+            .filter(|request| {
+                let input = request.input();
+                developer_texts(&input)
+                    .last()
+                    .is_some_and(|message| message.contains(prompt))
+            })
+            .count()
+    };
+    assert_eq!(phase_count("You are the plan-evidence phase"), 2);
+    assert_eq!(phase_count("You are the worker-execution phase"), 1);
 
     Ok(())
 }

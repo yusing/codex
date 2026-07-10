@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::agent::role::EXPLORER_ROLE_NAME;
+use crate::agent::role::PLAN_EVIDENCE_ROLE_NAME;
 use crate::agent::role::PLAN_REVIEW_ROLE_NAME;
 use crate::agent::role::RESULT_REVIEW_ROLE_NAME;
 use crate::agent::role::TASK_CONTRACT_ROLE_NAME;
@@ -21,6 +22,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::OrchestratedRoleUpdatedEvent;
+use codex_utils_output_truncation::approx_bytes_for_tokens;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -29,14 +31,19 @@ use super::session::Session;
 use super::turn::run_sampling_request;
 use super::turn_context::TurnContext;
 
+mod prompts;
+
 const MAX_PLAN_REVISIONS: usize = 2;
 const MAX_WORK_REVISIONS: usize = 2;
 const MAX_PHASE_STEPS: usize = 32;
+const MAX_PLAN_EVIDENCE_PACKET_TOKENS: usize = 1_000;
 // Prompts target 2 KiB packets. Keep a larger hard ceiling so small model-side
 // budget misses do not throw away useful evidence or exhaust review retries.
 const MAX_PACKET_BYTES: usize = 8_192;
 const TRUNCATED_PACKET_SUFFIX: &str =
     "\n[packet truncated: phase output exceeded the 8192-byte hard limit]";
+const TRUNCATED_PLAN_EVIDENCE_PACKET_SUFFIX: &str =
+    "\n[packet truncated: plan evidence exceeded the 1000-token hard limit]";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Phase {
@@ -44,6 +51,7 @@ enum Phase {
     Explorer,
     WorkerPlan,
     PlanReview,
+    PlanEvidence,
     WorkerExec,
     ResultReview,
 }
@@ -66,6 +74,7 @@ impl Phase {
             Self::Explorer => EXPLORER_ROLE_NAME,
             Self::WorkerPlan => WORKER_PLAN_ROLE_NAME,
             Self::PlanReview => PLAN_REVIEW_ROLE_NAME,
+            Self::PlanEvidence => PLAN_EVIDENCE_ROLE_NAME,
             Self::WorkerExec => WORKER_ROLE_NAME,
             Self::ResultReview => RESULT_REVIEW_ROLE_NAME,
         }
@@ -77,6 +86,7 @@ impl Phase {
             EXPLORER_ROLE_NAME => Some(Self::Explorer),
             WORKER_PLAN_ROLE_NAME => Some(Self::WorkerPlan),
             PLAN_REVIEW_ROLE_NAME => Some(Self::PlanReview),
+            PLAN_EVIDENCE_ROLE_NAME => Some(Self::PlanEvidence),
             WORKER_ROLE_NAME => Some(Self::WorkerExec),
             RESULT_REVIEW_ROLE_NAME => Some(Self::ResultReview),
             _ => None,
@@ -86,7 +96,7 @@ impl Phase {
     fn model_override(self, turn_context: &TurnContext) -> Option<&str> {
         match self {
             Self::TaskContract | Self::PlanReview | Self::ResultReview => None,
-            Self::Explorer => turn_context
+            Self::Explorer | Self::PlanEvidence => turn_context
                 .config
                 .orchestrated_mode
                 .explorer_model
@@ -102,7 +112,7 @@ impl Phase {
     fn reasoning_effort_override(self, turn_context: &TurnContext) -> Option<ReasoningEffort> {
         match self {
             Self::TaskContract | Self::PlanReview | Self::ResultReview => None,
-            Self::Explorer => turn_context
+            Self::Explorer | Self::PlanEvidence => turn_context
                 .config
                 .orchestrated_mode
                 .explorer_reasoning_effort
@@ -117,24 +127,13 @@ impl Phase {
 
     fn prompt(self) -> &'static str {
         match self {
-            Self::TaskContract => {
-                "You are the task-contract phase in Orchestrated mode. Translate the original user request and active instructions into one concise packet prefixed exactly `task-contract:`. Include objective, non-goals, constraints, allowed scope, done criteria, verification plan, and output budgets. Do not inspect, edit, or execute work. Keep the packet under 2048 bytes."
-            }
-            Self::Explorer => {
-                "You are the explorer phase in Orchestrated mode. Use the guarded read-only shell to inspect the task contract and repository context. Do not edit files. Produce one concise evidence packet prefixed exactly `explorer:`. Include relevant files, exact source-of-truth anchors, likely tests, and risks. Reference large source listings and logs by path or captured output ID instead of copying them. Keep the packet under 2048 bytes."
-            }
-            Self::WorkerPlan => {
-                "You are the worker-plan phase in Orchestrated mode. Using the task contract and explorer packet, produce one concise implementation plan prefixed exactly `worker-plan:`. Include interpretation, files to touch, intended changes, tests, risk notes, and confidence. If a prior plan review requested revision or a prior plan packet was marked truncated, address it without expanding scope. Do not call tools or execute work. Keep the packet under 2048 bytes."
-            }
-            Self::PlanReview => {
-                "You are the orchestrator plan-review phase in Orchestrated mode. Check the latest worker plan against the task contract, explorer evidence, original user request, and active instructions. A packet marked truncated must be revised. Do not call tools or execute work. Emit exactly one packet beginning `plan-review: approved` when aligned, or `plan-review: revise` followed by concise corrections when drifted. Keep the packet under 2048 bytes."
-            }
-            Self::WorkerExec => {
-                "You are the worker-execution phase in Orchestrated mode. Own execution of the latest approved plan: inspect as needed, implement the complete change, and run every scoped verification required by the task and repository instructions. Do not spawn sub-agents. Respect the selected permission profile; never broaden filesystem authority only to run checks. If a tool needs writable cache or temporary output outside the allowed roots, redirect only its mutable outputs to an already writable temporary root while preserving readable dependency caches. If a result-review packet requested corrections, address every correction before finishing. If prior work is complete but its packet was marked truncated, do not redo the work; re-emit a smaller evidence packet. Emit one structured packet beginning `worker: complete` only when done criteria and verification pass, otherwise `worker: incomplete`. Include summary, changed files, verification commands/results, failures, unresolved risks, and paths or captured IDs for large logs/diffs. Never copy large artifacts inline. Keep the packet under 2048 bytes."
-            }
-            Self::ResultReview => {
-                "You are the orchestrator result-review phase in Orchestrated mode. Review the latest worker packet against the task contract, approved plan, explorer evidence, original user request, and active instructions. Do not call tools or execute work. Require concrete changed-file and verification evidence; reject a truncated packet, missing tests, failed checks, unresolved correctness gaps, scope drift, or an `incomplete` worker status. Corrections must respect the selected permission profile: prefer moving only mutable outputs to an already writable temporary root, and preserve readable dependency caches instead of replacing them with empty scratch caches. Emit exactly one packet beginning `result-review: approved` when the work is ready for concise final synthesis, or `result-review: revise` followed by bounded, actionable corrections for the worker. Keep the packet under 2048 bytes."
-            }
+            Self::TaskContract => prompts::TASK_CONTRACT,
+            Self::Explorer => prompts::EXPLORER,
+            Self::WorkerPlan => prompts::WORKER_PLAN,
+            Self::PlanReview => prompts::PLAN_REVIEW,
+            Self::PlanEvidence => prompts::PLAN_EVIDENCE,
+            Self::WorkerExec => prompts::WORKER,
+            Self::ResultReview => prompts::RESULT_REVIEW,
         }
     }
 }
@@ -221,17 +220,40 @@ async fn run_phases(
             cancellation_token.child_token(),
         )
         .await?;
-        let review_packet = run_phase(
-            Arc::clone(&sess),
-            Arc::clone(&turn_context),
-            Arc::clone(&turn_extension_data),
-            Arc::clone(&turn_diff_tracker),
-            Phase::PlanReview,
-            client_session,
-            cancellation_token.child_token(),
-        )
-        .await?;
+        let mut plan_evidence_truncated = false;
+        let mut plan_evidence_gathered = false;
+        let review_packet = loop {
+            let review_packet = run_phase(
+                Arc::clone(&sess),
+                Arc::clone(&turn_context),
+                Arc::clone(&turn_extension_data),
+                Arc::clone(&turn_diff_tracker),
+                Phase::PlanReview,
+                client_session,
+                cancellation_token.child_token(),
+            )
+            .await?;
+            if review_packet.truncated
+                || !review_requests_evidence(&review_packet.text)
+                || plan_evidence_gathered
+            {
+                break review_packet;
+            }
+            let evidence_packet = run_phase(
+                Arc::clone(&sess),
+                Arc::clone(&turn_context),
+                Arc::clone(&turn_extension_data),
+                Arc::clone(&turn_diff_tracker),
+                Phase::PlanEvidence,
+                client_session,
+                cancellation_token.child_token(),
+            )
+            .await?;
+            plan_evidence_truncated |= evidence_packet.truncated;
+            plan_evidence_gathered = true;
+        };
         if !worker_plan.truncated
+            && !plan_evidence_truncated
             && !review_packet.truncated
             && review_approved(&review_packet.text, PLAN_REVIEW_ROLE_NAME)
         {
@@ -279,6 +301,10 @@ fn review_approved(packet: &str, role: &str) -> bool {
     packet_has_status(packet, role, "approved")
 }
 
+fn review_requests_evidence(packet: &str) -> bool {
+    packet_has_status(packet, PLAN_REVIEW_ROLE_NAME, "evidence-needed")
+}
+
 fn worker_completed(packet: &str) -> bool {
     packet_has_status(packet, WORKER_ROLE_NAME, "complete")
 }
@@ -303,9 +329,7 @@ pub(super) fn add_sampling_instruction(turn_context: &TurnContext, input: &mut V
         return;
     }
     if turn_context.collaboration_mode.mode == ModeKind::Orchestrated {
-        input.push(developer_instruction_item(
-            "You are the orchestrator role for the remainder of this Orchestrated-mode turn. Use only the compact task-contract, explorer, worker-plan, plan-review, worker, and result-review packets as bounded internal context. Worker owns inspection, implementation, and verification. Do not redo worker work or request shell/edit tools. If result review approved, emit concise final synthesis. If approval was exhausted, report remaining corrections without claiming completion. Use collaboration tools only for genuinely separate delegated work; give leaf tasks an explicit `explorer` or `worker` agent type so they use cheap configured models without nested orchestration. Prefix visible orchestrator messages with `orc:`.",
-        ));
+        input.push(developer_instruction_item(prompts::ORCHESTRATOR));
     }
 }
 
@@ -426,7 +450,7 @@ async fn compact_phase_history(
     let after_items = sess.clone_history().await.into_raw_items();
     let phase_items = after_items.get(baseline.len()..).unwrap_or_default();
     let full_packet = phase_packet(phase, phase_items);
-    let packet = truncate_packet(&full_packet);
+    let packet = truncate_packet(&full_packet, phase);
     let packet_item = ResponseItem::Message {
         id: None,
         role: "assistant".to_string(),
@@ -478,19 +502,26 @@ fn assistant_message_text(item: &ResponseItem) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn truncate_packet(text: &str) -> PhasePacket {
-    if text.len() <= MAX_PACKET_BYTES {
+fn truncate_packet(text: &str, phase: Phase) -> PhasePacket {
+    let (max_bytes, suffix) = match phase {
+        Phase::PlanEvidence => (
+            approx_bytes_for_tokens(MAX_PLAN_EVIDENCE_PACKET_TOKENS),
+            TRUNCATED_PLAN_EVIDENCE_PACKET_SUFFIX,
+        ),
+        _ => (MAX_PACKET_BYTES, TRUNCATED_PACKET_SUFFIX),
+    };
+    if text.len() <= max_bytes {
         return PhasePacket {
             text: text.to_string(),
             truncated: false,
         };
     }
-    let mut end = MAX_PACKET_BYTES.saturating_sub(TRUNCATED_PACKET_SUFFIX.len());
+    let mut end = max_bytes.saturating_sub(suffix.len());
     while !text.is_char_boundary(end) {
         end -= 1;
     }
     PhasePacket {
-        text: format!("{}{}", &text[..end], TRUNCATED_PACKET_SUFFIX),
+        text: format!("{}{}", &text[..end], suffix),
         truncated: true,
     }
 }

@@ -31,28 +31,28 @@ use super::unified_exec::shell_mode_for_environment;
 
 type PlannedRuntime = Arc<dyn CoreToolRuntime>;
 
-pub(crate) fn wrap_explorer_shell_runtime(
+pub(crate) fn wrap_read_only_shell_runtime(
     handler: PlannedRuntime,
-    explorer_shell: bool,
+    read_only_shell: bool,
 ) -> PlannedRuntime {
-    if explorer_shell {
-        Arc::new(ExplorerShellRuntime { handler })
+    if read_only_shell {
+        Arc::new(ReadOnlyShellRuntime { handler })
     } else {
         handler
     }
 }
 
-struct ExplorerShellRuntime {
+struct ReadOnlyShellRuntime {
     handler: PlannedRuntime,
 }
 
-impl ToolExecutor<ToolInvocation> for ExplorerShellRuntime {
+impl ToolExecutor<ToolInvocation> for ReadOnlyShellRuntime {
     fn tool_name(&self) -> ToolName {
         self.handler.tool_name()
     }
 
     fn spec(&self) -> ToolSpec {
-        explorer_shell_runtime_spec(self.handler.spec())
+        read_only_shell_runtime_spec(self.handler.spec())
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -68,14 +68,14 @@ impl ToolExecutor<ToolInvocation> for ExplorerShellRuntime {
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-        match validate_explorer_shell_invocation(&invocation) {
+        match validate_read_only_shell_invocation(&invocation) {
             Ok(_) => self.handler.handle(invocation),
             Err(err) => Box::pin(async move { Err(err) }),
         }
     }
 }
 
-impl CoreToolRuntime for ExplorerShellRuntime {
+impl CoreToolRuntime for ReadOnlyShellRuntime {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         self.handler.matches_kind(payload)
     }
@@ -100,7 +100,7 @@ impl CoreToolRuntime for ExplorerShellRuntime {
     }
 
     fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
-        let command = validate_explorer_shell_invocation(invocation).ok()?;
+        let command = validate_read_only_shell_invocation(invocation).ok()?;
         Some(PreToolUsePayload {
             tool_name: HookToolName::bash(),
             tool_input: serde_json::json!({ "command": command }),
@@ -115,7 +115,7 @@ impl CoreToolRuntime for ExplorerShellRuntime {
         let invocation = self
             .handler
             .with_updated_hook_input(invocation, updated_input)?;
-        validate_explorer_shell_invocation(&invocation)?;
+        validate_read_only_shell_invocation(&invocation)?;
         Ok(invocation)
     }
 
@@ -124,7 +124,7 @@ impl CoreToolRuntime for ExplorerShellRuntime {
     }
 }
 
-fn explorer_shell_runtime_spec(spec: ToolSpec) -> ToolSpec {
+fn read_only_shell_runtime_spec(spec: ToolSpec) -> ToolSpec {
     let ToolSpec::Function(mut tool) = spec else {
         return spec;
     };
@@ -148,12 +148,12 @@ fn explorer_shell_runtime_spec(spec: ToolSpec) -> ToolSpec {
     ToolSpec::Function(tool)
 }
 
-fn validate_explorer_shell_invocation(
+fn validate_read_only_shell_invocation(
     invocation: &ToolInvocation,
 ) -> Result<String, FunctionCallError> {
-    let arguments = explorer_shell_arguments(&invocation.payload)?;
+    let arguments = read_only_shell_arguments(&invocation.payload)?;
     reject_forbidden_options(&invocation.tool_name, &arguments)?;
-    let resolved = resolve_explorer_shell_command(invocation)?;
+    let resolved = resolve_read_only_shell_command(invocation)?;
 
     if codex_shell_command::is_safe_command::is_known_safe_command(&resolved.argv)
         || is_git_agent_search_command(&resolved.argv)
@@ -168,7 +168,7 @@ fn validate_explorer_shell_invocation(
     }
 }
 
-fn explorer_shell_arguments(
+fn read_only_shell_arguments(
     payload: &ToolPayload,
 ) -> Result<Map<String, Value>, FunctionCallError> {
     let ToolPayload::Function { arguments } = payload else {
@@ -234,15 +234,15 @@ fn reject_forbidden_options(
     }
 }
 
-struct ResolvedExplorerShellCommand {
+struct ResolvedReadOnlyShellCommand {
     command: String,
     argv: Vec<String>,
     shell_type: ShellType,
 }
 
-fn resolve_explorer_shell_command(
+fn resolve_read_only_shell_command(
     invocation: &ToolInvocation,
-) -> Result<ResolvedExplorerShellCommand, FunctionCallError> {
+) -> Result<ResolvedReadOnlyShellCommand, FunctionCallError> {
     let ToolPayload::Function { arguments } = &invocation.payload else {
         unreachable!("validated function payload");
     };
@@ -274,7 +274,7 @@ fn resolve_explorer_shell_command(
             let command = args.cmd.clone();
             let resolved = get_command(&args, shell, &shell_mode, /*allow_login_shell*/ false)
                 .map_err(FunctionCallError::RespondToModel)?;
-            Ok(ResolvedExplorerShellCommand {
+            Ok(ResolvedReadOnlyShellCommand {
                 command,
                 argv: resolved.command,
                 shell_type: resolved.shell_type,
@@ -293,7 +293,7 @@ fn resolve_explorer_shell_command(
             );
             let command = params.command;
             let argv = shell.derive_exec_args(&command, /*use_login_shell*/ false);
-            Ok(ResolvedExplorerShellCommand {
+            Ok(ResolvedReadOnlyShellCommand {
                 command,
                 argv,
                 shell_type: shell.shell_type,
