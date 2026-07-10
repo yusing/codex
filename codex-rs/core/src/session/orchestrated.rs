@@ -9,17 +9,14 @@ use crate::agent::role::TASK_CONTRACT_ROLE_NAME;
 use crate::agent::role::WORKER_PLAN_ROLE_NAME;
 use crate::agent::role::WORKER_ROLE_NAME;
 use crate::client::ModelClientSession;
-use crate::config::Constrained;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::tools::context::SharedTurnDiffTracker;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::OrchestratedRoleUpdatedEvent;
 use codex_utils_output_truncation::approx_bytes_for_tokens;
@@ -370,10 +367,6 @@ async fn run_phase(
         .await;
     role_turn_context.orchestrated_role = Some(phase.name());
     role_turn_context.final_output_json_schema = None;
-    if phase != Phase::WorkerExec {
-        role_turn_context.permission_profile = PermissionProfile::read_only();
-        role_turn_context.approval_policy = Constrained::allow_only(AskForApproval::Never);
-    }
     if let Some(reasoning_effort) = phase.reasoning_effort_override(&root_turn_context) {
         role_turn_context.reasoning_effort = Some(reasoning_effort);
         role_turn_context.collaboration_mode = role_turn_context.collaboration_mode.with_updates(

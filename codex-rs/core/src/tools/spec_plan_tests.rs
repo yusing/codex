@@ -495,10 +495,17 @@ async fn shell_family_registers_visible_unified_exec_and_hidden_legacy_shell() {
 }
 
 #[tokio::test]
-async fn inspection_roles_get_read_only_shell_without_stdin_or_apply_patch() {
+async fn inspection_roles_get_shell_transport_without_apply_patch() {
     for role in [super::EXPLORER_ROLE_NAME, super::PLAN_EVIDENCE_ROLE_NAME] {
         let plan = probe(|turn| {
-            set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);
+            set_features(
+                turn,
+                &[
+                    Feature::ShellTool,
+                    Feature::UnifiedExec,
+                    Feature::ExecPermissionApprovals,
+                ],
+            );
             set_feature(turn, Feature::ShellZshFork, /*enabled*/ false);
             turn.model_info.shell_type = ConfigShellToolType::ShellCommand;
             turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
@@ -506,13 +513,13 @@ async fn inspection_roles_get_read_only_shell_without_stdin_or_apply_patch() {
         })
         .await;
 
-        plan.assert_visible_contains(&["exec_command"]);
-        plan.assert_visible_lacks(&["shell_command", "write_stdin", "apply_patch"]);
-        plan.assert_registered_contains(&["exec_command", "shell_command"]);
-        plan.assert_registered_lacks(&["write_stdin", "apply_patch"]);
+        plan.assert_visible_contains(&["exec_command", "write_stdin"]);
+        plan.assert_visible_lacks(&["shell_command", "apply_patch"]);
+        plan.assert_registered_contains(&["exec_command", "write_stdin", "shell_command"]);
+        plan.assert_registered_lacks(&["apply_patch"]);
         assert_eq!(plan.exposure("shell_command"), ToolExposure::Hidden);
         let exec_command = plan.visible_spec("exec_command");
-        for forbidden in [
+        for inherited_parameter in [
             "shell",
             "tty",
             "login",
@@ -522,8 +529,8 @@ async fn inspection_roles_get_read_only_shell_without_stdin_or_apply_patch() {
             "prefix_rule",
         ] {
             assert!(
-                !has_parameter(exec_command, forbidden),
-                "{role} exec_command schema should hide `{forbidden}`"
+                has_parameter(exec_command, inherited_parameter),
+                "{role} exec_command schema should include `{inherited_parameter}`"
             );
         }
     }

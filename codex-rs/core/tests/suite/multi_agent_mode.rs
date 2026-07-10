@@ -1,17 +1,22 @@
 use anyhow::Result;
 use codex_core::config::Config;
+use codex_core::config::Constrained;
 use codex_features::Feature;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use codex_utils_output_truncation::approx_token_count;
@@ -29,6 +34,7 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::skip_if_sandbox;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_codex::test_codex;
@@ -888,11 +894,11 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
         explorer_tools
             .iter()
             .any(|tool| matches!(tool.as_str(), "exec_command" | "shell_command")),
-        "explorer should receive read-only shell access: {explorer_tools:?}"
+        "explorer should receive shell access: {explorer_tools:?}"
     );
     assert!(
-        !explorer_tools.iter().any(|tool| tool == "write_stdin"),
-        "explorer should not receive stdin transport: {explorer_tools:?}"
+        explorer_tools.iter().any(|tool| tool == "write_stdin"),
+        "explorer should receive stdin transport: {explorer_tools:?}"
     );
     assert!(
         !explorer_tools.iter().any(|tool| tool == "spawn_agent"),
@@ -1429,7 +1435,7 @@ async fn orchestrated_mode_internal_roles_hide_legacy_collaboration_tools() -> R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn orchestrated_mode_explorer_can_run_read_only_shell_command() -> Result<()> {
+async fn orchestrated_mode_explorer_can_run_shell_command() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1486,11 +1492,7 @@ async fn orchestrated_mode_explorer_can_run_read_only_shell_command() -> Result<
     .await;
     let test = test_codex().build_with_auto_env(&server).await?;
 
-    submit_orchestrated_user_input(
-        &test,
-        "explorer should inspect with read-only shell".to_string(),
-    )
-    .await?;
+    submit_orchestrated_user_input(&test, "explorer should inspect with shell".to_string()).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -1508,85 +1510,181 @@ async fn orchestrated_mode_explorer_can_run_read_only_shell_command() -> Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn orchestrated_mode_explorer_blocks_mutating_shell_command() -> Result<()> {
+async fn orchestrated_mode_explorer_respects_shell_permission_modes() -> Result<()> {
     skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
 
-    let server = start_mock_server().await;
-    let call_id = "explorer-block-shell";
-    let blocked_file = "explorer_blocked_shell.txt";
-    let args = serde_json::to_string(&json!({
-        "cmd": format!("echo blocked > {blocked_file}"),
-        "yield_time_ms": 1000,
-    }))?;
-    let responses = mount_sse_sequence(
-        &server,
-        vec![
+    for (mode, approval_policy, permission_profile, reviewer) in [
+        (
+            "ask",
+            AskForApproval::OnRequest,
+            PermissionProfile::read_only(),
+            ApprovalsReviewer::User,
+        ),
+        (
+            "auto-review",
+            AskForApproval::OnRequest,
+            PermissionProfile::read_only(),
+            ApprovalsReviewer::AutoReview,
+        ),
+        (
+            "yolo",
+            AskForApproval::Never,
+            PermissionProfile::Disabled,
+            ApprovalsReviewer::User,
+        ),
+    ] {
+        let server = start_mock_server().await;
+        let call_id = format!("explorer-{mode}-shell");
+        let output_file = format!("explorer_{mode}_shell.txt");
+        let mut args = json!({
+            "cmd": format!("echo {mode} > {output_file}"),
+            "yield_time_ms": 1000,
+        });
+        if approval_policy == AskForApproval::OnRequest {
+            args["sandbox_permissions"] = json!("require_escalated");
+            args["justification"] = json!("Exercise configured approval routing.");
+        }
+        let contract_response = format!("resp-contract-{mode}-shell");
+        let explorer_response = format!("resp-explorer-{mode}-shell");
+        let mut response_sequence = vec![
             sse(vec![
-                ev_response_created("resp-contract-shell-block"),
+                ev_response_created(&contract_response),
                 ev_assistant_message(
-                    "msg-contract-shell-block",
-                    "task-contract: inspect without mutation",
+                    &format!("msg-contract-{mode}-shell"),
+                    "task-contract: respect configured permissions",
                 ),
-                ev_completed("resp-contract-shell-block"),
+                ev_completed(&contract_response),
             ]),
             sse(vec![
-                ev_response_created("resp-explorer-shell-block-1"),
-                ev_function_call(call_id, "exec_command", &args),
-                ev_completed("resp-explorer-shell-block-1"),
+                ev_response_created(&explorer_response),
+                ev_function_call(&call_id, "exec_command", &serde_json::to_string(&args)?),
+                ev_completed(&explorer_response),
             ]),
-            sse(vec![
-                ev_assistant_message("msg-explorer-shell-block-1", "explorer: shell blocked"),
-                ev_completed("resp-explorer-shell-block-2"),
-            ]),
-            sse(vec![
+        ];
+        if reviewer == ApprovalsReviewer::AutoReview {
+            response_sequence.push(sse(vec![
+                ev_response_created("resp-guardian-shell"),
                 ev_assistant_message(
-                    "msg-worker-plan-shell-block",
-                    "worker-plan: no changes needed",
+                    "msg-guardian-shell",
+                    &json!({
+                        "risk_level": "high",
+                        "user_authorization": "low",
+                        "outcome": "deny",
+                        "rationale": "The explorer write should be denied by Auto Review.",
+                    })
+                    .to_string(),
                 ),
-                ev_completed("resp-worker-plan-shell-block"),
+                ev_completed("resp-guardian-shell"),
+            ]));
+        }
+        response_sequence.extend([
+            sse(vec![
+                ev_assistant_message("msg-explorer-shell", "explorer: shell complete"),
+                ev_completed("resp-explorer-shell-complete"),
             ]),
             sse(vec![
-                ev_assistant_message(
-                    "msg-plan-review-shell-block",
-                    "plan-review: approved; no changes",
-                ),
-                ev_completed("resp-plan-review-shell-block"),
+                ev_assistant_message("msg-worker-plan-shell", "worker-plan: no changes needed"),
+                ev_completed("resp-worker-plan-shell"),
             ]),
             sse(vec![
-                ev_assistant_message("msg-worker-shell-block", "worker: complete; no changes"),
-                ev_completed("resp-worker-shell-block"),
+                ev_assistant_message("msg-plan-review-shell", "plan-review: approved; no changes"),
+                ev_completed("resp-plan-review-shell"),
             ]),
             sse(vec![
-                ev_assistant_message("msg-result-review-shell-block", "result-review: approved"),
-                ev_completed("resp-result-review-shell-block"),
+                ev_assistant_message("msg-worker-shell", "worker: complete; no changes"),
+                ev_completed("resp-worker-shell"),
             ]),
             sse(vec![
-                ev_assistant_message("msg-root-shell-block-1", "orc: done"),
-                ev_completed("resp-root-shell-block-1"),
+                ev_assistant_message("msg-result-review-shell", "result-review: approved"),
+                ev_completed("resp-result-review-shell"),
             ]),
-        ],
-    )
-    .await;
-    let test = test_codex().build_with_auto_env(&server).await?;
+            sse(vec![
+                ev_assistant_message("msg-root-shell", "orc: done"),
+                ev_completed("resp-root-shell"),
+            ]),
+        ]);
+        let responses = mount_sse_sequence(&server, response_sequence).await;
+        let permission_profile_for_config = permission_profile.clone();
+        let test = test_codex()
+            .with_config(move |config| {
+                config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+                config
+                    .permissions
+                    .set_permission_profile(permission_profile_for_config)
+                    .expect("set permission profile");
+                config
+                    .features
+                    .enable(Feature::ExecPermissionApprovals)
+                    .expect("test config should allow feature update");
+            })
+            .build_with_auto_env(&server)
+            .await?;
 
-    submit_orchestrated_user_input(&test, "explorer should reject mutating shell".to_string())
-        .await?;
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+        test.codex
+            .submit(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: format!("respect {mode} shell permissions"),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: ThreadSettingsOverrides {
+                    approvals_reviewer: Some(reviewer),
+                    collaboration_mode: Some(CollaborationMode {
+                        mode: ModeKind::Orchestrated,
+                        settings: Settings {
+                            model: test.session_configured.model.clone(),
+                            reasoning_effort: Some(ReasoningEffort::High),
+                            developer_instructions: None,
+                        },
+                    }),
+                    effort: Some(Some(ReasoningEffort::High)),
+                    ..Default::default()
+                },
+            })
+            .await?;
 
-    let output = responses
-        .function_call_output_text(call_id)
-        .expect("explorer blocked shell output should be returned");
-    assert_eq!(
-        output,
-        "explorer role can only run read-only shell commands"
-    );
-    assert!(
-        !test.workspace_path(blocked_file).exists(),
-        "blocked explorer command should not create a file"
-    );
+        if reviewer == ApprovalsReviewer::User && approval_policy == AskForApproval::OnRequest {
+            let approval_event = wait_for_event(&test.codex, |event| {
+                matches!(
+                    event,
+                    EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
+                )
+            })
+            .await;
+            let EventMsg::ExecApprovalRequest(approval) = approval_event else {
+                panic!("expected user approval request before completion");
+            };
+            assert_eq!(approval.call_id, call_id);
+            test.codex
+                .submit(Op::ExecApproval {
+                    id: approval.effective_approval_id(),
+                    turn_id: None,
+                    decision: ReviewDecision::Approved,
+                })
+                .await?;
+        }
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+
+        let output_path = test.workspace_path(&output_file);
+        if reviewer == ApprovalsReviewer::AutoReview {
+            assert!(
+                !output_path.exists(),
+                "Auto Review should deny explorer write"
+            );
+            let output = responses
+                .function_call_output_text(&call_id)
+                .expect("Auto Review denial should be returned to explorer");
+            assert!(output.contains("explorer write should be denied"));
+        } else {
+            assert_eq!(std::fs::read_to_string(output_path)?, format!("{mode}\n"));
+        }
+    }
 
     Ok(())
 }
@@ -1673,13 +1771,13 @@ async fn orchestrated_mode_gathers_bounded_plan_evidence_before_approval() -> Re
     let evidence_tools = request_tool_names(&evidence_request);
     assert!(
         evidence_tools.iter().any(|tool| tool == "exec_command"),
-        "plan evidence should receive guarded shell: {evidence_tools:?}"
+        "plan evidence should receive shell access: {evidence_tools:?}"
     );
     assert!(
         !evidence_tools
             .iter()
-            .any(|tool| { matches!(tool.as_str(), "apply_patch" | "write_stdin" | "spawn_agent") }),
-        "plan evidence should receive only read-only inspection tools: {evidence_tools:?}"
+            .any(|tool| { matches!(tool.as_str(), "apply_patch" | "spawn_agent") }),
+        "plan evidence should receive shell transport without edit or spawn tools: {evidence_tools:?}"
     );
     assert_eq!(
         count_containing(
