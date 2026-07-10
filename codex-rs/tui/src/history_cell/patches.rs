@@ -3,12 +3,7 @@
 use super::*;
 use codex_utils_path_uri::LegacyAppPathString;
 
-#[derive(Debug, Default)]
-pub(crate) enum PatchAttribution {
-    #[default]
-    Unattributed,
-    OrchestratedRole(String),
-}
+pub(crate) use crate::orchestrated_role::Attribution as PatchAttribution;
 
 #[derive(Debug)]
 pub(crate) struct PatchHistoryCell {

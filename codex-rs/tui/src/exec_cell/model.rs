@@ -11,6 +11,8 @@ use std::time::Instant;
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
 use codex_protocol::parse_command::ParsedCommand;
 
+pub(crate) use crate::orchestrated_role::Attribution as ExecCellAttribution;
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CommandOutput {
     pub(crate) exit_code: i32,
@@ -37,13 +39,6 @@ pub(crate) struct ExecCell {
     pub(crate) calls: Vec<ExecCall>,
     pub(crate) attribution: ExecCellAttribution,
     animations_enabled: bool,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) enum ExecCellAttribution {
-    #[default]
-    Unattributed,
-    OrchestratedRole(String),
 }
 
 impl ExecCell {

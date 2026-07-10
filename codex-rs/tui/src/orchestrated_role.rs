@@ -1,6 +1,13 @@
 use ratatui::prelude::*;
 use ratatui::style::Stylize;
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Attribution {
+    #[default]
+    Unattributed,
+    OrchestratedRole(String),
+}
+
 pub(crate) fn packet_role_prefix(text: &str) -> Option<(&'static str, &str)> {
     [
         ("task-contract", "task-contract:"),
