@@ -303,6 +303,10 @@ fn review_requests_evidence(packet: &str) -> bool {
 }
 
 fn worker_completed(packet: &str) -> bool {
+    let packet = packet
+        .strip_prefix("orc:")
+        .map(str::trim_start)
+        .unwrap_or(packet);
     packet_has_status(packet, WORKER_ROLE_NAME, "complete")
 }
 

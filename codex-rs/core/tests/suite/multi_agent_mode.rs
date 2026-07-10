@@ -345,6 +345,51 @@ async fn orchestrated_mode_uses_internal_roles_without_proactive_subagent_text()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_mode_accepts_orchestrator_prefix_on_completed_worker_packet() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            assistant_sse("resp-contract", "task-contract: update repository"),
+            assistant_sse("resp-explorer", "explorer: repository inspected"),
+            assistant_sse("resp-worker-plan", "worker-plan: update safely"),
+            assistant_sse("resp-plan-review", "plan-review: approved"),
+            assistant_sse(
+                "resp-worker",
+                "orc: worker: complete\nrepository updated and verified",
+            ),
+            assistant_sse("resp-result-review", "result-review: approved"),
+            assistant_sse("resp-orchestrator", "orc: done"),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(configure_multi_agent_v2)
+        .build(&server)
+        .await?;
+
+    submit_orchestrated_user_input(&test, "update repository".to_string()).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 7);
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[6].input()),
+            "You are the orchestrator role for the remainder of this Orchestrated-mode turn.",
+        ),
+        1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
