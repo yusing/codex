@@ -2913,6 +2913,18 @@ async fn orchestrated_mode_runs_internal_roles_for_queued_user_input() -> Result
         expected[index % 7] = 1;
         assert_eq!(developer_prompt_counts(index), expected, "request {index}");
     }
+    assert_eq!(
+        count_containing(
+            &developer_texts(
+                request_bodies[3]
+                    .get("input")
+                    .and_then(Value::as_array)
+                    .expect("plan-review input"),
+            ),
+            "never reject a plan because implementation or verification has not happened yet",
+        ),
+        1
+    );
     for (index, phase) in [0, 1, 2, 3, 2, 3, 2, 3, 6].into_iter().enumerate() {
         let index = index + 7;
         let mut expected = [0; 7];
