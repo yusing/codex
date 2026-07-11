@@ -49,7 +49,7 @@ async fn handle_spawn_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
-    let fork_mode = args.fork_mode()?;
+    let (fork_mode, requested_collaboration_mode) = args.spawn_options()?;
     let role_name = args
         .agent_type
         .as_deref()
@@ -97,7 +97,8 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
-    let collaboration_mode = inherited_spawn_collaboration_mode(turn.as_ref(), &config, role_name);
+    let collaboration_mode =
+        spawn_collaboration_mode(turn.as_ref(), &config, requested_collaboration_mode);
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -131,7 +132,7 @@ async fn handle_spawn_agent(
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),
                     environments: Some(turn.environments.to_selections()),
-                    collaboration_mode,
+                    collaboration_mode: Some(collaboration_mode),
                 },
             ),
     )
@@ -197,7 +198,10 @@ struct SpawnAgentArgs {
 }
 
 impl SpawnAgentArgs {
-    fn fork_mode(&self) -> Result<Option<SpawnAgentForkMode>, FunctionCallError> {
+    fn spawn_options(
+        &self,
+    ) -> Result<(Option<SpawnAgentForkMode>, Option<SpawnCollaborationMode>), FunctionCallError>
+    {
         if self.fork_context.is_some() {
             return Err(FunctionCallError::RespondToModel(
                 "fork_context is not supported in MultiAgentV2; use fork_turns instead".to_string(),
@@ -210,26 +214,40 @@ impl SpawnAgentArgs {
             .map(str::trim)
             .filter(|fork_turns| !fork_turns.is_empty())
             .unwrap_or("all");
+        let (fork_turns, collaboration_mode) = if fork_turns.eq_ignore_ascii_case("orchestrated") {
+            ("all", Some(SpawnCollaborationMode::Orchestrated))
+        } else if let Some((mode, fork_turns)) = fork_turns.split_once(':')
+            && mode.eq_ignore_ascii_case("orchestrated")
+        {
+            (fork_turns, Some(SpawnCollaborationMode::Orchestrated))
+        } else {
+            (fork_turns, None)
+        };
 
         if fork_turns.eq_ignore_ascii_case("none") {
-            return Ok(None);
+            return Ok((None, collaboration_mode));
         }
         if fork_turns.eq_ignore_ascii_case("all") {
-            return Ok(Some(SpawnAgentForkMode::FullHistory));
+            return Ok((Some(SpawnAgentForkMode::FullHistory), collaboration_mode));
         }
 
         let last_n_turns = fork_turns.parse::<usize>().map_err(|_| {
             FunctionCallError::RespondToModel(
-                "fork_turns must be `none`, `all`, or a positive integer string".to_string(),
+                "fork_turns must be `none`, `all`, a positive integer string, or one of those values prefixed with `orchestrated:`"
+                    .to_string(),
             )
         })?;
         if last_n_turns == 0 {
             return Err(FunctionCallError::RespondToModel(
-                "fork_turns must be `none`, `all`, or a positive integer string".to_string(),
+                "fork_turns must be `none`, `all`, a positive integer string, or one of those values prefixed with `orchestrated:`"
+                    .to_string(),
             ));
         }
 
-        Ok(Some(SpawnAgentForkMode::LastNTurns(last_n_turns)))
+        Ok((
+            Some(SpawnAgentForkMode::LastNTurns(last_n_turns)),
+            collaboration_mode,
+        ))
     }
 }
 

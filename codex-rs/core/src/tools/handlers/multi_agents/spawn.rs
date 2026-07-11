@@ -124,7 +124,8 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
-    let collaboration_mode = inherited_spawn_collaboration_mode(turn.as_ref(), &config, role_name);
+    let collaboration_mode =
+        spawn_collaboration_mode(turn.as_ref(), &config, /*requested_mode*/ None);
 
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
@@ -141,7 +142,7 @@ async fn handle_spawn_agent(
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
             parent_thread_id: Some(session.thread_id),
             environments: Some(turn.environments.to_selections()),
-            collaboration_mode,
+            collaboration_mode: Some(collaboration_mode),
         },
     ))
     .await

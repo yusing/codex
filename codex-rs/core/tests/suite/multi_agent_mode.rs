@@ -937,127 +937,19 @@ async fn orchestrated_mode_stops_stagnant_direct_worker_retries() -> Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Result<()> {
+async fn default_mode_can_spawn_orchestrated_subagent() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            request_contains(request, "spawn child in orchestrated mode")
-                && request_last_developer_message_contains(
-                    request,
-                    "You are the task-contract phase in Orchestrated mode.",
-                )
-        },
-        sse(vec![
-            ev_response_created("parent-contract"),
-            ev_assistant_message("parent-contract-msg", "task-contract: spawn child"),
-            ev_completed("parent-contract"),
-        ]),
-    )
-    .await;
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            request_contains(request, "spawn child in orchestrated mode")
-                && request_last_developer_message_contains(
-                    request,
-                    "You are the explorer phase in Orchestrated mode.",
-                )
-        },
-        sse(vec![
-            ev_response_created("parent-explorer"),
-            ev_assistant_message("parent-explorer-msg", "explorer: parent scan"),
-            ev_completed("parent-explorer"),
-        ]),
-    )
-    .await;
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            request_contains(request, "spawn child in orchestrated mode")
-                && request_last_developer_message_contains(
-                    request,
-                    "You are the worker-plan phase in Orchestrated mode.",
-                )
-        },
-        sse(vec![
-            ev_response_created("parent-worker-plan"),
-            ev_assistant_message(
-                "parent-worker-plan-msg",
-                "worker-plan: parent prepared spawn",
-            ),
-            ev_completed("parent-worker-plan"),
-        ]),
-    )
-    .await;
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            request_contains(request, "spawn child in orchestrated mode")
-                && request_last_developer_message_contains(
-                    request,
-                    "You are the orchestrator plan-review phase in Orchestrated mode.",
-                )
-        },
-        sse(vec![
-            ev_response_created("parent-plan-review"),
-            ev_assistant_message(
-                "parent-plan-review-msg",
-                "plan-review: approved parent spawn",
-            ),
-            ev_completed("parent-plan-review"),
-        ]),
-    )
-    .await;
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            request_contains(request, "spawn child in orchestrated mode")
-                && request_last_developer_message_contains(
-                    request,
-                    "You are the worker-execution phase in Orchestrated mode.",
-                )
-        },
-        sse(vec![
-            ev_response_created("parent-worker"),
-            ev_assistant_message("parent-worker-msg", "worker: complete; parent ready"),
-            ev_completed("parent-worker"),
-        ]),
-    )
-    .await;
-    mount_sse_once_match(
-        &server,
-        |request: &wiremock::Request| {
-            request_contains(request, "spawn child in orchestrated mode")
-                && request_last_developer_message_contains(
-                    request,
-                    "You are the orchestrator result-review phase in Orchestrated mode.",
-                )
-        },
-        sse(vec![
-            ev_response_created("parent-result-review"),
-            ev_assistant_message(
-                "parent-result-review-msg",
-                "result-review: approved parent result",
-            ),
-            ev_completed("parent-result-review"),
-        ]),
-    )
-    .await;
     let spawn_args = serde_json::to_string(&json!({
-        "message": "child inherited orchestration task",
+        "message": "child orchestrated task",
         "task_name": "child",
+        "fork_turns": "orchestrated",
     }))?;
     mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
             request_contains(request, "spawn child in orchestrated mode")
-                && request_last_developer_message_contains(
-                    request,
-                    "You are the orchestrator role for the remainder of this Orchestrated-mode turn.",
-                )
                 && !request_has_function_call_output(request, "spawn-child")
         },
         sse(vec![
@@ -1219,7 +1111,7 @@ async fn orchestrated_mode_spawned_subagent_inherits_orchestrated_mode() -> Resu
             additional_context: Default::default(),
             thread_settings: ThreadSettingsOverrides {
                 collaboration_mode: Some(CollaborationMode {
-                    mode: ModeKind::Orchestrated,
+                    mode: ModeKind::Default,
                     settings: Settings {
                         model: test.session_configured.model.clone(),
                         reasoning_effort: Some(ReasoningEffort::High),

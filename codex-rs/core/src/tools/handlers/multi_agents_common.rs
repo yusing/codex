@@ -9,6 +9,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use codex_models_manager::collaboration_mode_presets::builtin_collaboration_mode_presets;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -22,6 +23,7 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 
@@ -207,22 +209,38 @@ pub(crate) fn reject_full_fork_spawn_overrides(
     Ok(())
 }
 
-pub(crate) fn inherited_spawn_collaboration_mode(
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SpawnCollaborationMode {
+    #[default]
+    Default,
+    Orchestrated,
+}
+
+impl SpawnCollaborationMode {
+    fn mode_kind(self) -> ModeKind {
+        match self {
+            Self::Default => ModeKind::Default,
+            Self::Orchestrated => ModeKind::Orchestrated,
+        }
+    }
+}
+
+pub(crate) fn spawn_collaboration_mode(
     turn: &TurnContext,
     config: &Config,
-    agent_role: Option<&str>,
-) -> Option<CollaborationMode> {
-    if turn.collaboration_mode.mode != ModeKind::Orchestrated
-        || matches!(agent_role, Some(EXPLORER_ROLE_NAME | WORKER_ROLE_NAME))
-    {
-        return None;
-    }
-
-    Some(turn.collaboration_mode.with_updates(
+    requested_mode: Option<SpawnCollaborationMode>,
+) -> CollaborationMode {
+    let mode = requested_mode.unwrap_or_default().mode_kind();
+    let preset = builtin_collaboration_mode_presets()
+        .into_iter()
+        .find(|preset| preset.mode == Some(mode))
+        .expect("spawn collaboration mode should have a built-in preset");
+    turn.collaboration_mode.apply_mask(&preset).with_updates(
         config.model.clone(),
         Some(config.model_reasoning_effort.clone()),
-        Some(config.developer_instructions.clone()),
-    ))
+        /*developer_instructions*/ None,
+    )
 }
 
 /// Resolves requested model settings with configured cheap defaults for orchestrated leaf agents.

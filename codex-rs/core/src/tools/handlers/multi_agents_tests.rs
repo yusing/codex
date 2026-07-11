@@ -4539,7 +4539,7 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
 }
 
 #[tokio::test]
-async fn orchestrated_leaf_spawn_resolves_model_pair_without_nested_orchestration() {
+async fn orchestrated_leaf_spawn_resolves_model_pair() {
     let (_session, mut turn) = make_session_and_context().await;
     turn.collaboration_mode.mode = ModeKind::Orchestrated;
     let mut parent_config = (*turn.config).clone();
@@ -4547,13 +4547,6 @@ async fn orchestrated_leaf_spawn_resolves_model_pair_without_nested_orchestratio
     parent_config.orchestrated_mode.worker_reasoning_effort = Some(ReasoningEffort::Medium);
     turn.config = Arc::new(parent_config);
 
-    let mut child_config = build_agent_spawn_config(
-        &BaseInstructions {
-            text: "base".to_string(),
-        },
-        &turn,
-    )
-    .expect("spawn config");
     let (model, reasoning_effort) = orchestrated_leaf_model_overrides(
         &turn,
         Some(crate::agent::role::WORKER_ROLE_NAME),
@@ -4583,22 +4576,49 @@ async fn orchestrated_leaf_spawn_resolves_model_pair_without_nested_orchestratio
         ),
         (Some("gpt-worker".to_string()), Some(ReasoningEffort::High))
     );
-    child_config.model = model;
-    child_config.model_reasoning_effort = reasoning_effort;
-    assert_eq!(
-        inherited_spawn_collaboration_mode(
+}
+
+#[tokio::test]
+async fn spawn_collaboration_mode_defaults_to_default_and_allows_orchestrated() {
+    assert!(serde_json::from_str::<SpawnCollaborationMode>("\"plan\"").is_err());
+
+    let (_session, mut turn) = make_session_and_context().await;
+    let child_config = build_agent_spawn_config(
+        &BaseInstructions {
+            text: "base".to_string(),
+        },
+        &turn,
+    )
+    .expect("spawn config");
+
+    for parent_mode in [ModeKind::Default, ModeKind::Plan, ModeKind::Orchestrated] {
+        turn.collaboration_mode.mode = parent_mode;
+
+        let default_mode =
+            spawn_collaboration_mode(&turn, &child_config, /*requested_mode*/ None);
+        assert_eq!(default_mode.mode, ModeKind::Default);
+        assert!(
+            default_mode
+                .settings
+                .developer_instructions
+                .as_deref()
+                .is_some_and(|instructions| instructions.contains("# Collaboration Mode: Default"))
+        );
+
+        let orchestrated_mode = spawn_collaboration_mode(
             &turn,
             &child_config,
-            Some(crate::agent::role::WORKER_ROLE_NAME),
-        ),
-        None
-    );
-    assert_eq!(
-        inherited_spawn_collaboration_mode(&turn, &child_config, /*agent_role*/ None)
-            .expect("untyped child should inherit orchestration")
-            .mode,
-        ModeKind::Orchestrated
-    );
+            Some(SpawnCollaborationMode::Orchestrated),
+        );
+        assert_eq!(orchestrated_mode.mode, ModeKind::Orchestrated);
+        assert!(
+            orchestrated_mode
+                .settings
+                .developer_instructions
+                .as_deref()
+                .is_some_and(|instructions| instructions.contains("# Orchestrated Mode"))
+        );
+    }
 }
 
 #[tokio::test]

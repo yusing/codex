@@ -235,6 +235,10 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
         .as_ref()
         .expect("spawn_agent should use object params");
 
+    assert_eq!(
+        properties.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["fork_turns", "message", "task_name"]
+    );
     assert!(!properties.contains_key("agent_type"));
     assert!(!properties.contains_key("model"));
     assert!(!properties.contains_key("reasoning_effort"));
