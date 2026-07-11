@@ -1497,6 +1497,13 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
         !explorer_tools.iter().any(|tool| tool == "spawn_agent"),
         "explorer should not receive recursive spawn tool: {explorer_tools:?}"
     );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[1].input()),
+            "For each task-relevant candidate, use a side-effect-free host lookup",
+        ),
+        1
+    );
 
     let worker_plan_request = requests[2].body_json();
     assert_eq!(worker_plan_request["model"].as_str(), Some("gpt-5.2"));
@@ -1516,6 +1523,13 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
         ),
         1
     );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[2].input()),
+            "Reconcile every planned executable with Explorer's host-availability evidence.",
+        ),
+        1
+    );
 
     let plan_review_request = requests[3].body_json();
     assert_eq!(
@@ -1529,6 +1543,13 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
     assert_eq!(
         request_tool_names(&plan_review_request),
         Vec::<String>::new()
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[3].input()),
+            "Treat every planned external executable without Explorer or plan-evidence availability evidence as unanswered.",
+        ),
+        1
     );
 
     let worker_request = requests[4].body_json();
@@ -1551,6 +1572,13 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
     assert!(
         !worker_tools.iter().any(|tool| tool == "spawn_agent"),
         "worker should not receive recursive spawn tool: {worker_tools:?}"
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[4].input()),
+            "Do not probe a known-unavailable executable or guess substitutes",
+        ),
+        1
     );
     let worker_input = requests[4].input();
     assert_eq!(
@@ -1585,6 +1613,20 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
     assert!(
         !body_has_function_call_output(&orchestrator_request, "worker-list-agents"),
         "orchestrator should receive compact role packets, not worker tool outputs"
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[7].input()),
+            "A later delegated review or check finding supersedes earlier result-review approval.",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[7].input()),
+            "delegate missing repository investigation to `explorer` leaf agents, delegate non-overlapping fixes and verification to `worker` leaf agents",
+        ),
+        1
     );
     let orchestrator_tools = request_tool_names(&orchestrator_request);
     assert!(
@@ -2503,6 +2545,13 @@ async fn orchestrated_mode_gathers_bounded_plan_evidence_before_approval() -> Re
         count_containing(
             &developer_texts(&requests[4].input()),
             "You are the plan-evidence phase in Orchestrated mode.",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[4].input()),
+            "For a host-tool question, use a side-effect-free lookup",
         ),
         1
     );
