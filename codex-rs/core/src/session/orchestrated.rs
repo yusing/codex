@@ -33,7 +33,7 @@ use super::session::Session;
 use super::turn::run_sampling_request;
 use super::turn_context::TurnContext;
 
-const MAX_PLAN_REVISIONS: usize = 2;
+const MAX_PLAN_REVISIONS: usize = 1;
 const MAX_WORK_REVISIONS: usize = 2;
 const MAX_PHASE_STEPS: usize = 32;
 const MAX_PLAN_EVIDENCE_PACKET_TOKENS: usize = 1_000;
@@ -268,8 +268,12 @@ async fn run_phases(
         emit_role_update(&sess, &turn_context, None).await;
         return Ok(());
     }
+    if task_contract.truncated {
+        emit_role_update(&sess, &turn_context, None).await;
+        return Ok(());
+    }
 
-    let _ = run_phase(
+    let explorer_packet = run_phase(
         Arc::clone(&sess),
         Arc::clone(&turn_context),
         Arc::clone(&turn_extension_data),
@@ -279,8 +283,13 @@ async fn run_phases(
         cancellation_token.child_token(),
     )
     .await?;
+    if explorer_packet.truncated {
+        emit_role_update(&sess, &turn_context, None).await;
+        return Ok(());
+    }
 
-    for _ in 0..=MAX_PLAN_REVISIONS {
+    let mut plan_evidence_gathered = false;
+    'planning: for _ in 0..=MAX_PLAN_REVISIONS {
         let worker_plan = run_phase(
             Arc::clone(&sess),
             Arc::clone(&turn_context),
@@ -291,8 +300,9 @@ async fn run_phases(
             cancellation_token.child_token(),
         )
         .await?;
-        let mut plan_evidence_truncated = false;
-        let mut plan_evidence_gathered = false;
+        if worker_plan.truncated {
+            continue;
+        }
         let review_packet = loop {
             let review_packet = run_phase(
                 Arc::clone(&sess),
@@ -304,11 +314,11 @@ async fn run_phases(
                 cancellation_token.child_token(),
             )
             .await?;
-            if review_packet.truncated
-                || !review_requests_evidence(&review_packet.text)
-                || plan_evidence_gathered
-            {
+            if review_packet.truncated || !review_requests_evidence(&review_packet.text) {
                 break review_packet;
+            }
+            if plan_evidence_gathered {
+                break 'planning;
             }
             let evidence_packet = run_phase(
                 Arc::clone(&sess),
@@ -320,14 +330,15 @@ async fn run_phases(
                 cancellation_token.child_token(),
             )
             .await?;
-            plan_evidence_truncated |= evidence_packet.truncated;
             plan_evidence_gathered = true;
+            if evidence_packet.truncated {
+                break 'planning;
+            }
         };
-        if !worker_plan.truncated
-            && !plan_evidence_truncated
-            && !review_packet.truncated
-            && review_approved(&review_packet.text, PLAN_REVIEW_ROLE_NAME)
-        {
+        if review_packet.truncated {
+            break;
+        }
+        if review_approved(&review_packet.text, PLAN_REVIEW_ROLE_NAME) {
             turn_context
                 .orchestrated_execution_approved
                 .store(true, Ordering::Relaxed);

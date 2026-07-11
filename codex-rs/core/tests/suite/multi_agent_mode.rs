@@ -21,7 +21,6 @@ use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
-use codex_utils_output_truncation::approx_token_count;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
@@ -1500,7 +1499,7 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
     assert_eq!(
         count_containing(
             &developer_texts(&requests[1].input()),
-            "For each task-relevant candidate, use a side-effect-free host lookup",
+            "Repository instructions, scripts, established workflows, repository languages, and installed software do not by themselves make an executable task-relevant.",
         ),
         1
     );
@@ -1526,7 +1525,7 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
     assert_eq!(
         count_containing(
             &developer_texts(&requests[2].input()),
-            "Reconcile every planned executable with Explorer's host-availability evidence.",
+            "A revised plan replaces the prior plan packet, so restate the complete cumulative plan",
         ),
         1
     );
@@ -1547,7 +1546,7 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
     assert_eq!(
         count_containing(
             &developer_texts(&requests[3].input()),
-            "Treat every planned external executable without Explorer or plan-evidence availability evidence as unanswered.",
+            "Return every material correction you can identify in the first review packet instead of serializing feedback across retries.",
         ),
         1
     );
@@ -1576,7 +1575,7 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
     assert_eq!(
         count_containing(
             &developer_texts(&requests[4].input()),
-            "Do not probe a known-unavailable executable or guess substitutes",
+            "Probe or invoke only executables required by the approved task-specific implementation and verification steps.",
         ),
         1
     );
@@ -1914,8 +1913,6 @@ async fn orchestrated_mode_exhausted_plan_review_blocks_mutation() -> Result<()>
             ("review-1", "plan-review: revise first"),
             ("plan-2", "worker-plan: attempt two"),
             ("review-2", "plan-review: revise second"),
-            ("plan-3", "worker-plan: attempt three"),
-            ("review-3", "plan-review: revise third"),
             ("root", "orc: plan approval failed"),
         ]
         .into_iter()
@@ -1938,8 +1935,8 @@ async fn orchestrated_mode_exhausted_plan_review_blocks_mutation() -> Result<()>
     .await;
 
     let requests = responses.requests();
-    assert_eq!(requests.len(), 9);
-    for request in requests.iter().take(8) {
+    assert_eq!(requests.len(), 7);
+    for request in requests.iter().take(6) {
         assert_eq!(
             count_containing(
                 &developer_texts(&request.input()),
@@ -1949,13 +1946,27 @@ async fn orchestrated_mode_exhausted_plan_review_blocks_mutation() -> Result<()>
         );
     }
     assert_eq!(
-        request_tool_names(&requests[8].body_json()),
+        count_containing(
+            &developer_texts(&requests[6].input()),
+            "You are the orchestrator role for the remainder of this Orchestrated-mode turn.",
+        ),
+        1
+    );
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[6].input()),
+            "You are the worker-plan phase in Orchestrated mode.",
+        ),
+        0
+    );
+    assert_eq!(
+        request_tool_names(&requests[6].body_json()),
         Vec::<String>::new()
     );
     assert_eq!(
         count_containing(
-            &message_texts(&requests[8].input(), "assistant"),
-            "plan-review: revise third",
+            &message_texts(&requests[6].input(), "assistant"),
+            "plan-review: revise second",
         ),
         1
     );
@@ -2612,14 +2623,10 @@ async fn orchestrated_mode_gathers_bounded_plan_evidence_before_approval() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn orchestrated_mode_caps_plan_evidence_at_one_round_per_plan() -> Result<()> {
+async fn orchestrated_mode_caps_plan_evidence_at_one_round_per_turn() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let oversized_evidence = format!(
-        "plan-evidence: complete\n{}",
-        "matching evidence ".repeat(2_000)
-    );
     let responses = mount_sse_sequence(
         &server,
         vec![
@@ -2630,34 +2637,19 @@ async fn orchestrated_mode_caps_plan_evidence_at_one_round_per_plan() -> Result<
                 "evidence-cap-review-1",
                 "plan-review: evidence-needed; first question",
             ),
-            assistant_sse("evidence-cap-result-1", &oversized_evidence),
+            assistant_sse(
+                "evidence-cap-result-1",
+                "plan-evidence: complete; first-plan evidence",
+            ),
             assistant_sse(
                 "evidence-cap-review-2",
-                "plan-review: approved; evidence supports the first plan",
+                "plan-review: revise; apply gathered evidence",
             ),
             assistant_sse("evidence-cap-plan-2", "worker-plan: second plan"),
             assistant_sse(
                 "evidence-cap-review-3",
                 "plan-review: evidence-needed; second-plan question",
             ),
-            assistant_sse(
-                "evidence-cap-result-2",
-                "plan-evidence: complete; second-plan evidence",
-            ),
-            assistant_sse(
-                "evidence-cap-review-4",
-                "plan-review: evidence-needed; repeated second-plan question",
-            ),
-            assistant_sse("evidence-cap-plan-3", "worker-plan: final plan"),
-            assistant_sse(
-                "evidence-cap-review-5",
-                "plan-review: approved; final plan needs no evidence",
-            ),
-            assistant_sse(
-                "evidence-cap-worker",
-                "worker: complete; final plan applied",
-            ),
-            assistant_sse("evidence-cap-result-review", "result-review: approved"),
             assistant_sse("evidence-cap-orchestrator", "orc: done"),
         ],
     )
@@ -2671,14 +2663,16 @@ async fn orchestrated_mode_caps_plan_evidence_at_one_round_per_plan() -> Result<
     .await;
 
     let requests = responses.requests();
-    assert_eq!(requests.len(), 15);
+    assert_eq!(requests.len(), 9);
     let revised_review_input = requests[5].input();
-    let truncated_evidence = message_texts(&revised_review_input, "assistant")
+    let plan_evidence = message_texts(&revised_review_input, "assistant")
         .into_iter()
         .find(|text| text.starts_with("plan-evidence:"))
         .expect("first revised review should receive plan evidence");
-    assert!(truncated_evidence.contains("plan evidence exceeded the 1000-token hard limit"));
-    assert!(approx_token_count(truncated_evidence) <= 1_000);
+    assert_eq!(
+        plan_evidence,
+        "plan-evidence: complete; first-plan evidence"
+    );
     let phase_count = |prompt| {
         requests
             .iter()
@@ -2690,8 +2684,9 @@ async fn orchestrated_mode_caps_plan_evidence_at_one_round_per_plan() -> Result<
             })
             .count()
     };
-    assert_eq!(phase_count("You are the plan-evidence phase"), 2);
-    assert_eq!(phase_count("You are the worker-execution phase"), 1);
+    assert_eq!(phase_count("You are the plan-evidence phase"), 1);
+    assert_eq!(phase_count("You are the worker-execution phase"), 0);
+    assert_eq!(phase_count("You are the orchestrator role"), 1);
 
     Ok(())
 }
