@@ -495,28 +495,84 @@ async fn shell_family_registers_visible_unified_exec_and_hidden_legacy_shell() {
 }
 
 #[tokio::test]
-async fn inspection_roles_get_shell_transport_without_apply_patch() {
+async fn inspection_roles_get_read_only_tools_without_mutation_tools() {
     for role in [super::EXPLORER_ROLE_NAME, super::PLAN_EVIDENCE_ROLE_NAME] {
-        let plan = probe(|turn| {
-            set_features(
-                turn,
-                &[
-                    Feature::ShellTool,
-                    Feature::UnifiedExec,
-                    Feature::ExecPermissionApprovals,
+        let plan = probe_with(
+            |turn| {
+                use_chatgpt_auth(turn);
+                set_features(
+                    turn,
+                    &[
+                        Feature::ShellTool,
+                        Feature::UnifiedExec,
+                        Feature::ExecPermissionApprovals,
+                        Feature::StandaloneWebSearch,
+                    ],
+                );
+                set_web_search_mode(turn, WebSearchMode::Live);
+                set_feature(turn, Feature::ShellZshFork, /*enabled*/ false);
+                turn.model_info.shell_type = ConfigShellToolType::ShellCommand;
+                turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+                turn.orchestrated_role = Some(role);
+            },
+            ToolPlanInputs {
+                mcp_tools: Some(vec![mcp_tool("direct", "mcp__direct", "lookup")]),
+                extension_tool_executors: vec![
+                    Arc::new(TestNamespaceExtensionTool {
+                        namespace: "web",
+                        tool_name: "run",
+                    }),
+                    Arc::new(TestNamespaceExtensionTool {
+                        namespace: "image_gen",
+                        tool_name: "imagegen",
+                    }),
                 ],
-            );
-            set_feature(turn, Feature::ShellZshFork, /*enabled*/ false);
-            turn.model_info.shell_type = ConfigShellToolType::ShellCommand;
-            turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
-            turn.orchestrated_role = Some(role);
-        })
+                dynamic_tools: vec![dynamic_tool(
+                    None,
+                    "dynamic_mutation",
+                    /*defer_loading*/ false,
+                )],
+                ..ToolPlanInputs::default()
+            },
+        )
         .await;
 
-        plan.assert_visible_contains(&["exec_command", "write_stdin"]);
-        plan.assert_visible_lacks(&["shell_command", "apply_patch"]);
-        plan.assert_registered_contains(&["exec_command", "write_stdin", "shell_command"]);
-        plan.assert_registered_lacks(&["apply_patch"]);
+        plan.assert_visible_contains(&[
+            "exec_command",
+            "write_stdin",
+            "list_mcp_resources",
+            "list_mcp_resource_templates",
+            "read_mcp_resource",
+            "view_image",
+            "web",
+        ]);
+        plan.assert_visible_lacks(&[
+            "shell_command",
+            "apply_patch",
+            "mcp__direct",
+            "dynamic_mutation",
+            "image_gen",
+        ]);
+        let web_run = ToolName::namespaced("web", "run").to_string();
+        let direct_mcp = ToolName::namespaced("mcp__direct", "lookup").to_string();
+        let image_generation = ToolName::namespaced("image_gen", "imagegen").to_string();
+        plan.assert_registered_contains(&[
+            "exec_command",
+            "write_stdin",
+            "shell_command",
+            "list_mcp_resources",
+            "list_mcp_resource_templates",
+            "read_mcp_resource",
+            "view_image",
+            &web_run,
+        ]);
+        plan.assert_registered_lacks(&[
+            "apply_patch",
+            &direct_mcp,
+            "dynamic_mutation",
+            &image_generation,
+        ]);
+        assert_eq!(plan.namespace_function_names("web"), ["run"]);
         assert_eq!(plan.exposure("shell_command"), ToolExposure::Hidden);
         let exec_command = plan.visible_spec("exec_command");
         for inherited_parameter in [
@@ -534,6 +590,17 @@ async fn inspection_roles_get_shell_transport_without_apply_patch() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn inspection_role_gets_hosted_web_search_when_standalone_search_is_absent() {
+    let plan = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        turn.orchestrated_role = Some(super::EXPLORER_ROLE_NAME);
+    })
+    .await;
+
+    plan.assert_visible_contains(&["web_search"]);
 }
 
 #[tokio::test]

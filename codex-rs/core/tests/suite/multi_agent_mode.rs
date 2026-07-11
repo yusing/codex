@@ -1356,6 +1356,13 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
         Some("high")
     );
     assert_eq!(request_tool_names(&contract_request), Vec::<String>::new());
+    assert_eq!(
+        count_containing(
+            &developer_texts(&requests[0].input()),
+            "An interpretation is unresolved when alternatives would change behavior",
+        ),
+        1
+    );
 
     let explorer_request = requests[1].body_json();
     assert_eq!(explorer_request["model"].as_str(), Some("gpt-5.4-mini"));
@@ -1385,13 +1392,17 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
         "explorer should receive stdin transport: {explorer_tools:?}"
     );
     assert!(
+        explorer_tools.iter().any(|tool| tool == "view_image"),
+        "explorer should receive image inspection: {explorer_tools:?}"
+    );
+    assert!(
         !explorer_tools.iter().any(|tool| tool == "spawn_agent"),
         "explorer should not receive recursive spawn tool: {explorer_tools:?}"
     );
     assert_eq!(
         count_containing(
             &developer_texts(&requests[1].input()),
-            "Repository instructions, scripts, established workflows, repository languages, and installed software do not by themselves make an executable task-relevant.",
+            "Completion criterion: Worker can implement using only edit-local reads in the reported files.",
         ),
         1
     );
@@ -1417,7 +1428,7 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
     assert_eq!(
         count_containing(
             &developer_texts(&requests[2].input()),
-            "A revised plan replaces the prior plan packet, so restate the complete cumulative plan",
+            "Produce a sealed plan:",
         ),
         1
     );
@@ -1438,7 +1449,7 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
     assert_eq!(
         count_containing(
             &developer_texts(&requests[3].input()),
-            "Return every material correction you can identify in the first review packet instead of serializing feedback across retries.",
+            "Return every correction or at most three focused evidence questions in the first review.",
         ),
         1
     );
@@ -1467,7 +1478,7 @@ async fn orchestrated_mode_runs_internal_roles_before_orchestrator() -> Result<(
     assert_eq!(
         count_containing(
             &developer_texts(&requests[4].input()),
-            "Probe or invoke only executables required by the approved task-specific implementation and verification steps.",
+            "Approval does not seal an unsealed plan.",
         ),
         1
     );
@@ -2439,6 +2450,10 @@ async fn orchestrated_mode_gathers_bounded_plan_evidence_before_approval() -> Re
         "plan evidence should receive shell access: {evidence_tools:?}"
     );
     assert!(
+        evidence_tools.iter().any(|tool| tool == "view_image"),
+        "plan evidence should receive image inspection: {evidence_tools:?}"
+    );
+    assert!(
         !evidence_tools
             .iter()
             .any(|tool| { matches!(tool.as_str(), "apply_patch" | "spawn_agent") }),
@@ -2857,7 +2872,7 @@ async fn orchestrated_mode_runs_internal_roles_for_queued_user_input() -> Result
                     .and_then(Value::as_array)
                     .expect("plan-review input"),
             ),
-            "never reject a plan because implementation or verification has not happened yet",
+            "Approve only a sealed plan:",
         ),
         1
     );

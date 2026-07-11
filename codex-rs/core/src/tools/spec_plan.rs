@@ -628,8 +628,14 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
     }
 
     match context.step_context.turn.orchestrated_role {
-        role if orchestrated_phase_has_shell_only(role) => {
+        role if orchestrated_phase_has_inspection_tools(role) => {
             add_shell_tools(context, planned_tools);
+            add_mcp_resource_tools(context, planned_tools);
+            add_view_image_tool(context, planned_tools);
+            add_web_search_extension_tool(context, planned_tools);
+            for spec in hosted_model_tool_specs(context) {
+                planned_tools.add_hosted_spec(spec);
+            }
             return;
         }
         role if orchestrated_phase_has_no_tools(role) => return,
@@ -661,7 +667,7 @@ fn orchestrated_phase_has_no_tools(role: Option<&str>) -> bool {
     )
 }
 
-fn orchestrated_phase_has_shell_only(role: Option<&str>) -> bool {
+fn orchestrated_phase_has_inspection_tools(role: Option<&str>) -> bool {
     matches!(role, Some(EXPLORER_ROLE_NAME | PLAN_EVIDENCE_ROLE_NAME))
 }
 
@@ -822,15 +828,22 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         planned_tools.add(TestSyncHandler);
     }
 
-    if environment_mode.has_environment() {
-        let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
-        planned_tools.add(ViewImageHandler::new(ViewImageToolOptions {
-            can_request_original_image_detail: can_request_original_image_detail(
-                &turn_context.model_info,
-            ),
-            include_environment_id,
-        }));
+    add_view_image_tool(context, planned_tools);
+}
+
+fn add_view_image_tool(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
+    let turn_context = context.step_context.turn.as_ref();
+    let environment_mode = tool_environment_mode(context.step_context);
+    if !environment_mode.has_environment() {
+        return;
     }
+    let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
+    planned_tools.add(ViewImageHandler::new(ViewImageToolOptions {
+        can_request_original_image_detail: can_request_original_image_detail(
+            &turn_context.model_info,
+        ),
+        include_environment_id,
+    }));
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -1019,6 +1032,24 @@ fn add_extension_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Pl
     append_extension_tool_executors(
         context.step_context.turn.as_ref(),
         context.extension_tool_executors,
+        planned_tools,
+    );
+}
+
+fn add_web_search_extension_tool(
+    context: &CoreToolPlanContext<'_>,
+    planned_tools: &mut PlannedTools,
+) {
+    let web_search_tool_name = ToolName::namespaced("web", "run");
+    let read_only_executors = context
+        .extension_tool_executors
+        .iter()
+        .filter(|executor| executor.tool_name() == web_search_tool_name)
+        .cloned()
+        .collect::<Vec<_>>();
+    append_extension_tool_executors(
+        context.step_context.turn.as_ref(),
+        &read_only_executors,
         planned_tools,
     );
 }
