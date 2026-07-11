@@ -4,6 +4,7 @@ use codex_core::config::Constrained;
 use codex_features::Feature;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
+use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -19,6 +20,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
@@ -43,6 +45,7 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::fs;
 use std::time::Duration;
 use tokio::sync::oneshot;
 
@@ -83,6 +86,14 @@ async fn submit_orchestrated_user_input(
     test: &core_test_support::test_codex::TestCodex,
     text: String,
 ) -> Result<()> {
+    submit_orchestrated_user_input_with_approval(test, text, /*approval_policy*/ None).await
+}
+
+async fn submit_orchestrated_user_input_with_approval(
+    test: &core_test_support::test_codex::TestCodex,
+    text: String,
+    approval_policy: Option<AskForApproval>,
+) -> Result<()> {
     test.codex
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
@@ -101,6 +112,7 @@ async fn submit_orchestrated_user_input(
                         developer_instructions: None,
                     },
                 }),
+                approval_policy,
                 effort: Some(Some(ReasoningEffort::High)),
                 ..Default::default()
             },
@@ -602,6 +614,168 @@ async fn orchestrated_mode_retains_and_suppresses_repeated_unavailable_executabl
         .function_call_output_text("execution-facts-call-3")
         .expect("revalidated command output");
     assert!(!revalidated_output.contains("suppressed unchanged deterministic failure"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrated_roles_review_read_only_commands_outside_allow_list() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    for (
+        startup_approval_policy,
+        approval_policy,
+        approvals_reviewer,
+        guardian_allows,
+        expects_user_approval,
+    ) in [
+        (
+            AskForApproval::OnRequest,
+            AskForApproval::Never,
+            ApprovalsReviewer::User,
+            /*guardian_allows*/ true,
+            /*expects_user_approval*/ false,
+        ),
+        (
+            AskForApproval::Never,
+            AskForApproval::OnRequest,
+            ApprovalsReviewer::AutoReview,
+            /*guardian_allows*/ true,
+            /*expects_user_approval*/ false,
+        ),
+        (
+            AskForApproval::Never,
+            AskForApproval::OnRequest,
+            ApprovalsReviewer::User,
+            /*guardian_allows*/ true,
+            /*expects_user_approval*/ true,
+        ),
+        (
+            AskForApproval::Never,
+            AskForApproval::OnRequest,
+            ApprovalsReviewer::AutoReview,
+            /*guardian_allows*/ false,
+            /*expects_user_approval*/ false,
+        ),
+    ] {
+        let server = start_mock_server().await;
+        let explorer_call_id =
+            format!("explorer-reviewed-ls-{approval_policy:?}-{approvals_reviewer:?}");
+        let worker_call_id =
+            format!("worker-reviewed-ls-{approval_policy:?}-{approvals_reviewer:?}");
+        let args = serde_json::to_string(&json!({
+            "cmd": "ls",
+            "yield_time_ms": 1_000,
+        }))?;
+        let responses = mount_sse_sequence(
+            &server,
+            vec![
+                assistant_sse("worker-review-contract", "task-contract: inspect workspace"),
+                function_sse(&explorer_call_id, "exec_command", &args),
+                assistant_sse(
+                    "explorer-review-guardian",
+                    if guardian_allows {
+                        r#"{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ls only reads directory entries."}"#
+                    } else {
+                        r#"{"risk_level":"low","user_authorization":"unknown","outcome":"deny","rationale":"inspection was not authorized."}"#
+                    },
+                ),
+                assistant_sse("worker-review-explorer", "explorer: workspace located"),
+                assistant_sse("worker-review-plan", "worker-plan: run read-only inspection"),
+                assistant_sse("worker-review-plan-review", "plan-review: approved"),
+                function_sse(&worker_call_id, "exec_command", &args),
+                assistant_sse(
+                    "worker-review-guardian",
+                    if guardian_allows {
+                        r#"{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ls only reads directory entries."}"#
+                    } else {
+                        r#"{"risk_level":"low","user_authorization":"unknown","outcome":"deny","rationale":"inspection was not authorized."}"#
+                    },
+                ),
+                assistant_sse("worker-review-result", "worker: complete; inspection passed"),
+                assistant_sse("worker-review-result-review", "result-review: approved"),
+                assistant_sse("worker-review-root", "orc: done"),
+            ],
+        )
+        .await;
+        let test = test_codex()
+            .with_pre_build_hook(|home| {
+                let rules_dir = home.join("rules");
+                fs::create_dir_all(&rules_dir).expect("create rules directory");
+                fs::write(
+                    rules_dir.join("default.rules"),
+                    r#"prefix_rule(pattern=["ls"], decision="prompt")"#,
+                )
+                .expect("write exec-policy rule");
+            })
+            .with_config(move |config| {
+                configure_multi_agent_v2(config);
+                config.permissions.approval_policy =
+                    Constrained::allow_any(startup_approval_policy);
+                config.approvals_reviewer = approvals_reviewer;
+            })
+            .build_with_auto_env(&server)
+            .await?;
+
+        submit_orchestrated_user_input_with_approval(
+            &test,
+            "inspect workspace before editing".to_string(),
+            Some(approval_policy),
+        )
+        .await?;
+        if expects_user_approval {
+            for _ in 0..2 {
+                let event = wait_for_event(&test.codex, |event| {
+                    matches!(event, EventMsg::ExecApprovalRequest(_))
+                })
+                .await;
+                let EventMsg::ExecApprovalRequest(approval) = event else {
+                    unreachable!("event predicate only accepts exec approvals");
+                };
+                assert_eq!(approval.command.last().map(String::as_str), Some("ls"));
+                test.codex
+                    .submit(Op::ExecApproval {
+                        id: approval.effective_approval_id(),
+                        turn_id: None,
+                        decision: ReviewDecision::Approved,
+                    })
+                    .await?;
+            }
+        }
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+
+        let requests = responses.requests();
+        assert_eq!(requests.len(), 11);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| {
+                    request.body_json()["client_metadata"]["x-openai-subagent"].as_str()
+                        == Some("guardian")
+                })
+                .count(),
+            2,
+        );
+        for call_id in [&explorer_call_id, &worker_call_id] {
+            let output = responses
+                .function_call_output_text(call_id)
+                .expect("orchestrated role should receive reviewed command output");
+            if guardian_allows {
+                assert!(
+                    output.contains("Process exited with code 0"),
+                    "unexpected output: {output}"
+                );
+            } else {
+                assert!(
+                    output.contains("rejected") && !output.contains("Process exited with code 0"),
+                    "unexpected output: {output}"
+                );
+            }
+        }
+    }
 
     Ok(())
 }

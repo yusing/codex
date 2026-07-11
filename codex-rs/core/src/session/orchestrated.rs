@@ -531,7 +531,19 @@ async fn run_phase(
         .await;
     role_turn_context.orchestrated_role = Some(phase.name());
     role_turn_context.final_output_json_schema = None;
-    if matches!(phase, Phase::Explorer | Phase::PlanEvidence) {
+    if matches!(phase, Phase::Explorer | Phase::WorkerExec) {
+        let mut config = (*role_turn_context.config).clone();
+        config.permissions.approval_policy =
+            Constrained::allow_only(root_turn_context.approval_policy.value());
+        role_turn_context.config = Arc::new(config);
+        // Explorer and worker commands outside exec-policy's allow-list must
+        // reach their review flow, including when the parent is in YOLO mode.
+        role_turn_context.approval_policy = Constrained::allow_only(AskForApproval::OnRequest);
+    }
+    if phase == Phase::Explorer {
+        role_turn_context.permission_profile = PermissionProfile::read_only();
+    }
+    if phase == Phase::PlanEvidence {
         role_turn_context.approval_policy = Constrained::allow_only(AskForApproval::Never);
         role_turn_context.permission_profile = PermissionProfile::read_only();
     }
