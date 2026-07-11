@@ -33,8 +33,6 @@ use super::session::Session;
 use super::turn::run_sampling_request;
 use super::turn_context::TurnContext;
 
-mod prompts;
-
 const MAX_PLAN_REVISIONS: usize = 2;
 const MAX_WORK_REVISIONS: usize = 2;
 const MAX_PHASE_STEPS: usize = 32;
@@ -137,13 +135,13 @@ impl Phase {
 
     fn prompt(self) -> &'static str {
         match self {
-            Self::TaskContract => prompts::TASK_CONTRACT,
-            Self::Explorer => prompts::EXPLORER,
-            Self::WorkerPlan => prompts::WORKER_PLAN,
-            Self::PlanReview => prompts::PLAN_REVIEW,
-            Self::PlanEvidence => prompts::PLAN_EVIDENCE,
-            Self::WorkerExec => prompts::WORKER,
-            Self::ResultReview => prompts::RESULT_REVIEW,
+            Self::TaskContract => codex_prompts::ORCHESTRATED_TASK_CONTRACT,
+            Self::Explorer => codex_prompts::ORCHESTRATED_EXPLORER,
+            Self::WorkerPlan => codex_prompts::ORCHESTRATED_WORKER_PLAN,
+            Self::PlanReview => codex_prompts::ORCHESTRATED_PLAN_REVIEW,
+            Self::PlanEvidence => codex_prompts::ORCHESTRATED_PLAN_EVIDENCE,
+            Self::WorkerExec => codex_prompts::ORCHESTRATED_WORKER,
+            Self::ResultReview => codex_prompts::ORCHESTRATED_RESULT_REVIEW,
         }
     }
 }
@@ -479,7 +477,9 @@ pub(super) fn add_sampling_instruction(turn_context: &TurnContext, input: &mut V
         return;
     }
     if turn_context.collaboration_mode.mode == ModeKind::Orchestrated {
-        input.push(developer_instruction_item(prompts::ORCHESTRATOR));
+        input.push(developer_instruction_item(
+            codex_prompts::ORCHESTRATED_ORCHESTRATOR,
+        ));
     }
 }
 
