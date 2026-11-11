@@ -173,6 +173,13 @@ export type { ExternalAgentDetectedConnectorCandidate } from "./ExternalAgentDet
 export type { ExternalAgentDetectedConnectorSource } from "./ExternalAgentDetectedConnectorSource";
 export type { ExternalAgentImportedConnectorCandidate } from "./ExternalAgentImportedConnectorCandidate";
 export type { ExternalAgentImportedConnectorSource } from "./ExternalAgentImportedConnectorSource";
+export type { FeatureUseCounts } from "./FeatureUseCounts";
+export type { FeatureUseEvent } from "./FeatureUseEvent";
+export type { FeatureUseFact } from "./FeatureUseFact";
+export type { FeatureUseReadParams } from "./FeatureUseReadParams";
+export type { FeatureUseReadResponse } from "./FeatureUseReadResponse";
+export type { FeatureUseRecordResponse } from "./FeatureUseRecordResponse";
+export type { FeatureUseUnavailableNotification } from "./FeatureUseUnavailableNotification";
 export type { FeedbackRequirements } from "./FeedbackRequirements";
 export type { FeedbackSaveParams } from "./FeedbackSaveParams";
 export type { FeedbackSaveResponse } from "./FeedbackSaveResponse";

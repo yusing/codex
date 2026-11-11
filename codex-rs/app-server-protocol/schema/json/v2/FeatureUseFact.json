@@ -1,0 +1,285 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "FeatureUseEvent": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "resetCompleted"
+              ],
+              "title": "ResetCompletedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ResetCompletedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "preload": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "selfResetRequested"
+              ],
+              "title": "SelfResetRequestedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "SelfResetRequestedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "selfResetCompleted"
+              ],
+              "title": "SelfResetCompletedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "SelfResetCompletedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "selfResetFailed"
+              ],
+              "title": "SelfResetFailedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "SelfResetFailedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "preload": {
+              "default": false,
+              "type": "boolean"
+            },
+            "sources": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "childAdmitted"
+              ],
+              "title": "ChildAdmittedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ChildAdmittedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "preloadRejected"
+              ],
+              "title": "PreloadRejectedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "PreloadRejectedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "changes": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "finalDelivered"
+              ],
+              "title": "FinalDeliveredFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "FinalDeliveredFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "btw": {
+              "default": false,
+              "type": "boolean"
+            },
+            "sources": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "messageAccepted"
+              ],
+              "title": "MessageAcceptedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "MessageAcceptedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "sideQuestionRejected"
+              ],
+              "title": "SideQuestionRejectedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "SideQuestionRejectedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "sideQuestionFailed"
+              ],
+              "title": "SideQuestionFailedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "SideQuestionFailedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "default": false,
+              "type": "boolean"
+            },
+            "progress": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "waitRegistered"
+              ],
+              "title": "WaitRegisteredFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "WaitRegisteredFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "progressDelivered"
+              ],
+              "title": "ProgressDeliveredFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ProgressDeliveredFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "sources": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "assignmentDelivered"
+              ],
+              "title": "AssignmentDeliveredFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AssignmentDeliveredFeatureUseEvent",
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "event": {
+      "$ref": "#/definitions/FeatureUseEvent"
+    },
+    "operation": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "event",
+    "operation",
+    "threadId"
+  ],
+  "title": "FeatureUseFact",
+  "type": "object"
+}

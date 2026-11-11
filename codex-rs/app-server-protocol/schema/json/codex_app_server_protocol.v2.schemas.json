@@ -2481,6 +2481,54 @@
             },
             "method": {
               "enum": [
+                "featureUse/record"
+              ],
+              "title": "FeatureUse/recordRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/FeatureUseFact"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "FeatureUse/recordRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "featureUse/read"
+              ],
+              "title": "FeatureUse/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/FeatureUseReadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "FeatureUse/readRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/compact/cancel"
               ],
               "title": "Thread/compact/cancelRequestMethod",
@@ -8200,6 +8248,471 @@
         "remoteMcpServersConfig"
       ],
       "type": "string"
+    },
+    "FeatureUseCounts": {
+      "properties": {
+        "allWaits": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "assignmentSources": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "compactionPreloads": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "compactions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "completionChanges": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "finals": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "messageSources": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "messages": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "preloadRejections": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "progressWaits": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "progressYields": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "selfCompactionFailures": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "selfCompactions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "selfCompactionsCompleted": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sideQuestionFailures": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sideQuestionRejections": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sideQuestions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "spawnPreloads": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "spawns": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "waits": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "allWaits",
+        "assignmentSources",
+        "compactionPreloads",
+        "compactions",
+        "completionChanges",
+        "finals",
+        "messageSources",
+        "messages",
+        "preloadRejections",
+        "progressWaits",
+        "progressYields",
+        "selfCompactionFailures",
+        "selfCompactions",
+        "selfCompactionsCompleted",
+        "sideQuestionFailures",
+        "sideQuestionRejections",
+        "sideQuestions",
+        "spawnPreloads",
+        "spawns",
+        "waits"
+      ],
+      "type": "object"
+    },
+    "FeatureUseEvent": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "resetCompleted"
+              ],
+              "title": "ResetCompletedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ResetCompletedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "preload": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "selfResetRequested"
+              ],
+              "title": "SelfResetRequestedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "SelfResetRequestedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "selfResetCompleted"
+              ],
+              "title": "SelfResetCompletedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "SelfResetCompletedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "selfResetFailed"
+              ],
+              "title": "SelfResetFailedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "SelfResetFailedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "preload": {
+              "default": false,
+              "type": "boolean"
+            },
+            "sources": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "childAdmitted"
+              ],
+              "title": "ChildAdmittedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ChildAdmittedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "preloadRejected"
+              ],
+              "title": "PreloadRejectedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "PreloadRejectedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "changes": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "finalDelivered"
+              ],
+              "title": "FinalDeliveredFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "FinalDeliveredFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "btw": {
+              "default": false,
+              "type": "boolean"
+            },
+            "sources": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "messageAccepted"
+              ],
+              "title": "MessageAcceptedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "MessageAcceptedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "sideQuestionRejected"
+              ],
+              "title": "SideQuestionRejectedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "SideQuestionRejectedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "sideQuestionFailed"
+              ],
+              "title": "SideQuestionFailedFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "SideQuestionFailedFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "default": false,
+              "type": "boolean"
+            },
+            "progress": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "waitRegistered"
+              ],
+              "title": "WaitRegisteredFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "WaitRegisteredFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "progressDelivered"
+              ],
+              "title": "ProgressDeliveredFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ProgressDeliveredFeatureUseEvent",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "sources": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "assignmentDelivered"
+              ],
+              "title": "AssignmentDeliveredFeatureUseEventType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AssignmentDeliveredFeatureUseEvent",
+          "type": "object"
+        }
+      ]
+    },
+    "FeatureUseFact": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "$ref": "#/definitions/FeatureUseEvent"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "operation",
+        "threadId"
+      ],
+      "title": "FeatureUseFact",
+      "type": "object"
+    },
+    "FeatureUseReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "threads": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "threads"
+      ],
+      "title": "FeatureUseReadParams",
+      "type": "object"
+    },
+    "FeatureUseReadResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "threads": {
+          "additionalProperties": {
+            "$ref": "#/definitions/FeatureUseCounts"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "threads"
+      ],
+      "title": "FeatureUseReadResponse",
+      "type": "object"
+    },
+    "FeatureUseRecordResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "FeatureUseRecordResponse",
+      "type": "object"
+    },
+    "FeatureUseUnavailableNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "threadId"
+      ],
+      "title": "FeatureUseUnavailableNotification",
+      "type": "object"
     },
     "FeedbackRequirements": {
       "properties": {
@@ -17898,6 +18411,46 @@
             "params"
           ],
           "title": "Thread/compoundWait/resetNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "featureUse/observed"
+              ],
+              "title": "FeatureUse/observedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/FeatureUseFact"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "FeatureUse/observedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "featureUse/unavailable"
+              ],
+              "title": "FeatureUse/unavailableNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/FeatureUseUnavailableNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "FeatureUse/unavailableNotification",
           "type": "object"
         },
         {

@@ -1,0 +1,145 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "FeatureUseCounts": {
+      "properties": {
+        "allWaits": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "assignmentSources": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "compactionPreloads": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "compactions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "completionChanges": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "finals": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "messageSources": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "messages": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "preloadRejections": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "progressWaits": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "progressYields": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "selfCompactionFailures": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "selfCompactions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "selfCompactionsCompleted": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sideQuestionFailures": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sideQuestionRejections": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sideQuestions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "spawnPreloads": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "spawns": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "waits": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "allWaits",
+        "assignmentSources",
+        "compactionPreloads",
+        "compactions",
+        "completionChanges",
+        "finals",
+        "messageSources",
+        "messages",
+        "preloadRejections",
+        "progressWaits",
+        "progressYields",
+        "selfCompactionFailures",
+        "selfCompactions",
+        "selfCompactionsCompleted",
+        "sideQuestionFailures",
+        "sideQuestionRejections",
+        "sideQuestions",
+        "spawnPreloads",
+        "spawns",
+        "waits"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "threads": {
+      "additionalProperties": {
+        "$ref": "#/definitions/FeatureUseCounts"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "threads"
+  ],
+  "title": "FeatureUseReadResponse",
+  "type": "object"
+}
