@@ -133,7 +133,13 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
     }
 
     /// Observes a tool result only after all PostToolUse hooks accept it.
-    fn on_tool_result_accepted(&self, _invocation: &ToolInvocation, _result: &dyn ToolOutput) {}
+    fn on_tool_result_accepted<'a>(
+        &'a self,
+        _invocation: &'a ToolInvocation,
+        _result: &'a dyn ToolOutput,
+    ) -> futures::future::BoxFuture<'a, ()> {
+        Box::pin(std::future::ready(()))
+    }
 
     fn post_tool_use_payload(
         &self,
@@ -1021,7 +1027,8 @@ impl ToolRegistry {
                         });
                     }
                 }
-                tool.on_tool_result_accepted(&invocation, result.result.as_ref());
+                tool.on_tool_result_accepted(&invocation, result.result.as_ref())
+                    .await;
                 dispatch_trace.record_completed(
                     &invocation,
                     &result.call_id,

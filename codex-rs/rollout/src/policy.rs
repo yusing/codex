@@ -170,6 +170,7 @@ fn persisted_event_msg(
         | EventMsg::CollabCloseEnd(_)
         | EventMsg::CollabResumeEnd(_)
         | EventMsg::CompoundWaitSettlement(_)
+        | EventMsg::FeatureUse(_)
         | EventMsg::ContextReset(_)
         | EventMsg::CompoundWaitReset(_)
         | EventMsg::DynamicToolCallRequest(_)

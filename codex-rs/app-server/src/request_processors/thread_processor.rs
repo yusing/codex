@@ -505,6 +505,7 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
     pub(crate) thread_manager: Arc<ThreadManager>,
+    pub(super) feature_use: Arc<std::sync::Mutex<crate::feature_use::FeatureUse>>,
     pub(super) outgoing: Arc<OutgoingMessageSender>,
     pub(super) arg0_paths: Arg0DispatchPaths,
     pub(super) config: Arc<Config>,
@@ -566,6 +567,7 @@ impl ThreadRequestProcessor {
         Self {
             auth_manager,
             thread_manager,
+            feature_use: Arc::default(),
             outgoing,
             arg0_paths,
             config,
@@ -883,6 +885,34 @@ impl ThreadRequestProcessor {
             }
             Err(error) => Err(error),
         }
+    }
+
+    pub(crate) fn feature_use_record(
+        &self,
+        fact: codex_app_server_protocol::FeatureUseFact,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if fact.thread_id.is_empty() || fact.operation.is_empty() {
+            return Err(invalid_params(
+                "feature use requires an actor and operation identity",
+            ));
+        }
+        self.feature_use.lock().unwrap().record(fact);
+        Ok(Some(codex_app_server_protocol::FeatureUseRecordResponse {}.into()))
+    }
+
+    pub(crate) fn feature_use_read(
+        &self,
+        params: codex_app_server_protocol::FeatureUseReadParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if params.threads.is_empty() || params.threads.iter().any(String::is_empty) {
+            return Err(invalid_params(
+                "feature use requires nonempty actor identities",
+            ));
+        }
+        let threads = self.feature_use.lock().unwrap().read(params.threads);
+        Ok(Some(
+            codex_app_server_protocol::FeatureUseReadResponse { threads }.into(),
+        ))
     }
 
     pub(crate) async fn thread_compact_start(
@@ -1208,24 +1238,59 @@ impl ThreadRequestProcessor {
         thread_id: ThreadId,
         operation: &str,
     ) -> Result<(), JSONRPCErrorError> {
+        let _goal_resume_guard = self.thread_state_manager.lock_goal_resume(thread_id).await;
+        let thread_state = self.thread_state_manager.thread_state(thread_id).await;
+        let shutdown_drain = thread_state.lock().await.shutdown_drain.clone();
         let removed_conversation = self
             .thread_manager
             .remove_thread_for_client(&thread_id)
             .await
             .map_err(|err| core_thread_write_error(operation, err))?;
-        if let Some(conversation) = removed_conversation {
+        let was_loaded = removed_conversation.is_some();
+        let shutdown_complete = if let Some(conversation) = removed_conversation {
             info!("thread {thread_id} was active; shutting down");
             match wait_for_thread_shutdown(&conversation).await {
-                ThreadShutdownResult::Complete => {}
+                ThreadShutdownResult::Complete => true,
                 ThreadShutdownResult::SubmitFailed => {
                     error!(
                         "failed to submit Shutdown to thread {thread_id}; proceeding with {operation}"
                     );
+                    false
                 }
                 ThreadShutdownResult::TimedOut => {
                     warn!("thread {thread_id} shutdown timed out; proceeding with {operation}");
+                    false
                 }
             }
+        } else {
+            true
+        };
+        // Core termination can precede delivery of its buffered terminal facts.
+        // Join the existing producer receipt before teardown cancels its listener.
+        let drained = if shutdown_complete {
+            match shutdown_drain {
+                Some(mut drain) => tokio::time::timeout(
+                    Duration::from_secs(10),
+                    drain.wait_for(|drained| *drained),
+                )
+                .await
+                .is_ok_and(|result| result.is_ok()),
+                None => !was_loaded,
+            }
+        } else {
+            false
+        };
+        if !drained {
+            self.outgoing
+                .send_server_notification(ServerNotification::FeatureUseUnavailable(
+                    codex_app_server_protocol::FeatureUseUnavailableNotification {
+                        thread_id: thread_id.to_string(),
+                        message: format!(
+                            "native feature producer did not drain before thread {operation}"
+                        ),
+                    },
+                ))
+                .await;
         }
         self.finalize_thread_teardown(thread_id).await;
         Ok(())

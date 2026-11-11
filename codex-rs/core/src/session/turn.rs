@@ -2578,6 +2578,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::ImageGenerationEnd(_)
         | EventMsg::ViewImageToolCall(_)
         | EventMsg::CompoundWaitSettlement(_)
+        | EventMsg::FeatureUse(_)
         | EventMsg::ContextReset(_)
         | EventMsg::CompoundWaitReset(_)
         | EventMsg::DynamicToolCallRequest(_)

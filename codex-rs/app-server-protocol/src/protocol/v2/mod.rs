@@ -19,6 +19,8 @@ mod diagnostics;
 mod environment;
 mod experimental_feature;
 mod feedback;
+mod feature_use;
+pub use feature_use::*;
 mod fs;
 mod gcp;
 mod hook;

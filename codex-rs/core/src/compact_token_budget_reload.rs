@@ -41,6 +41,30 @@ struct Source {
     ranges: Vec<(usize, usize)>,
 }
 
+pub(super) fn has_preload(selection: &codex_protocol::protocol::ReloadSelection) -> bool {
+    selection.sources.iter().any(|reference| {
+        let path = match parse_reference(reference) {
+            Ok(Source {
+                target: Target::File(path),
+                ..
+            }) => path,
+            Ok(Source {
+                target: Target::Skill(skill),
+                ..
+            }) => {
+                let Some((_, path)) = skill.split_once('/') else {
+                    return true;
+                };
+                path.to_string()
+            }
+            _ => return true,
+        };
+        std::path::Path::new(&path)
+            .file_name()
+            .is_none_or(|name| name != "AGENTS.md")
+    })
+}
+
 pub(super) async fn acquire(
     session: &Arc<Session>,
     step: &Arc<StepContext>,

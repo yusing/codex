@@ -1152,7 +1152,7 @@ impl Session {
         task.handle.abort();
         // Aborting schedules destruction; join before freezing the turn's timing.
         let _ = task.handle.await;
-        self.finish_aborted_manual_reset(&task.turn_context).await;
+        self.finish_aborted_reset(&task.turn_context).await;
 
         if let Err(error) = self
             .record_pending_initial_input(

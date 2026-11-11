@@ -87,4 +87,17 @@ impl ToolExecutor<ToolInvocation> for NewContextWindowHandler {
     }
 }
 
-impl CoreToolRuntime for NewContextWindowHandler {}
+impl CoreToolRuntime for NewContextWindowHandler {
+    fn on_tool_result_accepted<'a>(
+        &'a self,
+        invocation: &'a ToolInvocation,
+        _result: &'a dyn crate::tools::context::ToolOutput,
+    ) -> futures::future::BoxFuture<'a, ()> {
+        Box::pin(async move {
+            invocation
+                .session
+                .accept_self_reset(&invocation.turn, &invocation.call_id)
+                .await;
+        })
+    }
+}

@@ -917,7 +917,37 @@ pub(crate) async fn apply_bespoke_event_handling(
             });
         }
         EventMsg::CompoundWaitReset(receipt) => {
+            use codex_protocol::compound_wait::CompoundResetOutcome;
+            use codex_protocol::feature_use::FeatureUseEvent;
+            use codex_protocol::feature_use::FeatureUseFact;
+            let event = match receipt.reset {
+                CompoundResetOutcome::Completed => Some(FeatureUseEvent::SelfResetCompleted),
+                CompoundResetOutcome::Failed | CompoundResetOutcome::Canceled => {
+                    Some(FeatureUseEvent::SelfResetFailed)
+                }
+                CompoundResetOutcome::Uncertain => None,
+            };
+            if let Some(event) = event {
+                outgoing
+                    .send_server_notification(ServerNotification::FeatureUseObserved(
+                        FeatureUseFact {
+                            thread_id: receipt.thread_id.clone(),
+                            operation: receipt
+                                .ticket
+                                .as_ref()
+                                .map(|ticket| ticket.wait_id.clone())
+                                .unwrap_or_else(|| receipt.cell_id.clone()),
+                            event,
+                        },
+                    ))
+                    .await;
+            }
             outgoing.send_server_notification(ServerNotification::CompoundWaitReset(receipt)).await;
+        }
+        EventMsg::FeatureUse(fact) => {
+            outgoing
+                .send_server_notification(ServerNotification::FeatureUseObserved(fact))
+                .await;
         }
         EventMsg::ContextReset(receipt) => {
             outgoing.send_server_notification(ServerNotification::ContextReset(receipt)).await;
@@ -1173,6 +1203,20 @@ pub(crate) async fn apply_bespoke_event_handling(
             }
         }
         EventMsg::ItemCompleted(mut event) => {
+            if matches!(
+                &event.item,
+                codex_protocol::items::TurnItem::ContextCompaction(_)
+            ) {
+                outgoing
+                    .send_server_notification(ServerNotification::FeatureUseObserved(
+                        codex_protocol::feature_use::FeatureUseFact {
+                            thread_id: conversation_id.to_string(),
+                            operation: event.item.id(),
+                            event: codex_protocol::feature_use::FeatureUseEvent::ResetCompleted,
+                        },
+                    ))
+                    .await;
+            }
             apply_canonical_item_completed_side_effects(
                 &thread_manager,
                 &thread_watch_manager,

@@ -129,8 +129,8 @@ pub(crate) struct ThreadState {
     pub(crate) network_approvals: HashMap<String, PendingNetworkApproval>,
     pub(crate) turn_summary: TurnSummary,
     pub(crate) last_terminal_turn_id: Option<String>,
-    /// Lets an internal runtime replacement wait until the old listener has processed Core's
-    /// `ShutdownComplete` event before that listener is superseded.
+    /// Lets runtime removal or replacement wait until the old listener has processed Core's
+    /// `ShutdownComplete` event before that listener is canceled or superseded.
     pub(crate) shutdown_drain: Option<watch::Receiver<bool>>,
     pub(crate) cancel_tx: Option<oneshot::Sender<()>>,
     pub(crate) experimental_raw_events: bool,

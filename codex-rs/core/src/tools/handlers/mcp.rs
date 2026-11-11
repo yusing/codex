@@ -363,14 +363,18 @@ impl CoreToolRuntime for McpHandler {
         Some(self.tool_info())
     }
 
-    fn on_tool_result_accepted(&self, invocation: &ToolInvocation, result: &dyn ToolOutput) {
+    fn on_tool_result_accepted<'a>(
+        &'a self,
+        invocation: &'a ToolInvocation,
+        result: &'a dyn ToolOutput,
+    ) -> futures::future::BoxFuture<'a, ()> {
         invocation
             .session
             .services
             .executed_tool_calls
             .record_accepted_result(&invocation.source, &invocation.call_id, result);
         let ToolCallSource::CodeMode { cell_id, .. } = &invocation.source else {
-            return;
+            return Box::pin(std::future::ready(()));
         };
         let evidence_mode = node_repl_review_evidence_mode(&invocation.turn);
         let image_capture_enabled = invocation
@@ -385,12 +389,12 @@ impl CoreToolRuntime for McpHandler {
         ) || !result.success_for_logging()
             || evidence_mode == NodeReplReviewEvidenceMode::Disabled && !image_capture_enabled
         {
-            return;
+            return Box::pin(std::future::ready(()));
         }
 
         let result = result.code_mode_result(&invocation.payload);
         let Some(content) = result.get("content").and_then(Value::as_array) else {
-            return;
+            return Box::pin(std::future::ready(()));
         };
         let is_encrypted = |item: &Value| {
             item.get("_meta")
@@ -483,6 +487,7 @@ impl CoreToolRuntime for McpHandler {
                 &invocation.call_id,
                 items,
             );
+        Box::pin(std::future::ready(()))
     }
 
     fn telemetry_tags(&self, _invocation: &ToolInvocation) -> ToolTelemetryTags {
@@ -872,7 +877,7 @@ mod tests {
             &invocation.source,
             &invocation.step_context,
         );
-        handler.on_tool_result_accepted(&invocation, &output);
+        handler.on_tool_result_accepted(&invocation, &output).await;
         let mut items = [serde_json::from_value(json!({
             "type": "custom_tool_call_output", "call_id": "exec-mcp-post", "output": "notes",
         }))

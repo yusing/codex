@@ -22,15 +22,60 @@ use codex_protocol::protocol::EventMsg;
 mod reload;
 
 impl Session {
-    pub(crate) async fn finish_aborted_manual_reset(&self, turn: &TurnContext) {
+    pub(crate) async fn accept_self_reset(&self, turn: &TurnContext, call: &str) {
+        use codex_protocol::feature_use::FeatureUseEvent;
+        use codex_protocol::feature_use::FeatureUseFact;
+        let operation = format!("new_context:{}:{call}", turn.sub_id);
+        let preload = {
+            let mut state = self.state.lock().await;
+            let preload = state
+                .history
+                .retained_context()
+                .reload_selection()
+                .is_some_and(reload::has_preload);
+            state.accepted_self_resets.push(operation.clone());
+            preload
+        };
+        self.send_event(
+            turn,
+            EventMsg::FeatureUse(FeatureUseFact {
+                thread_id: self.thread_id.to_string(),
+                operation,
+                event: FeatureUseEvent::SelfResetRequested { preload },
+            }),
+        )
+        .await;
+    }
+
+    pub(crate) async fn finish_aborted_reset(&self, turn: &TurnContext) {
         let receipt = self
             .state
             .lock()
             .await
             .manual_resets
             .take_aborted(&turn.sub_id);
-        if let Some(receipt) = receipt {
-            self.send_event(turn, EventMsg::ContextReset(receipt)).await;
+        if let Some((receipt, self_requests)) = receipt {
+            let completed = receipt.status == ContextResetStatus::Completed;
+            if receipt.generation != 0 {
+                self.send_event(turn, EventMsg::ContextReset(receipt)).await;
+            }
+            for operation in self_requests {
+                use codex_protocol::feature_use::FeatureUseEvent;
+                use codex_protocol::feature_use::FeatureUseFact;
+                self.send_event(
+                    turn,
+                    EventMsg::FeatureUse(FeatureUseFact {
+                        thread_id: self.thread_id.to_string(),
+                        operation,
+                        event: if completed {
+                            FeatureUseEvent::SelfResetCompleted
+                        } else {
+                            FeatureUseEvent::SelfResetFailed
+                        },
+                    }),
+                )
+                .await;
+            }
         }
     }
 
@@ -124,11 +169,12 @@ async fn run_compact_task_inner(
     let turn_context = &turn_context;
     // Requests accepted during acquisition belong to the next reset, not this one.
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
-    let (requested, requests) = {
+    let (requested, requests, self_requests) = {
         let mut state = sess.state.lock().await;
         (
             state.take_new_context_window_request(),
             Arc::clone(&state.manual_resets),
+            std::mem::take(&mut state.accepted_self_resets),
         )
     };
     let required = required_without_manual || requested;
@@ -152,6 +198,7 @@ async fn run_compact_task_inner(
         inline,
         diagnostic: None,
     };
+    lease.record_self_requests(&receipt, &self_requests);
     if generation != 0 {
         lease.record(&receipt);
         sess.send_event(turn_context, EventMsg::ContextReset(receipt.clone()))
@@ -196,21 +243,40 @@ async fn run_compact_task_inner(
         },
         result = reset => (result, false),
     };
-    if generation != 0 {
-        receipt.status = match &result {
-            Ok(()) => ContextResetStatus::Completed,
-            Err(err) => {
-                receipt.diagnostic = Some(err.to_string());
-                if cancellation_token.is_cancelled() {
-                    ContextResetStatus::Canceled
-                } else {
-                    ContextResetStatus::Failed
-                }
+    receipt.status = match &result {
+        Ok(()) => ContextResetStatus::Completed,
+        Err(err) => {
+            receipt.diagnostic = Some(err.to_string());
+            if cancellation_token.is_cancelled() {
+                ContextResetStatus::Canceled
+            } else {
+                ContextResetStatus::Failed
             }
-        };
-        lease.record(&receipt);
+        }
+    };
+    // Record the terminal outcome before any await, including self-only resets
+    // whose manual generation is zero. Joined abort cleanup preserves it.
+    lease.record(&receipt);
+    if generation != 0 {
         sess.send_event(turn_context, EventMsg::ContextReset(receipt))
             .await;
+    }
+    for operation in self_requests {
+        use codex_protocol::feature_use::FeatureUseEvent;
+        use codex_protocol::feature_use::FeatureUseFact;
+        sess.send_event(
+            turn_context,
+            EventMsg::FeatureUse(FeatureUseFact {
+                thread_id: sess.thread_id.to_string(),
+                operation,
+                event: if result.is_ok() {
+                    FeatureUseEvent::SelfResetCompleted
+                } else {
+                    FeatureUseEvent::SelfResetFailed
+                },
+            }),
+        )
+        .await;
     }
     lease.finish();
     if inline && manual_canceled && !parent_cancellation.is_cancelled() {

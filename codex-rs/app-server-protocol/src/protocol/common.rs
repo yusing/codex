@@ -773,6 +773,16 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadUnarchiveResponse,
     },
+    FeatureUseRecord => "featureUse/record" {
+        params: v2::FeatureUseFact,
+        serialization: None,
+        response: v2::FeatureUseRecordResponse,
+    },
+    FeatureUseRead => "featureUse/read" {
+        params: v2::FeatureUseReadParams,
+        serialization: None,
+        response: v2::FeatureUseReadResponse,
+    },
     ThreadCompactCancel => "thread/compact/cancel" {
         params: v2::ThreadCompactCancelParams,
         serialization: thread_id(params.thread_id),
@@ -2053,6 +2063,8 @@ pub struct FuzzyFileSearchSessionCompletedNotification {
 server_notification_definitions! {
     ContextReset => "thread/contextReset" (v2::ContextReset),
     CompoundWaitReset => "thread/compoundWait/reset" (v2::CompoundWaitReset),
+    FeatureUseObserved => "featureUse/observed" (v2::FeatureUseFact),
+    FeatureUseUnavailable => "featureUse/unavailable" (v2::FeatureUseUnavailableNotification),
     /// NEW NOTIFICATIONS
     Error => "error" (v2::ErrorNotification),
     ThreadStarted => "thread/started" (v2::ThreadStartedNotification),

@@ -23,6 +23,7 @@ struct Request {
 struct Active {
     receipt: ContextReset,
     requests: Vec<Request>,
+    self_requests: Vec<String>,
     cancellation: Option<CancellationToken>,
 }
 
@@ -35,6 +36,27 @@ pub(crate) struct ManualResetLease {
 }
 
 impl ManualResetLease {
+    // Direct model requests share the existing abort-owned reset disposition.
+    // Keep their identities until terminal publication finishes, even when a
+    // forced task abort drops the reset future while send_event is suspended.
+    pub(crate) fn record_self_requests(&self, receipt: &ContextReset, self_requests: &[String]) {
+        if self_requests.is_empty() {
+            return;
+        }
+        let mut requests = self
+            .owner
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = requests.active.get_or_insert_with(|| Active {
+            receipt: receipt.clone(),
+            requests: Vec::new(),
+            self_requests: Vec::new(),
+            cancellation: None,
+        });
+        active.self_requests = self_requests.to_vec();
+    }
+
     pub(crate) fn record(&self, receipt: &ContextReset) {
         let mut requests = self
             .owner
@@ -121,6 +143,7 @@ impl ManualResets {
                     diagnostic: None,
                 },
                 requests: pending,
+                self_requests: Vec::new(),
                 cancellation: (!required_without_manual).then(|| cancellation.clone()),
             });
         }
@@ -131,7 +154,7 @@ impl ManualResets {
         }
     }
 
-    pub(crate) fn take_aborted(&self, turn: &str) -> Option<ContextReset> {
+    pub(crate) fn take_aborted(&self, turn: &str) -> Option<(ContextReset, Vec<String>)> {
         let mut requests = self
             .0
             .lock()
@@ -143,14 +166,15 @@ impl ManualResets {
         {
             return None;
         }
-        let mut receipt = requests.active.take()?.receipt;
+        let active = requests.active.take()?;
+        let mut receipt = active.receipt;
         if matches!(
             receipt.status,
             ContextResetStatus::Accepted | ContextResetStatus::Started
         ) {
             receipt.status = ContextResetStatus::Canceled;
         }
-        Some(receipt)
+        Some((receipt, active.self_requests))
     }
 
     // Pending cancellation removes only this request. A running reset may also

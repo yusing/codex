@@ -1582,6 +1582,7 @@ pub struct EnvironmentConnectionEvent {
 #[strum(serialize_all = "snake_case")]
 pub enum EventMsg {
     ContextReset(crate::context_reset::ContextReset),
+    FeatureUse(crate::feature_use::FeatureUseFact),
     CompoundWaitSettlement(crate::compound_wait::CompoundWaitSettlement),
     CompoundWaitReset(crate::compound_wait::CompoundWaitReset),
     /// Error while executing a submission

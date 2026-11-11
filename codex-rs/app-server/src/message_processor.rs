@@ -1552,6 +1552,12 @@ impl MessageProcessor {
             ClientRequest::ThreadPredictionRequest { .. } => Err(method_not_found(
                 "thread/prediction/request is not implemented yet",
             )),
+            ClientRequest::FeatureUseRecord { params, .. } => {
+                self.thread_processor.feature_use_record(params)
+            }
+            ClientRequest::FeatureUseRead { params, .. } => {
+                self.thread_processor.feature_use_read(params)
+            }
             ClientRequest::ThreadCompactStart { params, .. } => {
                 self.thread_processor
                     .thread_compact_start(&request_id, params)
