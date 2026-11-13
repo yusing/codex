@@ -12911,7 +12911,7 @@ expose_spawn_agent_model_overrides = true
 }
 
 #[test]
-fn multi_agent_v2_disabled_native_tools_omit_default_roles() {
+fn multi_agent_v2_disabled_native_tools_retain_default_roles() {
     let mut config = resolve_multi_agent_v2_config(&ConfigToml::default());
     config.disable_native_tools = true;
     let mut messages = ResolvedModelMessages::bundled().multi_agent();
@@ -12923,7 +12923,7 @@ fn multi_agent_v2_disabled_native_tools_omit_default_roles() {
         let usage_hints = resolve_usage_hints(
             &config, messages, /*omit_update_plan_instructions*/ false,
         );
-        assert_eq!((usage_hints.root, usage_hints.subagent), (None, None));
+        assert!(usage_hints.root.is_some() && usage_hints.subagent.is_some());
     }
 }
 
