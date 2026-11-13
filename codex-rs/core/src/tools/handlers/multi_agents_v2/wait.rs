@@ -164,6 +164,7 @@ impl CoreToolRuntime for Handler {
 #[serde(deny_unknown_fields)]
 pub(crate) struct WaitArgs {
     timeout_ms: Option<i64>,
+    yield_time_ms: Option<u64>,
     #[serde(default)]
     compact: bool,
     reload: Option<ReloadSelection>,
@@ -180,7 +181,14 @@ impl WaitArgs {
                 "reload requires compact: true".to_owned(),
             ));
         }
-
+        if self
+            .yield_time_ms
+            .is_some_and(|interval| interval < 300_000)
+        {
+            return Err(FunctionCallError::RespondToModel(
+                "yield_time_ms must be at least 300000".to_owned(),
+            ));
+        }
         let timeout = self
             .timeout_ms
             .map(|requested_ms| {
@@ -198,7 +206,7 @@ impl WaitArgs {
         Ok(WaitOptions {
             mode: WaitMode::Any,
             timeout,
-            progress_interval_ms: None,
+            progress_interval_ms: self.yield_time_ms,
             compact: self.compact,
             reload: self.reload,
         })

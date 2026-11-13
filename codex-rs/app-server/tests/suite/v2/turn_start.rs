@@ -2238,6 +2238,170 @@ allow_local_binding = false
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn turn_start_enforces_managed_network_sandbox() -> Result<()> {
+    skip_if_remote!(
+        Ok(()),
+        "network probe uses a host-local test executable and loopback server"
+    );
+
+    let server = responses::start_mock_server().await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .enable_feature(Feature::NetworkProxy)
+        .enable_feature(Feature::UnifiedExec)
+        .write(codex_home.path())?;
+    std::fs::write(
+        codex_home.path().join("requirements.toml"),
+        r#"
+default_permissions = "managed-network"
+
+[allowed_permission_profiles]
+managed-network = true
+":read-only" = true
+
+[permissions.managed-network]
+extends = ":read-only"
+
+[permissions.managed-network.network]
+enabled = true
+allow_local_binding = false
+allow_upstream_proxy = false
+
+[permissions.managed-network.network.domains]
+"127.0.0.2" = "allow"
+"#,
+    )?;
+
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = app_server
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+
+    // A different loopback address avoids confusing the host's target port with
+    // a coincidentally equal 127.0.0.1 listener port inside the sandbox namespace.
+    let listener = tokio::net::TcpListener::bind("127.0.0.2:0").await?;
+    let target = listener.local_addr()?;
+    let router = axum::Router::new().route(
+        "/sandbox",
+        axum::routing::get(|| async { "sandbox proxy response" }),
+    );
+    // Keep the real origin listening throughout both the proxied and direct
+    // requests, and clean it up even if an assertion fails.
+    let _origin = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        axum::serve(listener, router).await
+    }));
+    let test_executable = std::env::current_exe()?;
+    let test_executable = test_executable
+        .to_str()
+        .context("integration test executable path must be UTF-8")?;
+    // Libtest selectors omit the integration crate name.
+    let (_, test_module) = module_path!()
+        .split_once("::")
+        .context("network sandbox test must be in an integration test module")?;
+    let child_test = format!("{test_module}::managed_network_sandbox_probe");
+    let target_env = format!("CODEX_TEST_MANAGED_NETWORK_TARGET={target}");
+    let command = shlex::try_join([
+        "env",
+        &target_env,
+        test_executable,
+        "--exact",
+        &child_test,
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1",
+    ])?;
+    let call_id = "managed-network-probe";
+    let probe_timeout = std::time::Duration::from_secs(/*secs*/ 30);
+    let _command_response = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-network-command"),
+            responses::ev_exec_command_call_with_args(
+                call_id,
+                &json!({
+                    "cmd": command,
+                    "shell": "/bin/sh",
+                    "login": false,
+                    "yield_time_ms": probe_timeout.as_millis(),
+                }),
+            ),
+            responses::ev_completed("resp-network-command"),
+        ]),
+    )
+    .await;
+    let final_response = responses::mount_sse_once(
+        &server,
+        create_final_assistant_message_sse_response("Network probe complete")?,
+    )
+    .await;
+
+    let _: TurnStartResponse = app_server
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id,
+                input: vec![V2UserInput::Text {
+                    text: "Verify managed sandbox networking".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                permissions: Some("managed-network".to_string()),
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let expected_output = "proxied request succeeded; direct access blocked\n";
+    timeout(probe_timeout, async {
+        loop {
+            let completed: ItemCompletedNotification =
+                app_server.read_notification("item/completed").await?;
+            if let ThreadItemPayload::CommandExecution {
+                id,
+                status,
+                exit_code,
+                ..
+            } = completed.item.payload
+                && id == call_id
+            {
+                assert_eq!(
+                    (status, exit_code),
+                    (CommandExecutionStatus::Completed, Some(0))
+                );
+                break;
+            }
+        }
+        anyhow::Ok(())
+    })
+    .await??;
+    let completed: TurnCompletedNotification = timeout(
+        probe_timeout,
+        app_server.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    // Early stdout can reach the tool-result buffer before the separate event
+    // subscriber attaches, so verify it in the model continuation instead.
+    // The marker also proves the child ran: libtest succeeds if no selector matches.
+    let output = final_response
+        .single_request()
+        .function_call_output_text(call_id)
+        .context("model continuation should contain the sandboxed command output")?;
+    assert!(
+        output.contains(expected_output),
+        "unexpected tool output: {output}"
+    );
+
+    Ok(())
+}
+
 /// Runs as the model-controlled command inside app-server's managed network sandbox.
 #[cfg(target_os = "linux")]
 #[test]

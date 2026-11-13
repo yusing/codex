@@ -223,11 +223,50 @@ async fn zero_effective_timeout_returns_on_original_call() {
 }
 
 #[tokio::test]
+async fn compact_and_progress_options_preserve_empty_reload_selection() {
+    let (_directory, session, turn) = fixture().await;
+    addressed_message(&session).await;
+    Handler::default()
+        .handle(invocation(
+            &session,
+            &turn,
+            "cell",
+            json!({
+                "compact":true, "reload":{"sources":[]}, "yield_time_ms":300_000,
+            }),
+        ))
+        .await
+        .unwrap();
+    let ticket = session
+        .services
+        .local_agent_runtime
+        .work_ledger()
+        .unwrap()
+        .current_wait(session.thread_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(ticket.options.compact);
+    assert_eq!(
+        ticket.options.reload,
+        Some(ReloadSelection {
+            sources: Vec::new()
+        })
+    );
+    assert_eq!(ticket.options.progress_interval_ms, Some(300_000));
+    assert_eq!(ticket.phase, WaitPhase::Claimed);
+}
+
+#[tokio::test]
 async fn rejected_options_and_empty_selection_leave_no_wait() {
     for (args, diagnostic) in [
         (
             json!({"timeout_ms":1_001}),
             "timeout_ms must be at most 1000",
+        ),
+        (
+            json!({"yield_time_ms":299_999}),
+            "yield_time_ms must be at least 300000",
         ),
         (
             json!({"reload":{"sources":[]}}),

@@ -934,6 +934,7 @@ fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema
             "Omit for an indefinite completion wait; set only for a real deadline. Values below {} clamp; values above {} reject. The deadline starts at registration.",
             options.min_timeout_ms, options.max_timeout_ms,
         )))),
+        ("yield_time_ms".to_string(), JsonSchema::number(Some("Opt in to substantive changed-agent progress, not liveness. Minimum 300000 ms; omit to disable. Each interval freezes capture evidence and collects summaries at safe tool boundaries.".to_string()))),
         ("compact".to_string(), JsonSchema::boolean(Some("Reset context before delivering this wait's outcome, including an already-ready outcome. Use only when checkpoint criteria apply, not merely because you are waiting. Reset failure remains visible with delivery and preserves the wait.".to_string()))),
         ("reload".to_string(), JsonSchema::object(
             BTreeMap::from([("sources".to_string(), JsonSchema::array(JsonSchema::string(None), Some("Source references to acquire before post-reset inference. Requires compact:true; omission reuses the retained selection, an empty list clears it.".to_string())))]),
