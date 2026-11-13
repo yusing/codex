@@ -853,9 +853,16 @@ impl Features {
     }
 
     pub fn normalize_dependencies(&mut self) {
-        if self.enabled(Feature::CodeModeOnly) && !self.enabled(Feature::CodeMode) {
-            self.enable(Feature::CodeMode);
-        }
+        // These are Mekugi runtime capabilities, not optional execution modes.
+        self.enable(Feature::CodeMode)
+            .enable(Feature::CodeModeOnly)
+            .enable(Feature::StepModelSwitching)
+            .enable(Feature::ReasoningEffortOverride)
+            .enable(Feature::TokenBudget)
+            .enable(Feature::MultiAgentV2)
+            .disable(Feature::RetainClientToolOutputs)
+            .disable(Feature::Goals)
+            .disable(Feature::SleepTool);
     }
 }
 
@@ -1196,7 +1203,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::SleepTool,
         key: "sleep_tool",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::SecretAuthStorage,
@@ -1302,7 +1309,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::CodeMode,
         key: "code_mode",
         stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::CodeModeToolSearch,
@@ -1368,7 +1375,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::CodeModeOnly,
         key: "code_mode_only",
         stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::CodeModeOnlyStrictThirdPartyTools,
@@ -1646,7 +1653,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::MultiAgentV2,
         key: "multi_agent_v2",
         stage: Stage::Stable,
-        default_enabled: false,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::ModelCatalogInContext,
@@ -2204,13 +2211,13 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::Goals,
         key: "goals",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::TokenBudget,
         key: "token_budget",
         stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::ContextManagement,
@@ -2402,7 +2409,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::RetainClientToolOutputs,
         key: "retain_client_tool_outputs",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::UseAgentIdentity,

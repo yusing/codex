@@ -27,6 +27,11 @@ pub fn is_non_inheritable_env_var(name: &str) -> bool {
         .any(|restricted| restricted.eq_ignore_ascii_case(name))
 }
 
+/// Tool processes must not receive the environment-facts capability used by hooks.
+pub fn is_non_inheritable_tool_env_var(name: &str) -> bool {
+    is_non_inheritable_env_var(name) || name.eq_ignore_ascii_case("MEKUGI_ENVIRONMENT_FACTS")
+}
+
 pub fn set_tool_call_id_env_var(env: &mut HashMap<String, String>, tool_call_id: Option<&str>) {
     #[cfg(windows)]
     env.retain(|name, _| !name.eq_ignore_ascii_case(CODEX_TOOL_CALL_ID_ENV_VAR));
@@ -169,7 +174,7 @@ where
 
     // Restricted launch context cannot be restored through user-provided shell
     // environment overrides.
-    env_map.retain(|name, _| !is_non_inheritable_env_var(name));
+    env_map.retain(|name, _| !is_non_inheritable_tool_env_var(name));
 
     env_map
 }

@@ -2,7 +2,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use codex_config::types::McpServerEnvVar;
 use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
-use codex_protocol::shell_environment::is_non_inheritable_env_var;
+use codex_protocol::shell_environment::is_non_inheritable_tool_env_var;
 use http::HeaderMap;
 use http::HeaderName;
 use http::HeaderValue;
@@ -53,7 +53,7 @@ pub(crate) fn create_env_for_mcp_server(
     }
     env.retain(|name, _| {
         name.to_str()
-            .is_none_or(|name| !is_non_inheritable_env_var(name))
+            .is_none_or(|name| !is_non_inheritable_tool_env_var(name))
     });
     Ok(env)
 }
@@ -73,7 +73,7 @@ pub(crate) fn create_env_overlay_for_remote_mcp_server(
         .collect();
     env.retain(|name, _| {
         name.to_str()
-            .is_none_or(|name| !is_non_inheritable_env_var(name))
+            .is_none_or(|name| !is_non_inheritable_tool_env_var(name))
     });
     env
 }
@@ -82,7 +82,7 @@ pub(crate) fn remote_mcp_env_var_names(env_vars: &[McpServerEnvVar]) -> Vec<Stri
     env_vars
         .iter()
         .filter(|var| var.is_remote_source())
-        .filter(|var| !is_non_inheritable_env_var(var.name()))
+        .filter(|var| !is_non_inheritable_tool_env_var(var.name()))
         .map(|var| var.name().to_string())
         .collect()
 }
@@ -97,7 +97,7 @@ fn local_stdio_env_var_names(env_vars: &[McpServerEnvVar]) -> Result<impl Iterat
     Ok(env_vars
         .iter()
         .map(McpServerEnvVar::name)
-        .filter(|name| !is_non_inheritable_env_var(name)))
+        .filter(|name| !is_non_inheritable_tool_env_var(name)))
 }
 
 pub(crate) fn build_default_headers(

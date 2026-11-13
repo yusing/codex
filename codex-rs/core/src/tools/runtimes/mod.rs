@@ -27,7 +27,7 @@ use codex_network_proxy::PROXY_ENV_KEYS;
 use codex_network_proxy::PROXY_GIT_SSH_COMMAND_ENV_KEY;
 pub(crate) use codex_network_proxy::is_managed_proxy_env_var;
 pub(crate) use codex_network_proxy::strip_managed_proxy_env;
-use codex_protocol::shell_environment::is_non_inheritable_env_var;
+use codex_protocol::shell_environment::is_non_inheritable_tool_env_var;
 use codex_shell_command::shell_snapshot::SNAPSHOT_BROKERED_UNSET_ENV_PREFIX;
 use codex_shell_command::shell_snapshot::SNAPSHOT_BROKERED_VALUE_ENV_PREFIX;
 use codex_shell_command::shell_snapshot::build_brokered_credential_exports;
@@ -526,7 +526,7 @@ fn build_override_exports(
         .keys()
         .map(String::as_str)
         .chain(restore_even_when_absent.iter().copied())
-        .filter(|key| !is_non_inheritable_env_var(key))
+        .filter(|key| !is_non_inheritable_tool_env_var(key))
         .filter(|key| is_valid_shell_variable_name(key))
         .collect::<Vec<_>>();
     keys.sort_unstable();

@@ -89,7 +89,7 @@ pub(super) async fn prepare(
     );
     configured.extend(params.env.clone());
     configured.retain(|key, _| {
-        !shell_environment::is_non_inheritable_env_var(key)
+        !shell_environment::is_non_inheritable_tool_env_var(key)
             && ![
                 crate::CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR,
                 shell_environment::CODEX_THREAD_ID_ENV_VAR,

@@ -58,6 +58,10 @@ fn non_inheritable_environment_is_removed_after_policy_overrides() {
     let vars = [
         ("SAFE".to_string(), "inherited".to_string()),
         (
+            "MEKUGI_ENVIRONMENT_FACTS".into(),
+            "inherited-capability".into(),
+        ),
+        (
             "codex_guardian_decisions_api_key".into(),
             "synthetic-inherited-key".into(),
         ),
@@ -81,6 +85,10 @@ fn non_inheritable_environment_is_removed_after_policy_overrides() {
         r#set: HashMap::from([
             ("SAFE".to_string(), "override".to_string()),
             (
+                "mekugi_environment_facts".into(),
+                "configured-capability".into(),
+            ),
+            (
                 "CODEX_GUARDIAN_DECISIONS_API_KEY".into(),
                 "synthetic-override-key".into(),
             ),
@@ -101,6 +109,7 @@ fn non_inheritable_environment_is_removed_after_policy_overrides() {
         populate_env(vars, &policy, /*thread_id*/ None),
         HashMap::from([("SAFE".to_string(), "override".to_string())])
     );
+    assert!(!is_non_inheritable_env_var("MEKUGI_ENVIRONMENT_FACTS"));
 }
 
 #[test]

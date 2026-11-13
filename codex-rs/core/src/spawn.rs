@@ -8,7 +8,7 @@ use tokio::process::Command;
 use tracing::trace;
 
 use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_protocol::shell_environment::is_non_inheritable_env_var;
+use codex_protocol::shell_environment::is_non_inheritable_tool_env_var;
 
 /// Experimental environment variable that will be set to some non-empty value
 /// if both of the following are true:
@@ -61,7 +61,7 @@ pub(crate) async fn spawn_child_async(request: SpawnChildRequest<'_>) -> std::io
         mut env,
     } = request;
 
-    env.retain(|name, _| !is_non_inheritable_env_var(name));
+    env.retain(|name, _| !is_non_inheritable_tool_env_var(name));
 
     // Both command arguments and environment variables can contain credentials.
     trace!(

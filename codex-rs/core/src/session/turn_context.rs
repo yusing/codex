@@ -1,6 +1,4 @@
 use super::step_settings::ResolvedStepSettings;
-use super::token_budget::has_explicit_settings;
-use super::token_budget::resolve_token_budget;
 use super::*;
 use crate::config::TokenBudgetConfig;
 use crate::cyber_access_program;
@@ -353,10 +351,8 @@ pub struct TurnContext {
     pub config: Arc<Config>,
     /// Thread defaults displaced by an explicit routing override for this turn.
     pub(crate) overridden_direct_only_tool_namespaces: Option<Vec<String>>,
-    /// Preferences captured before token-budget defaults from the turn's initial model.
+    /// Runtime budget policy captured when the turn is admitted.
     pub(crate) configured_token_budget: Option<TokenBudgetConfig>,
-    /// Captured once so later steps do not re-read config layers to detect user preferences.
-    pub(crate) use_model_token_budget_defaults: bool,
     pub(crate) auth_manager: Option<Arc<AuthManager>>,
     /// Frozen settings used to construct this context. Legacy turn consumers
     /// keep this view even when later steps use different settings.
@@ -455,8 +451,6 @@ impl TurnContext {
             code_mode_available: self.code_mode_available,
             overridden_direct_only_tool_namespaces: None,
             configured_token_budget: config.token_budget.clone(),
-            use_model_token_budget_defaults: config.features.enabled(Feature::TokenBudget)
-                && !has_explicit_settings(&config),
             config,
             auth_manager: self.auth_manager.clone(),
             initial_settings: Arc::clone(&step_settings),
@@ -897,7 +891,6 @@ impl TurnContext {
                 .overridden_direct_only_tool_namespaces
                 .clone(),
             configured_token_budget: self.configured_token_budget.clone(),
-            use_model_token_budget_defaults: self.use_model_token_budget_defaults,
             auth_manager: self.auth_manager.clone(),
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: self.disabled_plugin_ids.clone(),
@@ -1103,14 +1096,6 @@ impl Session {
 
         let mut per_turn_config = per_turn_config;
         let configured_token_budget = per_turn_config.token_budget.clone();
-        let use_model_token_budget_defaults =
-            per_turn_config.features.enabled(Feature::TokenBudget)
-                && !has_explicit_settings(&per_turn_config);
-        per_turn_config.token_budget = resolve_token_budget(
-            configured_token_budget.as_ref(),
-            use_model_token_budget_defaults,
-            model_info,
-        );
         if per_turn_config
             .features
             .persistent_execution_enabled(step_settings.reasoning_effort())
@@ -1167,7 +1152,6 @@ impl Session {
             config: per_turn_config,
             overridden_direct_only_tool_namespaces: None,
             configured_token_budget,
-            use_model_token_budget_defaults,
             auth_manager,
             initial_settings: Arc::clone(&step_settings),
             disabled_plugin_ids: session_configuration.disabled_plugin_ids.clone(),
@@ -1522,23 +1506,16 @@ impl Session {
         }
 
         if !tc.code_mode_available
-            && matches!(
-                crate::tools::requested_tool_mode(tc, tc.model_info()),
-                codex_protocol::openai_models::ToolMode::CodeMode
-                    | codex_protocol::openai_models::ToolMode::CodeModeOnly
-            )
             && let Some(message) = self
                 .services
                 .code_mode_service
-                .take_unavailable_warning(crate::tools::effective_tool_mode(tc, tc.model_info()))
+                .take_unavailable_warning(crate::tools::TOOL_MODE)
         {
             self.send_event(tc, EventMsg::Warning(WarningEvent { message }))
                 .await;
         }
 
-        if let Some(message) =
-            unsupported_code_mode_warning(tc.model_info(), tc.config.features.get())
-        {
+        if let Some(message) = unsupported_code_mode_warning(tc.model_info()) {
             self.send_event(tc, EventMsg::Warning(WarningEvent { message }))
                 .await;
         }

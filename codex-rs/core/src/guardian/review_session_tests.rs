@@ -1141,7 +1141,6 @@ async fn compaction_and_review_submissions_share_execution_observer() {
     params.spawn_config.token_budget = None;
     let turn = Arc::get_mut(&mut params.parent_context.turn).expect("unshared turn fixture");
     turn.configured_token_budget = None;
-    turn.use_model_token_budget_defaults = false;
     let execution = codex_direct_tool_timing::ReviewExecution::default();
     execution.observe();
     params.parent_context.review_execution = Some(execution.clone());

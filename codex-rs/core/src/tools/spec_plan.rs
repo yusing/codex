@@ -4,8 +4,8 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::image_preparation::unified_image_budget_enabled;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::tools::TOOL_MODE;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
-use crate::tools::effective_tool_mode;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
@@ -217,13 +217,11 @@ pub(crate) fn build_tool_router(
     )
 }
 
-/// Use the effective mode because the model can override the thread's configured mode.
-fn code_mode_only_strict_3p_tools(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
-    effective_tool_mode(turn_context, model_info) == ToolMode::CodeModeOnly
-        && turn_context
-            .config
-            .features
-            .enabled(Feature::CodeModeOnlyStrictThirdPartyTools)
+fn code_mode_only_strict_3p_tools(turn_context: &TurnContext) -> bool {
+    turn_context
+        .config
+        .features
+        .enabled(Feature::CodeModeOnlyStrictThirdPartyTools)
 }
 
 fn apply_mcp_tool_exposure_policy(
@@ -270,7 +268,7 @@ fn apply_mcp_tool_exposure_policy(
         let Some(omitted_exposures) = omitted_exposures_by_tool.get(&tool_name) else {
             continue;
         };
-        if code_mode_only_strict_3p_tools(turn_context, model_info) {
+        if code_mode_only_strict_3p_tools(turn_context) {
             // Ignore MCP/app omit_tools_from; eligible tools must stay deferred in exec.
             // Log conflicts without adding a warning to the model's prompt.
             if omitted_exposures.intersects(ToolExposures::DEFERRED | ToolExposures::CODE_MODE) {
@@ -296,8 +294,7 @@ fn apply_mcp_tool_exposure_policy(
 
         exposures = if model_info.supports_search_tool
             && exposures.contains(ToolExposures::DEFERRED)
-            && (effective_tool_mode(turn_context, model_info) != ToolMode::CodeModeOnly
-                || exposures.contains(ToolExposures::CODE_MODE))
+            && (TOOL_MODE != ToolMode::CodeModeOnly || exposures.contains(ToolExposures::CODE_MODE))
         {
             exposures.difference(ToolExposures::DIRECT)
         } else {
@@ -409,7 +406,7 @@ pub(crate) fn finalize_tool_router(
     hosted_specs.retain(|spec| registry.tool_policy.allows(&ToolName::plain(spec.name())));
     apply_direct_model_only_namespace_overrides(turn_context, &mut registry);
     enforce_strict_3p_tools(turn_context, model_info, &mut registry);
-    let tool_mode = effective_tool_mode(turn_context, model_info);
+    let tool_mode = TOOL_MODE;
     let code_mode_enabled = matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly);
     if code_mode_enabled {
         for tool_name in [
@@ -638,7 +635,7 @@ fn enforce_strict_3p_tools(
     model_info: &ModelInfo,
     registry: &mut ToolRegistry,
 ) {
-    if !code_mode_only_strict_3p_tools(turn_context, model_info) {
+    if !code_mode_only_strict_3p_tools(turn_context) {
         return;
     }
 
@@ -700,7 +697,7 @@ fn spec_for_model_request(
     code_mode_tool_names: &BTreeMap<String, ToolName>,
     spec: ToolSpec,
 ) -> ToolSpec {
-    let tool_mode = effective_tool_mode(turn_context, model_info);
+    let tool_mode = TOOL_MODE;
     if matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
         && exposure.is_available_in_code_mode()
         && !is_excluded_from_code_mode(turn_context, tool_name)
@@ -890,7 +887,7 @@ fn is_hidden_by_code_mode_only(
     tool_name: &ToolName,
     exposure: ToolExposure,
 ) -> bool {
-    let tool_mode = effective_tool_mode(turn_context, model_info);
+    let tool_mode = TOOL_MODE;
     tool_mode == ToolMode::CodeModeOnly
         && exposure.is_available_in_code_mode()
         && codex_code_mode::is_code_mode_nested_tool(&codex_tools::code_mode_name_for_tool_name(
@@ -933,10 +930,7 @@ fn prepare_function_description_prefixes(
     let prefixes = model_messages.functions_namespace_functions_description_prefixes();
     let mut available_tools = Vec::new();
     if prefixes.is_some_and(|prefixes| !prefixes.is_empty()) {
-        let code_mode_enabled = matches!(
-            effective_tool_mode(turn_context, model_info),
-            ToolMode::CodeMode | ToolMode::CodeModeOnly
-        );
+        let code_mode_enabled = matches!(TOOL_MODE, ToolMode::CodeMode | ToolMode::CodeModeOnly);
         let search_name = ToolName::plain(TOOL_SEARCH_TOOL_NAME);
         let search_visible = search_exposure.is_some_and(|exposure| {
             !is_hidden_by_code_mode_only(turn_context, model_info, &search_name, exposure)
@@ -991,7 +985,7 @@ fn code_mode_tools<'a>(
     model_info: &'a ModelInfo,
     registry: &'a ToolRegistry,
 ) -> impl Iterator<Item = (String, Arc<ToolSpec>, &'a RegisteredTool)> {
-    let tool_mode = effective_tool_mode(turn_context, model_info);
+    let tool_mode = TOOL_MODE;
     let enabled = matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
         && registry
             .tool_policy
@@ -1005,8 +999,7 @@ fn code_mode_tools<'a>(
         let tool_name = tool.runtime.tool_name();
         // Deferred third-party tools still need an exec route to be discoverable.
         if is_excluded_from_code_mode(turn_context, &tool_name)
-            && !(code_mode_only_strict_3p_tools(turn_context, model_info)
-                && tool.runtime.is_third_party_tool())
+            && !(code_mode_only_strict_3p_tools(turn_context) && tool.runtime.is_third_party_tool())
         {
             return None;
         }
@@ -1057,7 +1050,7 @@ fn register_code_mode_executors(
     BTreeMap<String, ToolName>,
     Option<Arc<Vec<codex_code_mode::ExecDefinition>>>,
 ) {
-    let tool_mode = effective_tool_mode(turn_context, model_info);
+    let tool_mode = TOOL_MODE;
     if !matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly) {
         return (BTreeMap::new(), None);
     }
@@ -1321,9 +1314,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
 
 #[instrument(level = "trace", skip_all)]
 fn add_mcp_resource_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistry) {
-    if context.mcp.has_servers()
-        || effective_tool_mode(context.turn_context, context.model_info) == ToolMode::CodeModeOnly
-    {
+    if context.mcp.has_servers() || TOOL_MODE == ToolMode::CodeModeOnly {
         let messages = ResolvedModelMessages::from_model(context.model_info).mcp_resources();
         registry.add(ListMcpResourcesHandler::new(
             messages.and_then(|messages| messages.list_mcp_resources.as_ref()),

@@ -318,7 +318,7 @@ impl ShellSnapshotCache {
         apply_exec_metadata(&mut prepared.env, params.metadata.as_ref());
         prepared
             .env
-            .retain(|name, _| !shell_environment::is_non_inheritable_env_var(name));
+            .retain(|name, _| !shell_environment::is_non_inheritable_tool_env_var(name));
 
         let restore = if let Some(reader) = &reader {
             format!(". /dev/fd/{}", reader.as_raw_fd())
@@ -625,7 +625,7 @@ fn parse_snapshot(
     environment.remove(CODEX_TOOL_CALL_ID_ENV_VAR);
     environment.remove("PWD");
     environment.remove("OLDPWD");
-    environment.retain(|name, _| !shell_environment::is_non_inheritable_env_var(name));
+    environment.retain(|name, _| !shell_environment::is_non_inheritable_tool_env_var(name));
 
     Ok(ShellSnapshot {
         prewarmed: false,

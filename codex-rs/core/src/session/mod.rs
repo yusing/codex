@@ -883,7 +883,6 @@ impl Session {
             );
         }
 
-        let auth = auth_manager.auth_cached();
         // Forked subagents keep their parent's activation with the copied history.
         // Fresh children restore configured preferences before applying startup defaults.
         let inherits_token_budget = matches!(&conversation_history, InitialHistory::Forked(_))
@@ -892,13 +891,6 @@ impl Session {
             Arc::make_mut(&mut config)
                 .prepare_token_budget_for_startup()
                 .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
-            // Resolve activation for this runtime, including when resuming saved history.
-            token_budget::apply_experimental_context(
-                Arc::make_mut(&mut config),
-                auth.as_ref(),
-                &model_info,
-            )?;
-            token_budget::apply_model_defaults(Arc::make_mut(&mut config), &model_info);
         }
         let configured_config = Arc::clone(&config);
         let multi_agent_version = config.multi_agent_version_override().or_else(|| {
@@ -4356,11 +4348,7 @@ impl Session {
             }
         }
         let dynamic_tools = self.dynamic_tools().await;
-        let token_budget = token_budget::resolve_token_budget(
-            turn_context.configured_token_budget.as_ref(),
-            turn_context.use_model_token_budget_defaults,
-            settings.model_info.as_ref(),
-        );
+        let token_budget = turn_context.configured_token_budget.clone();
         let session_telemetry = settings.telemetry(&turn_context.session_telemetry);
         let environments = environments.or_cancel(cancellation_token).await?;
         let inherited_environments = inherited_environments.unwrap_or_else(|| environments.clone());
@@ -5173,49 +5161,6 @@ impl Session {
                 .resolved_context_window()
                 .is_some()
         {
-            // Keep the legacy bridge hint when native Notes is disabled. A failed
-            // native request must not fall back to the bridge.
-            if !turn_context
-                .config
-                .token_budget
-                .as_ref()
-                .is_some_and(|config| config.use_history_notes_extension)
-                && let Some((text, source_tool_namespace)) = self
-                    .services
-                    .mcp_runtime
-                    .latest_call_tool(
-                        "notes",
-                        "thread_hint",
-                        /*environment_id*/ None,
-                        /*arguments*/ None,
-                        Some(serde_json::json!({
-                            "threadId": self.thread_id().to_string(),
-                        })),
-                        /*requested_timeout*/ None,
-                        /*wait_for_server*/ true,
-                    )
-                    .await
-                    .ok()
-                    .and_then(|call| {
-                        let text = call
-                            .result
-                            .content
-                            .iter()
-                            .filter_map(|content| {
-                                content.get("text").and_then(serde_json::Value::as_str)
-                            })
-                            .filter(|text| !text.is_empty())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        (!text.is_empty()).then_some((text, call.source_tool_namespace))
-                    })
-            {
-                context_window_hints.push(codex_context_fragments::AnnotatedContent::text(
-                    text,
-                    ContentItemKind("notes.thread_hint".to_string()),
-                    ContentItemMetadata::tool(source_tool_namespace.map(Into::into)),
-                ));
-            }
             separate_developer_messages.push(
                 crate::context::TokenBudgetContext::new(
                     session_source

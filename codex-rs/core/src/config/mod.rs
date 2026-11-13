@@ -1453,7 +1453,7 @@ impl MultiAgentV2Config {
             hide_spawn_agent_metadata: true,
             expose_spawn_agent_model_overrides: true,
             wait_agent_enabled: true,
-            disable_native_tools: false,
+            disable_native_tools: true,
             disable_direct_message: false,
             message_board_in_memory: false,
             message_board_remote: None,
@@ -2910,9 +2910,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let wait_agent_enabled = base
         .and_then(|config| config.wait_agent_enabled)
         .unwrap_or(default.wait_agent_enabled);
-    let disable_native_tools = base
-        .and_then(|config| config.disable_native_tools)
-        .unwrap_or(default.disable_native_tools);
+    let disable_native_tools = true;
     let disable_direct_message = base
         .and_then(|config| config.disable_direct_message)
         .unwrap_or(default.disable_direct_message);
@@ -2969,26 +2967,14 @@ pub(crate) fn resolve_token_budget_config(
     }
 
     let token_budget_config = token_budget_toml_config(config_toml.features.as_ref());
-    let use_history_notes_extension = token_budget_config
-        .and_then(|config| config.use_history_notes_extension)
-        .unwrap_or_default();
+    let use_history_notes_extension = false;
     let reminder_threshold_tokens =
         token_budget_config.and_then(|config| config.reminder_threshold_tokens);
-    let reminder_message_template = token_budget_config
-        .and_then(|config| config.reminder_message_template.clone())
-        .unwrap_or_else(|| {
-            ResolvedModelMessages::bundled()
-                .token_budget_reminder_template()
-                .to_owned()
-        });
-    let guidance_message = token_budget_config
-        .and_then(|config| config.guidance_message.clone())
-        .filter(|message| !message.trim().is_empty());
-    let auto_compact_fallback_prompt = token_budget_config
-        .and_then(|config| config.auto_compact_fallback_prompt.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
+    let reminder_message_template = ResolvedModelMessages::bundled()
+        .token_budget_reminder_template()
+        .to_owned();
+    let guidance_message = None;
+    let auto_compact_fallback_prompt = None;
     let auto_compact_fallback_buffer_tokens =
         token_budget_config.and_then(|config| config.auto_compact_fallback_buffer_tokens);
 
@@ -4258,13 +4244,13 @@ impl Config {
         let developer_instructions = developer_instructions.or(cfg.developer_instructions);
         let include_permissions_instructions = cfg.include_permissions_instructions.unwrap_or(true);
         let include_apps_instructions = cfg.include_apps_instructions.unwrap_or(true);
-        let include_collaboration_mode_instructions =
-            cfg.include_collaboration_mode_instructions.unwrap_or(true);
-        let include_skill_instructions = cfg
-            .skills
-            .as_ref()
-            .and_then(|skills| skills.include_instructions)
-            .unwrap_or(true);
+        let include_collaboration_mode_instructions = false;
+        let include_skill_instructions = which::which("skills-mgr").is_err()
+            && cfg
+                .skills
+                .as_ref()
+                .and_then(|skills| skills.include_instructions)
+                .unwrap_or(true);
         let skill_max_context_tokens = cfg
             .skills
             .as_ref()

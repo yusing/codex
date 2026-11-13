@@ -538,7 +538,7 @@ pub(crate) fn spawn_command(
     // TODO(anp): Keep PathUri through the filesystem helper launch boundary.
     let cwd = cwd.to_abs_path().map_err(io_error)?;
     command.current_dir(cwd.as_path());
-    env.retain(|name, _| !codex_protocol::shell_environment::is_non_inheritable_env_var(name));
+    env.retain(|name, _| !codex_protocol::shell_environment::is_non_inheritable_tool_env_var(name));
     command.envs(env);
     command.stdin(stdin);
     // A helper is a known executable: native launch errors must not retry through fork.

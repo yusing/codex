@@ -486,10 +486,7 @@ mod tests {
     #[tokio::test]
     async fn turn_worker_uses_step_router_mode_instead_of_admitted_turn() {
         let (session, turn) = make_session_and_context().await;
-        assert_eq!(
-            crate::tools::effective_tool_mode(&turn, turn.model_info()),
-            ToolMode::Direct
-        );
+        assert_eq!(crate::tools::TOOL_MODE, ToolMode::Direct);
         let session = Arc::new(session);
         let step_context = StepContext::for_test(Arc::new(turn));
         let router = Arc::new(ToolRouter::from_parts(

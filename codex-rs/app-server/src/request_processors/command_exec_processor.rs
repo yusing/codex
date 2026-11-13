@@ -2,7 +2,7 @@ use super::*;
 use codex_core::exec_env::inject_apply_patch_env;
 use codex_core::windows_sandbox::local_binding_policy_for_sandbox;
 use codex_core::windows_sandbox::managed_proxy_routing_for_windows_sandbox;
-use codex_protocol::shell_environment::is_non_inheritable_env_var;
+use codex_protocol::shell_environment::is_non_inheritable_tool_env_var;
 
 #[derive(Clone)]
 pub(crate) struct CommandExecRequestProcessor {
@@ -167,7 +167,7 @@ impl CommandExecRequestProcessor {
                 }
             }
         }
-        env.retain(|name, _| !is_non_inheritable_env_var(name));
+        env.retain(|name, _| !is_non_inheritable_tool_env_var(name));
         inject_apply_patch_env(&mut env);
         let timeout_ms = match timeout_ms {
             Some(timeout_ms) => match u64::try_from(timeout_ms) {

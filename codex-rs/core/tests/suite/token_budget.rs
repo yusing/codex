@@ -755,7 +755,9 @@ async fn model_token_budget_defaults_do_not_enable_disabled_feature() -> Result<
 #[test_case(false; "root")]
 #[test_case(true; "cached_subagent")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn token_budget_context_injects_plain_thread_hint_text(cached_subagent: bool) -> Result<()> {
+async fn token_budget_context_does_not_request_automatic_thread_hint(
+    cached_subagent: bool,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -807,7 +809,7 @@ async fn token_budget_context_injects_plain_thread_hint_text(cached_subagent: bo
         .build(&server)
         .await?;
     wait_for_mcp_server(&test.codex, "notes").await?;
-    let (thread, thread_id) = if cached_subagent {
+    let (thread, _thread_id) = if cached_subagent {
         let subagent = test
             .thread_manager
             .start_thread(StartThreadOptions {
@@ -860,7 +862,7 @@ async fn token_budget_context_injects_plain_thread_hint_text(cached_subagent: bo
     assert_eq!(token_budgets.len(), 1);
     let captures = assert_regex_match(
         &format!(
-            r"^{CONTEXT_WINDOW_OPEN_TAG}\nAgent name: /root\nFirst context window id: ([0-9a-f-]{{36}})\nCurrent context window id: ([0-9a-f-]{{36}})\nmanual history hint for thread {thread_id}\nunstructured notes/thread_hint fixture result\n{CONTEXT_WINDOW_CLOSE_TAG}$"
+            r"^{CONTEXT_WINDOW_OPEN_TAG}\nAgent name: /root\nFirst context window id: ([0-9a-f-]{{36}})\nCurrent context window id: ([0-9a-f-]{{36}})\n{CONTEXT_WINDOW_CLOSE_TAG}$"
         ),
         &token_budgets[0],
     );
@@ -885,13 +887,7 @@ async fn token_budget_context_injects_plain_thread_hint_text(cached_subagent: bo
                 .clone(),
         )
     });
-    assert_eq!(
-        metadata,
-        Some(json!(ContentItemMetadata::tool(Some(
-            "mcp__notes".to_string().into()
-        )))),
-        "the first Notes hint must retain its exact tool namespace"
-    );
+    assert_eq!(metadata, None, "automatic Notes hints must not be produced");
     thread.shutdown_and_wait().await?;
 
     Ok(())

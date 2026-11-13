@@ -144,8 +144,13 @@ fn codex_apps_mcp_protocol_can_be_enabled_independently_of_generic_mcp() {
 #[test]
 fn default_enabled_features_have_shipped() {
     for spec in crate::FEATURES {
-        // Instant interrupts are enabled by default while retaining their development stage.
-        if spec.default_enabled && spec.id != Feature::InstantInterrupt {
+        // Native capabilities retain their development stage while enabled by default.
+        if spec.default_enabled
+            && !matches!(
+                spec.id,
+                Feature::CodeMode | Feature::CodeModeOnly | Feature::InstantInterrupt
+            )
+        {
             assert!(
                 matches!(
                     spec.stage,
@@ -184,10 +189,14 @@ path = "/custom/mcp"
 fn code_mode_only_requires_code_mode() {
     let mut features = Features::with_defaults();
     features.enable(Feature::CodeModeOnly);
+    features.disable(Feature::StepModelSwitching);
+    features.disable(Feature::ReasoningEffortOverride);
     features.normalize_dependencies();
 
     assert_eq!(features.enabled(Feature::CodeModeOnly), true);
     assert_eq!(features.enabled(Feature::CodeMode), true);
+    assert_eq!(features.enabled(Feature::StepModelSwitching), true);
+    assert_eq!(features.enabled(Feature::ReasoningEffortOverride), true);
 }
 
 #[test]
@@ -586,6 +595,8 @@ fn apps_require_feature_flag_and_chatgpt_auth() {
 fn from_sources_applies_base_profile_and_overrides() {
     let mut base_entries = BTreeMap::new();
     base_entries.insert("plugins".to_string(), true);
+    base_entries.insert("step_model_switching".to_string(), false);
+    base_entries.insert("reasoning_effort_override".to_string(), false);
     let base_features = FeaturesToml {
         entries: base_entries,
         ..Default::default()
@@ -593,6 +604,8 @@ fn from_sources_applies_base_profile_and_overrides() {
 
     let mut profile_entries = BTreeMap::new();
     profile_entries.insert("code_mode_only".to_string(), true);
+    profile_entries.insert("step_model_switching".to_string(), false);
+    profile_entries.insert("reasoning_effort_override".to_string(), false);
     let profile_features = FeaturesToml {
         entries: profile_entries,
         ..Default::default()
@@ -615,6 +628,8 @@ fn from_sources_applies_base_profile_and_overrides() {
     assert_eq!(features.enabled(Feature::Plugins), true);
     assert_eq!(features.enabled(Feature::CodeModeOnly), true);
     assert_eq!(features.enabled(Feature::CodeMode), true);
+    assert_eq!(features.enabled(Feature::StepModelSwitching), true);
+    assert_eq!(features.enabled(Feature::ReasoningEffortOverride), true);
     assert_eq!(features.enabled(Feature::ApplyPatchFreeform), false);
     assert_eq!(features.enabled(Feature::WebSearchRequest), false);
 }

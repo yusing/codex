@@ -144,7 +144,10 @@ async fn command_exec_env_overrides_merge_with_server_environment_and_support_un
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .without_auto_env()
-        .with_env_overrides(&[("COMMAND_EXEC_BASELINE", Some("server"))])
+        .with_env_overrides(&[
+            ("COMMAND_EXEC_BASELINE", Some("server")),
+            ("MEKUGI_ENVIRONMENT_FACTS", Some("server-capability")),
+        ])
         .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
         .await?;
 
@@ -153,7 +156,7 @@ async fn command_exec_env_overrides_merge_with_server_environment_and_support_un
             command: vec![
                 "/bin/sh".to_string(),
                 "-lc".to_string(),
-                "printf '%s|%s|%s|%s|%s|%s' \"$COMMAND_EXEC_BASELINE\" \"$COMMAND_EXEC_EXTRA\" \"${RUST_LOG-unset}\" \"$CODEX_HOME\" \"$OPENAI_FEDERATION_RULE_ID\" \"$openai_identity_token_file\"".to_string(),
+                "printf '%s|%s|%s|%s|%s|%s|%s|%s' \"$COMMAND_EXEC_BASELINE\" \"$COMMAND_EXEC_EXTRA\" \"${RUST_LOG-unset}\" \"$CODEX_HOME\" \"$OPENAI_FEDERATION_RULE_ID\" \"$openai_identity_token_file\" \"$MEKUGI_ENVIRONMENT_FACTS\" \"$mekugi_environment_facts\"".to_string(),
             ],
             process_id: None,
             tty: false,
@@ -170,6 +173,7 @@ async fn command_exec_env_overrides_merge_with_server_environment_and_support_un
                     Some("request".to_string()),
                 ),
                 ("COMMAND_EXEC_EXTRA".to_string(), Some("added".to_string())),
+                ("mekugi_environment_facts".to_string(), Some("request-capability".to_string())),
                 ("RUST_LOG".to_string(), None),
                 (
                     OPENAI_FEDERATION_RULE_ID_ENV_VAR.to_string(),
@@ -191,7 +195,7 @@ async fn command_exec_env_overrides_merge_with_server_environment_and_support_un
         response,
         CommandExecResponse {
             exit_code: 0,
-            stdout: format!("request|added|unset|{}||", codex_home.path().display()),
+            stdout: format!("request|added|unset|{}||||", codex_home.path().display()),
             stderr: String::new(),
         }
     );

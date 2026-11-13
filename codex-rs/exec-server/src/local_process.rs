@@ -766,7 +766,7 @@ fn child_env(params: &ExecParams) -> HashMap<String, String> {
         None => params.env.clone(),
     };
     env.remove(crate::CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR);
-    env.retain(|name, _| !shell_environment::is_non_inheritable_env_var(name));
+    env.retain(|name, _| !shell_environment::is_non_inheritable_tool_env_var(name));
     apply_exec_metadata(&mut env, params.metadata.as_ref());
     env
 }
@@ -1579,7 +1579,10 @@ mod tests {
 
     #[test]
     fn child_env_defaults_to_exact_env() {
-        let params = test_exec_params(HashMap::from([("ONLY_THIS".to_string(), "1".to_string())]));
+        let params = test_exec_params(HashMap::from([
+            ("ONLY_THIS".to_string(), "1".to_string()),
+            ("MEKUGI_ENVIRONMENT_FACTS".into(), "capability".into()),
+        ]));
 
         assert_eq!(
             child_env(&params),
@@ -1595,6 +1598,10 @@ mod tests {
         let mut params = test_exec_params(HashMap::from([
             ("OVERLAY".to_string(), "overlay".to_string()),
             ("POLICY_SET".to_string(), "overlay-wins".to_string()),
+            (
+                "mekugi_environment_facts".into(),
+                "overlay-capability".into(),
+            ),
             ("CODEX_THREAD_ID".into(), "overlay-thread".into()),
             ("CODEX_TOOL_CALL_ID".into(), "overlay-call".into()),
             (
@@ -1608,6 +1615,10 @@ mod tests {
             exclude: Vec::new(),
             r#set: HashMap::from([
                 ("POLICY_SET".to_string(), "policy".to_string()),
+                (
+                    "MEKUGI_ENVIRONMENT_FACTS".into(),
+                    "policy-capability".into(),
+                ),
                 ("OpenAI_Federation_Rule_Id".to_string(), "rule".to_string()),
                 ("CODEX_THREAD_ID".into(), "policy-thread".into()),
                 ("CODEX_TOOL_CALL_ID".into(), "policy-call".into()),

@@ -81,7 +81,7 @@ use codex_protocol::error::SandboxErr;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::TerminalInteractionEvent;
-use codex_protocol::shell_environment::is_non_inheritable_env_var;
+use codex_protocol::shell_environment::is_non_inheritable_tool_env_var;
 use codex_tools::ToolName;
 use codex_utils_head_tail_buffer::HeadTailBuffer;
 use codex_utils_output_truncation::approx_tokens_from_byte_count;
@@ -154,7 +154,7 @@ pub(crate) fn exec_env_policy_from_shell_policy(
         ]
         .iter()
         .any(|runtime_key| key.eq_ignore_ascii_case(runtime_key))
-            && !is_non_inheritable_env_var(key)
+            && !is_non_inheritable_tool_env_var(key)
     });
     codex_exec_server::ExecEnvPolicy {
         inherit: policy.inherit.clone(),
@@ -176,7 +176,7 @@ fn env_overlay_for_exec_server(
     request_env
         .iter()
         .filter(|(key, value)| {
-            !is_non_inheritable_env_var(key)
+            !is_non_inheritable_tool_env_var(key)
                 && (matches!(
                     key.as_str(),
                     CODEX_PERMISSION_PROFILE_ENV_VAR

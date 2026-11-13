@@ -55,10 +55,7 @@ impl<'a> ResolvedMessage<'a> {
 }
 
 const REQUEST_USER_INPUT_ASYNC_DESCRIPTION: &str = "Ask the user one or more questions during ongoing work. Use this tool only to request missing information, preferences, constraints, clarification, or approval. The tool returns immediately without ending the turn or waiting for a reply; any reply arrives asynchronously as a new user message. Keep questions concise, self-contained, and easy to understand, using a level of detail appropriate to the user and task. The UI always allows a free-text answer, including when suggested options are provided. A preselected option is not submitted automatically.";
-const REMINDER_MESSAGE_TEMPLATE: &str = concat!(
-    "Your context window is nearly exhausted (only {n_remaining} tokens remaining) and will be automatically reset for you soon. ",
-    "Once reset, message items in current context window will be cleared in the new window, but notes and history items will be persistent across windows."
-);
+const REMINDER_MESSAGE_TEMPLATE: &str = "Context remaining: {n_remaining} tokens.";
 const PERSISTENT_INSTRUCTIONS: &str = include_str!("../templates/persistent_mode.md");
 const CONTENT_FILTER_GUIDANCE: &str = "Your previous response was blocked by a content filter. Do not treat this as a transient failure or try to reproduce or work around the blocked content through repeated attempts, altered formatting, splitting, encoding, tools, subagents, or later wakes. Briefly explain the limitation and offer a permitted alternative. Continue unrelated authorized work.";
 const MAX_CONTENT_FILTER_GUIDANCE_BYTES: usize = 512;
