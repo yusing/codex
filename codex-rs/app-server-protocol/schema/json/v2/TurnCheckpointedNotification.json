@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "TurnCheckpoint": {
+      "oneOf": [
+        {
+          "properties": {
+            "deadline_unix_ms": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "wait"
+              ],
+              "title": "WaitTurnCheckpointKind",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/definitions/WaitCheckpointReason"
+            },
+            "wait_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason",
+            "wait_id"
+          ],
+          "title": "WaitTurnCheckpoint",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "delivery_id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "completion_pending"
+              ],
+              "title": "CompletionPendingTurnCheckpointKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "delivery_id",
+            "kind"
+          ],
+          "title": "CompletionPendingTurnCheckpoint",
+          "type": "object"
+        }
+      ]
+    },
+    "WaitCheckpointReason": {
+      "enum": [
+        "explicit",
+        "descendant_recovery",
+        "provider_capacity",
+        "provider_usage_limit"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "Execution stopped at a native logical checkpoint; the assignment is not complete.",
+  "properties": {
+    "checkpoint": {
+      "$ref": "#/definitions/TurnCheckpoint"
+    },
+    "targets": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    },
+    "workId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "checkpoint",
+    "targets",
+    "threadId",
+    "turnId",
+    "workId"
+  ],
+  "title": "TurnCheckpointedNotification",
+  "type": "object"
+}

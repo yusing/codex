@@ -1,6 +1,108 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "AcquiredSource": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "file"
+              ],
+              "title": "FileAcquiredSourceKind",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "title": "FileAcquiredSource",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "skill"
+              ],
+              "title": "SkillAcquiredSourceKind",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "title": "SkillAcquiredSource",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "changes"
+              ],
+              "title": "ChangesAcquiredSourceKind",
+              "type": "string"
+            },
+            "selection": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "selection"
+          ],
+          "title": "ChangesAcquiredSource",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "selection"
+              ],
+              "title": "SelectionAcquiredSourceKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "SelectionAcquiredSource",
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reference": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reference",
+        "success"
+      ],
+      "type": "object"
+    },
     "AgentMessageInputContent": {
       "oneOf": [
         {
@@ -44,6 +146,9 @@
           "type": "object"
         }
       ]
+    },
+    "AgentPath": {
+      "type": "string"
     },
     "ConfigurationReasoning": {
       "description": "Reasoning settings interpreted by the backend for the routed model.",
@@ -209,6 +314,507 @@
           "type": "object"
         }
       ]
+    },
+    "CoordinationDisposition": {
+      "enum": [
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "CoordinationInterruptRequest": {
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/definitions/CoordinationTarget"
+        }
+      },
+      "required": [
+        "operationId",
+        "target"
+      ],
+      "type": "object"
+    },
+    "CoordinationProjection": {
+      "properties": {
+        "deliveries": {
+          "items": {
+            "$ref": "#/definitions/CoordinationTerminalDelivery"
+          },
+          "type": "array"
+        },
+        "interrupt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CoordinationInterruptRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wait": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CoordinationWaitSettlement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "deliveries"
+      ],
+      "type": "object"
+    },
+    "CoordinationTarget": {
+      "properties": {
+        "taskName": {
+          "$ref": "#/definitions/AgentPath"
+        },
+        "threadId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskName",
+        "threadId",
+        "workId"
+      ],
+      "type": "object"
+    },
+    "CoordinationTerminalDelivery": {
+      "properties": {
+        "body": {
+          "description": "Exact displayed payload, including the frozen capture projection, without attribution headers.",
+          "type": "string"
+        },
+        "captureResourceRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deliveryId": {
+          "type": "string"
+        },
+        "disposition": {
+          "$ref": "#/definitions/CoordinationDisposition"
+        },
+        "recipient": {
+          "$ref": "#/definitions/AgentPath"
+        },
+        "source": {
+          "$ref": "#/definitions/CoordinationTarget"
+        }
+      },
+      "required": [
+        "body",
+        "deliveryId",
+        "disposition",
+        "recipient",
+        "source"
+      ],
+      "type": "object"
+    },
+    "CoordinationTurnWaitReason": {
+      "enum": [
+        "descendantRecovery",
+        "providerCapacity",
+        "providerUsageLimit"
+      ],
+      "type": "string"
+    },
+    "CoordinationWaitCancellation": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "cancelled"
+              ],
+              "title": "CancelledCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "CancelledCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "executionFailed"
+              ],
+              "title": "ExecutionFailedCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "ExecutionFailedCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "deliveryId": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "inputSuperseded"
+              ],
+              "title": "InputSupersededCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "deliveryId",
+            "kind"
+          ],
+          "title": "InputSupersededCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "deliveryId": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "workTerminated"
+              ],
+              "title": "WorkTerminatedCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "deliveryId",
+            "kind"
+          ],
+          "title": "WorkTerminatedCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "shellOutput"
+              ],
+              "title": "ShellOutputCoordinationWaitCancellationKind",
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "turnId"
+          ],
+          "title": "ShellOutputCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "diagnostic": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "dispatchRejected"
+              ],
+              "title": "DispatchRejectedCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "DispatchRejectedCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "diagnostic": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "notDispatched"
+              ],
+              "title": "NotDispatchedCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "NotDispatchedCoordinationWaitCancellation",
+          "type": "object"
+        }
+      ]
+    },
+    "CoordinationWaitDisposition": {
+      "description": "A stopped wait target need not have authored a terminal final.",
+      "enum": [
+        "completed",
+        "failed",
+        "interrupted",
+        "paused"
+      ],
+      "type": "string"
+    },
+    "CoordinationWaitMessage": {
+      "properties": {
+        "body": {
+          "description": "Exact message payload and frozen sources, without native attribution headers.",
+          "type": "string"
+        },
+        "deliveryId": {
+          "type": "string"
+        },
+        "recipient": {
+          "$ref": "#/definitions/AgentPath"
+        },
+        "senderTaskName": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "senderThreadId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "body",
+        "deliveryId",
+        "recipient"
+      ],
+      "type": "object"
+    },
+    "CoordinationWaitMode": {
+      "enum": [
+        "any",
+        "all"
+      ],
+      "type": "string"
+    },
+    "CoordinationWaitOrigin": {
+      "oneOf": [
+        {
+          "properties": {
+            "cellId": {
+              "type": "string"
+            },
+            "itemId": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "cell"
+              ],
+              "title": "CellCoordinationWaitOriginKind",
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            },
+            "windowId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cellId",
+            "itemId",
+            "kind",
+            "turnId",
+            "windowId"
+          ],
+          "title": "CellCoordinationWaitOrigin",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "turn"
+              ],
+              "title": "TurnCoordinationWaitOriginKind",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/definitions/CoordinationTurnWaitReason"
+            },
+            "turnId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason",
+            "turnId"
+          ],
+          "title": "TurnCoordinationWaitOrigin",
+          "type": "object"
+        }
+      ]
+    },
+    "CoordinationWaitOutcome": {
+      "properties": {
+        "disposition": {
+          "$ref": "#/definitions/CoordinationWaitDisposition"
+        },
+        "target": {
+          "$ref": "#/definitions/CoordinationTarget"
+        }
+      },
+      "required": [
+        "disposition",
+        "target"
+      ],
+      "type": "object"
+    },
+    "CoordinationWaitResult": {
+      "oneOf": [
+        {
+          "description": "The frozen result is exposed to the caller, not proof of provider consumption.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "released"
+              ],
+              "title": "ReleasedCoordinationWaitResultKind",
+              "type": "string"
+            },
+            "wake": {
+              "$ref": "#/definitions/CoordinationWaitWake"
+            }
+          },
+          "required": [
+            "kind",
+            "wake"
+          ],
+          "title": "ReleasedCoordinationWaitResult",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cause": {
+              "$ref": "#/definitions/CoordinationWaitCancellation"
+            },
+            "kind": {
+              "enum": [
+                "cancelled"
+              ],
+              "title": "CancelledCoordinationWaitResultKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "cause",
+            "kind"
+          ],
+          "title": "CancelledCoordinationWaitResult",
+          "type": "object"
+        }
+      ]
+    },
+    "CoordinationWaitSettlement": {
+      "properties": {
+        "callerThreadId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "callerWorkId": {
+          "type": "string"
+        },
+        "claimId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/definitions/CoordinationWaitMessage"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "$ref": "#/definitions/CoordinationWaitMode"
+        },
+        "origin": {
+          "$ref": "#/definitions/CoordinationWaitOrigin"
+        },
+        "outcomes": {
+          "items": {
+            "$ref": "#/definitions/CoordinationWaitOutcome"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/CoordinationWaitResult"
+        },
+        "selected": {
+          "items": {
+            "$ref": "#/definitions/CoordinationTarget"
+          },
+          "type": "array"
+        },
+        "waitId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callerThreadId",
+        "callerWorkId",
+        "messages",
+        "mode",
+        "origin",
+        "outcomes",
+        "result",
+        "selected",
+        "waitId"
+      ],
+      "type": "object"
+    },
+    "CoordinationWaitWake": {
+      "enum": [
+        "events",
+        "deadline",
+        "progress"
+      ],
+      "type": "string"
     },
     "FunctionCallOutputBody": {
       "anyOf": [
@@ -1453,11 +2059,63 @@
           "type": "object"
         }
       ]
+    },
+    "SourceAcquisition": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "purpose": {
+          "$ref": "#/definitions/SourceAcquisitionPurpose"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/definitions/AcquiredSource"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "purpose",
+        "sources"
+      ],
+      "type": "object"
+    },
+    "SourceAcquisitionPurpose": {
+      "enum": [
+        "preload",
+        "reload"
+      ],
+      "type": "string"
+    },
+    "ThreadId": {
+      "type": "string"
     }
   },
   "properties": {
+    "coordination": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/CoordinationProjection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "item": {
       "$ref": "#/definitions/ResponseItem"
+    },
+    "sourceAcquisition": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SourceAcquisition"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "threadId": {
       "type": "string"

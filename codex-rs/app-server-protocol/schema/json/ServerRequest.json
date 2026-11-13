@@ -80,6 +80,497 @@
       },
       "type": "object"
     },
+    "AgentCaptureCoverage": {
+      "properties": {
+        "diagnostics": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "diagnostics",
+        "status"
+      ],
+      "type": "object"
+    },
+    "AgentCaptureCursor": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "throughChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "throughChunk"
+      ],
+      "type": "object"
+    },
+    "AgentCaptureInterval": {
+      "properties": {
+        "changeId": {
+          "type": "string"
+        },
+        "firstChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "lastChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "legacyRecordKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recordOrder": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "changeId",
+        "firstChunk",
+        "key",
+        "lastChunk",
+        "recordOrder"
+      ],
+      "type": "object"
+    },
+    "AgentForeignOperation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "message"
+              ],
+              "title": "MessageAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message",
+            "type"
+          ],
+          "title": "MessageAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "question": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "sideQuestion"
+              ],
+              "title": "SideQuestionAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "question",
+            "type"
+          ],
+          "title": "SideQuestionAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "pathPrefix": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "list"
+              ],
+              "title": "ListAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ListAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "inspect"
+              ],
+              "title": "InspectAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "InspectAgentForeignOperation",
+          "type": "object"
+        }
+      ]
+    },
+    "AgentForeignOrigin": {
+      "additionalProperties": false,
+      "description": "Native constructs this attribution from an admitted tool invocation. The root/actor/turn/call tuple is the original operation identity across retries.",
+      "properties": {
+        "actorId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "agentPath": {
+          "$ref": "#/definitions/AgentPath"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "rootThreadId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "actorId",
+        "agentPath",
+        "callId",
+        "rootThreadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "AgentForeignRequest": {
+      "additionalProperties": false,
+      "description": "Only the owning native connection may submit this envelope. Its fields are evidence supplied by the source owner, not public caller authority.",
+      "properties": {
+        "operation": {
+          "$ref": "#/definitions/AgentForeignOperation"
+        },
+        "source": {
+          "$ref": "#/definitions/AgentForeignOrigin"
+        },
+        "targetThreadId": {
+          "$ref": "#/definitions/ThreadId"
+        }
+      },
+      "required": [
+        "operation",
+        "source",
+        "targetThreadId"
+      ],
+      "type": "object"
+    },
+    "AgentFreezeProgressParams": {
+      "properties": {
+        "batchId": {
+          "type": "string"
+        },
+        "callerThreadId": {
+          "type": "string"
+        },
+        "callerWorkId": {
+          "type": "string"
+        },
+        "recipientContextId": {
+          "type": "string"
+        },
+        "rootThreadId": {
+          "type": "string"
+        },
+        "seen": {
+          "items": {
+            "$ref": "#/definitions/AgentCaptureCursor"
+          },
+          "type": "array"
+        },
+        "selected": {
+          "items": {
+            "$ref": "#/definitions/AgentProgressActor"
+          },
+          "type": "array"
+        },
+        "waitId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "batchId",
+        "callerThreadId",
+        "callerWorkId",
+        "recipientContextId",
+        "rootThreadId",
+        "seen",
+        "selected",
+        "waitId"
+      ],
+      "type": "object"
+    },
+    "AgentPath": {
+      "type": "string"
+    },
+    "AgentPrepareFinalCaptureParams": {
+      "properties": {
+        "recipientCwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recipientThreadId": {
+          "type": "string"
+        },
+        "rootThreadId": {
+          "type": "string"
+        },
+        "sources": {
+          "description": "Explicit captured-change references selected by the native successful-final owner.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recipientThreadId",
+        "rootThreadId",
+        "sources",
+        "threadId",
+        "workId"
+      ],
+      "type": "object"
+    },
+    "AgentPrepareHostAdmissionParams": {
+      "properties": {
+        "localCwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentThreadId": {
+          "type": "string"
+        },
+        "rootThreadId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "parentThreadId",
+        "rootThreadId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "AgentPrepareProgressOutputParams": {
+      "properties": {
+        "agents": {
+          "items": {
+            "$ref": "#/definitions/AgentPreparedProgress"
+          },
+          "type": "array"
+        },
+        "batchId": {
+          "type": "string"
+        },
+        "callerThreadId": {
+          "type": "string"
+        },
+        "callerWorkId": {
+          "type": "string"
+        },
+        "coverage": {
+          "$ref": "#/definitions/AgentCaptureCoverage"
+        },
+        "recipientContextId": {
+          "type": "string"
+        },
+        "rootThreadId": {
+          "type": "string"
+        },
+        "snapshotRef": {
+          "type": "string"
+        },
+        "waitId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agents",
+        "batchId",
+        "callerThreadId",
+        "callerWorkId",
+        "coverage",
+        "recipientContextId",
+        "rootThreadId",
+        "snapshotRef",
+        "waitId"
+      ],
+      "type": "object"
+    },
+    "AgentPreparedProgress": {
+      "properties": {
+        "actor": {
+          "$ref": "#/definitions/AgentProgressActor"
+        },
+        "intervals": {
+          "items": {
+            "$ref": "#/definitions/AgentCaptureInterval"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "$ref": "#/definitions/AgentProgressSummary"
+        }
+      },
+      "required": [
+        "actor",
+        "intervals",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "AgentProgressActor": {
+      "properties": {
+        "taskName": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskName",
+        "threadId",
+        "workId"
+      ],
+      "type": "object"
+    },
+    "AgentProgressSummary": {
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "available"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "unavailable"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "status"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AgentProjectFinalCaptureParams": {
+      "properties": {
+        "recipientContextId": {
+          "type": "string"
+        },
+        "recipientCwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recipientThreadId": {
+          "type": "string"
+        },
+        "resourceRef": {
+          "type": "string"
+        },
+        "rootThreadId": {
+          "type": "string"
+        },
+        "seen": {
+          "items": {
+            "$ref": "#/definitions/AgentCaptureCursor"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recipientContextId",
+        "recipientThreadId",
+        "resourceRef",
+        "rootThreadId",
+        "seen",
+        "threadId",
+        "workId"
+      ],
+      "type": "object"
+    },
     "ApplyPatchApprovalParams": {
       "properties": {
         "callId": {
@@ -472,69 +963,6 @@
       ],
       "type": "object"
     },
-    "CompoundExecutionResult": {
-      "enum": [
-        "yielded",
-        "succeeded",
-        "failed",
-        "terminated"
-      ],
-      "type": "string"
-    },
-    "CompoundWaitSettlement": {
-      "additionalProperties": false,
-      "properties": {
-        "cellId": {
-          "type": "string"
-        },
-        "itemId": {
-          "type": "string"
-        },
-        "result": {
-          "$ref": "#/definitions/CompoundExecutionResult"
-        },
-        "threadId": {
-          "type": "string"
-        },
-        "ticket": {
-          "$ref": "#/definitions/CompoundWaitTicket"
-        },
-        "turnId": {
-          "type": "string"
-        },
-        "windowId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "cellId",
-        "itemId",
-        "result",
-        "threadId",
-        "ticket",
-        "turnId",
-        "windowId"
-      ],
-      "type": "object"
-    },
-    "CompoundWaitTicket": {
-      "additionalProperties": false,
-      "properties": {
-        "generation": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "waitId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "generation",
-        "waitId"
-      ],
-      "type": "object"
-    },
     "DynamicToolCallParams": {
       "properties": {
         "arguments": true,
@@ -817,6 +1245,7 @@
               "enum": [
                 "root"
               ],
+              "title": "RootFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -832,6 +1261,7 @@
               "enum": [
                 "minimal"
               ],
+              "title": "MinimalFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -847,6 +1277,7 @@
               "enum": [
                 "project_roots"
               ],
+              "title": "ProjectRootsFileSystemSpecialPathKind",
               "type": "string"
             },
             "subpath": {
@@ -863,7 +1294,7 @@
           "required": [
             "kind"
           ],
-          "title": "KindFileSystemSpecialPath",
+          "title": "ProjectRootsFileSystemSpecialPath",
           "type": "object"
         },
         {
@@ -872,6 +1303,7 @@
               "enum": [
                 "tmpdir"
               ],
+              "title": "TmpdirFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -887,6 +1319,7 @@
               "enum": [
                 "slash_tmp"
               ],
+              "title": "SlashTmpFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -902,6 +1335,7 @@
               "enum": [
                 "unknown"
               ],
+              "title": "UnknownFileSystemSpecialPathKind",
               "type": "string"
             },
             "path": {
@@ -922,6 +1356,7 @@
             "kind",
             "path"
           ],
+          "title": "UnknownFileSystemSpecialPath",
           "type": "object"
         }
       ]
@@ -1917,30 +2352,6 @@
   "description": "Request initiated from the server and sent to the client.",
   "oneOf": [
     {
-      "properties": {
-        "id": {
-          "$ref": "#/definitions/RequestId"
-        },
-        "method": {
-          "enum": [
-            "thread/compoundWait/settle"
-          ],
-          "title": "Thread/compoundWait/settleRequestMethod",
-          "type": "string"
-        },
-        "params": {
-          "$ref": "#/definitions/CompoundWaitSettlement"
-        }
-      },
-      "required": [
-        "id",
-        "method",
-        "params"
-      ],
-      "title": "Thread/compoundWait/settleRequest",
-      "type": "object"
-    },
-    {
       "description": "NEW APIs Sent when approval is requested for a specific command execution. This request is used for Turns started via turn/start.",
       "properties": {
         "id": {
@@ -2088,6 +2499,156 @@
         "params"
       ],
       "title": "Item/tool/callRequest",
+      "type": "object"
+    },
+    {
+      "description": "Execute an admitted external actor on its original host connection.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "agent/foreign/route"
+          ],
+          "title": "Agent/foreign/routeRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentForeignRequest"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Agent/foreign/routeRequest",
+      "type": "object"
+    },
+    {
+      "description": "Freeze final-answer capture evidence through the owning host connection.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "agent/finalCapture/prepare"
+          ],
+          "title": "Agent/finalCapture/prepareRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentPrepareFinalCaptureParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Agent/finalCapture/prepareRequest",
+      "type": "object"
+    },
+    {
+      "description": "Project a frozen final resource for the recipient's current delivery context.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "agent/finalCapture/project"
+          ],
+          "title": "Agent/finalCapture/projectRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentProjectFinalCaptureParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Agent/finalCapture/projectRequest",
+      "type": "object"
+    },
+    {
+      "description": "Freeze changed capture intervals without selecting work or starting inference.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "agent/progress/freeze"
+          ],
+          "title": "Agent/progress/freezeRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentFreezeProgressParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Agent/progress/freezeRequest",
+      "type": "object"
+    },
+    {
+      "description": "Bound frozen progress output and retain omitted evidence for explicit recovery.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "agent/progress/prepareOutput"
+          ],
+          "title": "Agent/progress/prepareOutputRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentPrepareProgressOutputParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Agent/progress/prepareOutputRequest",
+      "type": "object"
+    },
+    {
+      "description": "Admit native-confirmed child resources before startup can execute work.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "agent/hostAdmission/prepare"
+          ],
+          "title": "Agent/hostAdmission/prepareRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentPrepareHostAdmissionParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Agent/hostAdmission/prepareRequest",
       "type": "object"
     },
     {

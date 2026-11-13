@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AgentCaptureCursor": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "throughChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "throughChunk"
+      ],
+      "type": "object"
+    },
+    "AgentProgressActor": {
+      "properties": {
+        "taskName": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskName",
+        "threadId",
+        "workId"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "batchId": {
+      "type": "string"
+    },
+    "callerThreadId": {
+      "type": "string"
+    },
+    "callerWorkId": {
+      "type": "string"
+    },
+    "recipientContextId": {
+      "type": "string"
+    },
+    "rootThreadId": {
+      "type": "string"
+    },
+    "seen": {
+      "items": {
+        "$ref": "#/definitions/AgentCaptureCursor"
+      },
+      "type": "array"
+    },
+    "selected": {
+      "items": {
+        "$ref": "#/definitions/AgentProgressActor"
+      },
+      "type": "array"
+    },
+    "waitId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "batchId",
+    "callerThreadId",
+    "callerWorkId",
+    "recipientContextId",
+    "rootThreadId",
+    "seen",
+    "selected",
+    "waitId"
+  ],
+  "title": "AgentFreezeProgressParams",
+  "type": "object"
+}

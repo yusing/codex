@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AgentFrozenFinalCapture": {
+      "properties": {
+        "fullText": {
+          "type": "string"
+        },
+        "resourceRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "fullText",
+        "resourceRef"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "capture": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AgentFrozenFinalCapture"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Frozen capture bodies and acquisition diagnostics; null when none were selected."
+    }
+  },
+  "title": "AgentPrepareFinalCaptureResponse",
+  "type": "object"
+}

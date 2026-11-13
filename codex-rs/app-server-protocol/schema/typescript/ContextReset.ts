@@ -4,7 +4,7 @@
 import type { ContextResetStatus } from "./ContextResetStatus";
 
 /**
- * Live manual-request correlation. A reset covers only generations captured
+ * Exact reset correlation and retained outcome. A reset covers only generations captured
  * before acquisition starts; a later request remains pending independently.
  */
 export type ContextReset = { threadId: string, turnId: string, requestId?: string | null, generation: bigint, resetId?: string | null, status: ContextResetStatus, inline: boolean, diagnostic?: string | null, };

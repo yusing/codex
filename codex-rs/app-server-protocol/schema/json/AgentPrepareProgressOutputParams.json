@@ -1,0 +1,188 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AgentCaptureCoverage": {
+      "properties": {
+        "diagnostics": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "diagnostics",
+        "status"
+      ],
+      "type": "object"
+    },
+    "AgentCaptureInterval": {
+      "properties": {
+        "changeId": {
+          "type": "string"
+        },
+        "firstChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "lastChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "legacyRecordKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recordOrder": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "changeId",
+        "firstChunk",
+        "key",
+        "lastChunk",
+        "recordOrder"
+      ],
+      "type": "object"
+    },
+    "AgentPreparedProgress": {
+      "properties": {
+        "actor": {
+          "$ref": "#/definitions/AgentProgressActor"
+        },
+        "intervals": {
+          "items": {
+            "$ref": "#/definitions/AgentCaptureInterval"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "$ref": "#/definitions/AgentProgressSummary"
+        }
+      },
+      "required": [
+        "actor",
+        "intervals",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "AgentProgressActor": {
+      "properties": {
+        "taskName": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskName",
+        "threadId",
+        "workId"
+      ],
+      "type": "object"
+    },
+    "AgentProgressSummary": {
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "available"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "unavailable"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "status"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "agents": {
+      "items": {
+        "$ref": "#/definitions/AgentPreparedProgress"
+      },
+      "type": "array"
+    },
+    "batchId": {
+      "type": "string"
+    },
+    "callerThreadId": {
+      "type": "string"
+    },
+    "callerWorkId": {
+      "type": "string"
+    },
+    "coverage": {
+      "$ref": "#/definitions/AgentCaptureCoverage"
+    },
+    "recipientContextId": {
+      "type": "string"
+    },
+    "rootThreadId": {
+      "type": "string"
+    },
+    "snapshotRef": {
+      "type": "string"
+    },
+    "waitId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "agents",
+    "batchId",
+    "callerThreadId",
+    "callerWorkId",
+    "coverage",
+    "recipientContextId",
+    "rootThreadId",
+    "snapshotRef",
+    "waitId"
+  ],
+  "title": "AgentPrepareProgressOutputParams",
+  "type": "object"
+}

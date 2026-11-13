@@ -120,6 +120,10 @@ senderThreadId: string,
  */
 receiverThreadIds: Array<string>,
 /**
+ * Effective timeout captured at wait registration, when requested.
+ */
+timeoutMs?: bigint,
+/**
  * Prompt text sent as part of the collab tool call, when available.
  */
 prompt: string | null,

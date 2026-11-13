@@ -1,0 +1,443 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AgentMetrics": {
+      "properties": {
+        "completedCompactions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "contextTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "contextWindow": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AgentObservation": {
+      "properties": {
+        "attachable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "backend": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "loaded": {
+          "type": "boolean"
+        },
+        "metrics": {
+          "$ref": "#/definitions/AgentMetrics"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nickname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rootThreadId": {
+          "type": "string"
+        },
+        "serviceTier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentRuntimeStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "wait": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentWaitObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "work": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentWorkObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "loaded",
+        "metrics",
+        "rootThreadId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "AgentRuntimeStatus": {
+      "enum": [
+        "pending_init",
+        "running",
+        "interrupted",
+        "completed",
+        "errored",
+        "shutdown",
+        "not_found"
+      ],
+      "type": "string"
+    },
+    "AgentTreeObservation": {
+      "properties": {
+        "agents": {
+          "items": {
+            "$ref": "#/definitions/AgentObservation"
+          },
+          "type": "array"
+        },
+        "observationRevision": {
+          "description": "Transient invalidation revision, not an atomic durable work revision.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "rootThreadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agents",
+        "observationRevision",
+        "rootThreadId"
+      ],
+      "type": "object"
+    },
+    "AgentWaitMode": {
+      "enum": [
+        "any",
+        "all"
+      ],
+      "type": "string"
+    },
+    "AgentWaitObservation": {
+      "properties": {
+        "deadlineUnixMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mode": {
+          "$ref": "#/definitions/AgentWaitMode"
+        },
+        "phase": {
+          "$ref": "#/definitions/AgentWaitPhase"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CoordinationTurnWaitReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selected": {
+          "items": {
+            "$ref": "#/definitions/AgentWaitTarget"
+          },
+          "type": "array"
+        },
+        "timeoutMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "waitId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "phase",
+        "selected",
+        "waitId"
+      ],
+      "type": "object"
+    },
+    "AgentWaitPhase": {
+      "enum": [
+        "registered",
+        "claimed",
+        "dispatched",
+        "accepted",
+        "consumed",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "AgentWaitTarget": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "workId"
+      ],
+      "type": "object"
+    },
+    "AgentWorkDisposition": {
+      "enum": [
+        "pending_start",
+        "running",
+        "waiting",
+        "paused",
+        "uncertain",
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "AgentWorkObservation": {
+      "properties": {
+        "disposition": {
+          "$ref": "#/definitions/AgentWorkDisposition"
+        },
+        "revision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "terminalDeliveryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "disposition",
+        "revision",
+        "workId"
+      ],
+      "type": "object"
+    },
+    "CoordinationTurnWaitReason": {
+      "enum": [
+        "descendantRecovery",
+        "providerCapacity",
+        "providerUsageLimit"
+      ],
+      "type": "string"
+    },
+    "ReasoningEffort": {
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "ThreadId": {
+      "type": "string"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "delivery_id": {
+          "type": "string"
+        },
+        "target_thread_id": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "type": {
+          "enum": [
+            "messageAccepted"
+          ],
+          "title": "MessageAcceptedv2::AgentForeignResponseType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delivery_id",
+        "target_thread_id",
+        "type"
+      ],
+      "title": "MessageAcceptedv2::AgentForeignResponse",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "target_thread_id": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "type": {
+          "enum": [
+            "sideQuestionAnswered"
+          ],
+          "title": "SideQuestionAnsweredv2::AgentForeignResponseType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "answer",
+        "target_thread_id",
+        "type"
+      ],
+      "title": "SideQuestionAnsweredv2::AgentForeignResponse",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": "string"
+        },
+        "target_thread_id": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "type": {
+          "enum": [
+            "sideQuestionFailed"
+          ],
+          "title": "SideQuestionFailedv2::AgentForeignResponseType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepted",
+        "error",
+        "target_thread_id",
+        "type"
+      ],
+      "title": "SideQuestionFailedv2::AgentForeignResponse",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "tree": {
+          "$ref": "#/definitions/AgentTreeObservation"
+        },
+        "type": {
+          "enum": [
+            "listed"
+          ],
+          "title": "Listedv2::AgentForeignResponseType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tree",
+        "type"
+      ],
+      "title": "Listedv2::AgentForeignResponse",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "agent": {
+          "$ref": "#/definitions/AgentObservation"
+        },
+        "type": {
+          "enum": [
+            "inspected"
+          ],
+          "title": "Inspectedv2::AgentForeignResponseType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent",
+        "type"
+      ],
+      "title": "Inspectedv2::AgentForeignResponse",
+      "type": "object"
+    }
+  ],
+  "title": "AgentForeignResponse"
+}

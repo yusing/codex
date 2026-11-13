@@ -1,0 +1,126 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AgentCaptureCoverage": {
+      "properties": {
+        "diagnostics": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "diagnostics",
+        "status"
+      ],
+      "type": "object"
+    },
+    "AgentCaptureInterval": {
+      "properties": {
+        "changeId": {
+          "type": "string"
+        },
+        "firstChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "lastChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "legacyRecordKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recordOrder": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "changeId",
+        "firstChunk",
+        "key",
+        "lastChunk",
+        "recordOrder"
+      ],
+      "type": "object"
+    },
+    "AgentFrozenProgressCapture": {
+      "properties": {
+        "actor": {
+          "$ref": "#/definitions/AgentProgressActor"
+        },
+        "intervals": {
+          "items": {
+            "$ref": "#/definitions/AgentCaptureInterval"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "actor",
+        "intervals"
+      ],
+      "type": "object"
+    },
+    "AgentProgressActor": {
+      "properties": {
+        "taskName": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskName",
+        "threadId",
+        "workId"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "agents": {
+      "items": {
+        "$ref": "#/definitions/AgentFrozenProgressCapture"
+      },
+      "type": "array"
+    },
+    "coverage": {
+      "$ref": "#/definitions/AgentCaptureCoverage"
+    },
+    "publicationRevision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "snapshotRef": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "agents",
+    "coverage",
+    "publicationRevision",
+    "snapshotRef"
+  ],
+  "title": "AgentFreezeProgressResponse",
+  "type": "object"
+}

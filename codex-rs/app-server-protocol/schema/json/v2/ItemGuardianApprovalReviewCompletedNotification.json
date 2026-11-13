@@ -160,6 +160,7 @@
               "enum": [
                 "root"
               ],
+              "title": "RootFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -175,6 +176,7 @@
               "enum": [
                 "minimal"
               ],
+              "title": "MinimalFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -190,6 +192,7 @@
               "enum": [
                 "project_roots"
               ],
+              "title": "ProjectRootsFileSystemSpecialPathKind",
               "type": "string"
             },
             "subpath": {
@@ -206,7 +209,7 @@
           "required": [
             "kind"
           ],
-          "title": "KindFileSystemSpecialPath",
+          "title": "ProjectRootsFileSystemSpecialPath",
           "type": "object"
         },
         {
@@ -215,6 +218,7 @@
               "enum": [
                 "tmpdir"
               ],
+              "title": "TmpdirFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -230,6 +234,7 @@
               "enum": [
                 "slash_tmp"
               ],
+              "title": "SlashTmpFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -245,6 +250,7 @@
               "enum": [
                 "unknown"
               ],
+              "title": "UnknownFileSystemSpecialPathKind",
               "type": "string"
             },
             "path": {
@@ -265,6 +271,7 @@
             "kind",
             "path"
           ],
+          "title": "UnknownFileSystemSpecialPath",
           "type": "object"
         }
       ]

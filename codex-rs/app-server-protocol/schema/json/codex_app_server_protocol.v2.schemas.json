@@ -376,6 +376,108 @@
       "title": "AccountUpdatedNotification",
       "type": "object"
     },
+    "AcquiredSource": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "file"
+              ],
+              "title": "FileAcquiredSourceKind",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "title": "FileAcquiredSource",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "skill"
+              ],
+              "title": "SkillAcquiredSourceKind",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "title": "SkillAcquiredSource",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "changes"
+              ],
+              "title": "ChangesAcquiredSourceKind",
+              "type": "string"
+            },
+            "selection": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "selection"
+          ],
+          "title": "ChangesAcquiredSource",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "selection"
+              ],
+              "title": "SelectionAcquiredSourceKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "SelectionAcquiredSource",
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reference": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reference",
+        "success"
+      ],
+      "type": "object"
+    },
     "ActivePermissionProfile": {
       "properties": {
         "extends": {
@@ -490,6 +592,344 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "AgentCoordinationEvent": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "A semantic history event for a settlement without an associated response item.",
+      "properties": {
+        "projection": {
+          "$ref": "#/definitions/CoordinationProjection"
+        },
+        "threadId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projection",
+        "threadId",
+        "turnId"
+      ],
+      "title": "AgentCoordinationEvent",
+      "type": "object"
+    },
+    "AgentEndParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "rootThreadId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rootThreadId",
+        "threadId"
+      ],
+      "title": "AgentEndParams",
+      "type": "object"
+    },
+    "AgentEndResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "threadIds": {
+          "description": "Selected child/subtree lifetimes have joined. History is not archived.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "threadIds"
+      ],
+      "title": "AgentEndResponse",
+      "type": "object"
+    },
+    "AgentForeignOperation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "message"
+              ],
+              "title": "MessageAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message",
+            "type"
+          ],
+          "title": "MessageAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "question": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "sideQuestion"
+              ],
+              "title": "SideQuestionAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "question",
+            "type"
+          ],
+          "title": "SideQuestionAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "pathPrefix": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "list"
+              ],
+              "title": "ListAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ListAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "inspect"
+              ],
+              "title": "InspectAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "InspectAgentForeignOperation",
+          "type": "object"
+        }
+      ]
+    },
+    "AgentForeignOrigin": {
+      "additionalProperties": false,
+      "description": "Native constructs this attribution from an admitted tool invocation. The root/actor/turn/call tuple is the original operation identity across retries.",
+      "properties": {
+        "actorId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "agentPath": {
+          "$ref": "#/definitions/AgentPath"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "rootThreadId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "actorId",
+        "agentPath",
+        "callId",
+        "rootThreadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "AgentForeignRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "description": "Only the owning native connection may submit this envelope. Its fields are evidence supplied by the source owner, not public caller authority.",
+      "properties": {
+        "operation": {
+          "$ref": "#/definitions/AgentForeignOperation"
+        },
+        "source": {
+          "$ref": "#/definitions/AgentForeignOrigin"
+        },
+        "targetThreadId": {
+          "$ref": "#/definitions/ThreadId"
+        }
+      },
+      "required": [
+        "operation",
+        "source",
+        "targetThreadId"
+      ],
+      "title": "AgentForeignRequest",
+      "type": "object"
+    },
+    "AgentForeignResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "oneOf": [
+        {
+          "properties": {
+            "delivery_id": {
+              "type": "string"
+            },
+            "target_thread_id": {
+              "$ref": "#/definitions/ThreadId"
+            },
+            "type": {
+              "enum": [
+                "messageAccepted"
+              ],
+              "title": "MessageAcceptedv2::AgentForeignResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "delivery_id",
+            "target_thread_id",
+            "type"
+          ],
+          "title": "MessageAcceptedv2::AgentForeignResponse",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "answer": {
+              "type": "string"
+            },
+            "target_thread_id": {
+              "$ref": "#/definitions/ThreadId"
+            },
+            "type": {
+              "enum": [
+                "sideQuestionAnswered"
+              ],
+              "title": "SideQuestionAnsweredv2::AgentForeignResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "answer",
+            "target_thread_id",
+            "type"
+          ],
+          "title": "SideQuestionAnsweredv2::AgentForeignResponse",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "accepted": {
+              "type": "boolean"
+            },
+            "error": {
+              "type": "string"
+            },
+            "target_thread_id": {
+              "$ref": "#/definitions/ThreadId"
+            },
+            "type": {
+              "enum": [
+                "sideQuestionFailed"
+              ],
+              "title": "SideQuestionFailedv2::AgentForeignResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "accepted",
+            "error",
+            "target_thread_id",
+            "type"
+          ],
+          "title": "SideQuestionFailedv2::AgentForeignResponse",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "tree": {
+              "$ref": "#/definitions/AgentTreeObservation"
+            },
+            "type": {
+              "enum": [
+                "listed"
+              ],
+              "title": "Listedv2::AgentForeignResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tree",
+            "type"
+          ],
+          "title": "Listedv2::AgentForeignResponse",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "agent": {
+              "$ref": "#/definitions/AgentObservation"
+            },
+            "type": {
+              "enum": [
+                "inspected"
+              ],
+              "title": "Inspectedv2::AgentForeignResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "agent",
+            "type"
+          ],
+          "title": "Inspectedv2::AgentForeignResponse",
+          "type": "object"
+        }
+      ],
+      "title": "AgentForeignResponse"
+    },
+    "AgentInterruptParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "rootThreadId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rootThreadId",
+        "threadId"
+      ],
+      "title": "AgentInterruptParams",
+      "type": "object"
+    },
+    "AgentInterruptResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "AgentInterruptResponse",
       "type": "object"
     },
     "AgentMessageDelivery": {
@@ -619,8 +1059,382 @@
       ],
       "type": "object"
     },
+    "AgentMetrics": {
+      "properties": {
+        "completedCompactions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "contextTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "contextWindow": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AgentObservation": {
+      "properties": {
+        "attachable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "backend": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "loaded": {
+          "type": "boolean"
+        },
+        "metrics": {
+          "$ref": "#/definitions/AgentMetrics"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nickname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentThreadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rootThreadId": {
+          "type": "string"
+        },
+        "serviceTier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentRuntimeStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "wait": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentWaitObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "work": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentWorkObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "loaded",
+        "metrics",
+        "rootThreadId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "AgentObserveParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "AgentObserveParams",
+      "type": "object"
+    },
+    "AgentObserveResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "agent": {
+          "$ref": "#/definitions/AgentObservation"
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "title": "AgentObserveResponse",
+      "type": "object"
+    },
+    "AgentObserveTreeParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "rootThreadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rootThreadId"
+      ],
+      "title": "AgentObserveTreeParams",
+      "type": "object"
+    },
+    "AgentObserveTreeResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "tree": {
+          "$ref": "#/definitions/AgentTreeObservation"
+        }
+      },
+      "required": [
+        "tree"
+      ],
+      "title": "AgentObserveTreeResponse",
+      "type": "object"
+    },
     "AgentPath": {
       "type": "string"
+    },
+    "AgentRuntimeStatus": {
+      "enum": [
+        "pending_init",
+        "running",
+        "interrupted",
+        "completed",
+        "errored",
+        "shutdown",
+        "not_found"
+      ],
+      "type": "string"
+    },
+    "AgentTreeChangedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "observationRevision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "rootThreadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "observationRevision",
+        "rootThreadId"
+      ],
+      "title": "AgentTreeChangedNotification",
+      "type": "object"
+    },
+    "AgentTreeObservation": {
+      "properties": {
+        "agents": {
+          "items": {
+            "$ref": "#/definitions/AgentObservation"
+          },
+          "type": "array"
+        },
+        "observationRevision": {
+          "description": "Transient invalidation revision, not an atomic durable work revision.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "rootThreadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agents",
+        "observationRevision",
+        "rootThreadId"
+      ],
+      "type": "object"
+    },
+    "AgentWaitMode": {
+      "enum": [
+        "any",
+        "all"
+      ],
+      "type": "string"
+    },
+    "AgentWaitObservation": {
+      "properties": {
+        "deadlineUnixMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mode": {
+          "$ref": "#/definitions/AgentWaitMode"
+        },
+        "phase": {
+          "$ref": "#/definitions/AgentWaitPhase"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CoordinationTurnWaitReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selected": {
+          "items": {
+            "$ref": "#/definitions/AgentWaitTarget"
+          },
+          "type": "array"
+        },
+        "timeoutMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "waitId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "phase",
+        "selected",
+        "waitId"
+      ],
+      "type": "object"
+    },
+    "AgentWaitPhase": {
+      "enum": [
+        "registered",
+        "claimed",
+        "dispatched",
+        "accepted",
+        "consumed",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "AgentWaitTarget": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "workId"
+      ],
+      "type": "object"
+    },
+    "AgentWorkDisposition": {
+      "enum": [
+        "pending_start",
+        "running",
+        "waiting",
+        "paused",
+        "uncertain",
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "AgentWorkObservation": {
+      "properties": {
+        "disposition": {
+          "$ref": "#/definitions/AgentWorkDisposition"
+        },
+        "revision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "terminalDeliveryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "disposition",
+        "revision",
+        "workId"
+      ],
+      "type": "object"
     },
     "AllowDenyRequirement": {
       "enum": [
@@ -2481,13 +3295,13 @@
             },
             "method": {
               "enum": [
-                "featureUse/record"
+                "agent/foreign/receive"
               ],
-              "title": "FeatureUse/recordRequestMethod",
+              "title": "Agent/foreign/receiveRequestMethod",
               "type": "string"
             },
             "params": {
-              "$ref": "#/definitions/FeatureUseFact"
+              "$ref": "#/definitions/AgentForeignRequest"
             }
           },
           "required": [
@@ -2495,7 +3309,103 @@
             "method",
             "params"
           ],
-          "title": "FeatureUse/recordRequest",
+          "title": "Agent/foreign/receiveRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "agent/observe"
+              ],
+              "title": "Agent/observeRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/AgentObserveParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Agent/observeRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "agent/observeTree"
+              ],
+              "title": "Agent/observeTreeRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/AgentObserveTreeParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Agent/observeTreeRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "agent/end"
+              ],
+              "title": "Agent/endRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/AgentEndParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Agent/endRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "agent/interrupt"
+              ],
+              "title": "Agent/interruptRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/AgentInterruptParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Agent/interruptRequest",
           "type": "object"
         },
         {
@@ -5484,83 +6394,6 @@
       ],
       "type": "object"
     },
-    "CompoundResetOutcome": {
-      "enum": [
-        "completed",
-        "failed",
-        "canceled",
-        "uncertain"
-      ],
-      "type": "string"
-    },
-    "CompoundWaitReset": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
-      "properties": {
-        "cellId": {
-          "type": "string"
-        },
-        "diagnostic": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "itemId": {
-          "type": "string"
-        },
-        "reset": {
-          "$ref": "#/definitions/CompoundResetOutcome"
-        },
-        "threadId": {
-          "type": "string"
-        },
-        "ticket": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/CompoundWaitTicket"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "turnId": {
-          "type": "string"
-        },
-        "windowId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "cellId",
-        "itemId",
-        "reset",
-        "threadId",
-        "turnId",
-        "windowId"
-      ],
-      "title": "CompoundWaitReset",
-      "type": "object"
-    },
-    "CompoundWaitTicket": {
-      "additionalProperties": false,
-      "properties": {
-        "generation": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "waitId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "generation",
-        "waitId"
-      ],
-      "type": "object"
-    },
     "ComputerUseConfig": {
       "properties": {
         "default_app_access": {
@@ -7193,7 +8026,7 @@
     "ContextReset": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
-      "description": "Live manual-request correlation. A reset covers only generations captured before acquisition starts; a later request remains pending independently.",
+      "description": "Exact reset correlation and retained outcome. A reset covers only generations captured before acquisition starts; a later request remains pending independently.",
       "properties": {
         "diagnostic": {
           "type": [
@@ -7256,6 +8089,507 @@
         "user",
         "developer",
         "assistant"
+      ],
+      "type": "string"
+    },
+    "CoordinationDisposition": {
+      "enum": [
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
+    },
+    "CoordinationInterruptRequest": {
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/definitions/CoordinationTarget"
+        }
+      },
+      "required": [
+        "operationId",
+        "target"
+      ],
+      "type": "object"
+    },
+    "CoordinationProjection": {
+      "properties": {
+        "deliveries": {
+          "items": {
+            "$ref": "#/definitions/CoordinationTerminalDelivery"
+          },
+          "type": "array"
+        },
+        "interrupt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CoordinationInterruptRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wait": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CoordinationWaitSettlement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "deliveries"
+      ],
+      "type": "object"
+    },
+    "CoordinationTarget": {
+      "properties": {
+        "taskName": {
+          "$ref": "#/definitions/AgentPath"
+        },
+        "threadId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskName",
+        "threadId",
+        "workId"
+      ],
+      "type": "object"
+    },
+    "CoordinationTerminalDelivery": {
+      "properties": {
+        "body": {
+          "description": "Exact displayed payload, including the frozen capture projection, without attribution headers.",
+          "type": "string"
+        },
+        "captureResourceRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deliveryId": {
+          "type": "string"
+        },
+        "disposition": {
+          "$ref": "#/definitions/CoordinationDisposition"
+        },
+        "recipient": {
+          "$ref": "#/definitions/AgentPath"
+        },
+        "source": {
+          "$ref": "#/definitions/CoordinationTarget"
+        }
+      },
+      "required": [
+        "body",
+        "deliveryId",
+        "disposition",
+        "recipient",
+        "source"
+      ],
+      "type": "object"
+    },
+    "CoordinationTurnWaitReason": {
+      "enum": [
+        "descendantRecovery",
+        "providerCapacity",
+        "providerUsageLimit"
+      ],
+      "type": "string"
+    },
+    "CoordinationWaitCancellation": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "cancelled"
+              ],
+              "title": "CancelledCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "CancelledCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "executionFailed"
+              ],
+              "title": "ExecutionFailedCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "ExecutionFailedCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "deliveryId": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "inputSuperseded"
+              ],
+              "title": "InputSupersededCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "deliveryId",
+            "kind"
+          ],
+          "title": "InputSupersededCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "deliveryId": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "workTerminated"
+              ],
+              "title": "WorkTerminatedCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "deliveryId",
+            "kind"
+          ],
+          "title": "WorkTerminatedCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "shellOutput"
+              ],
+              "title": "ShellOutputCoordinationWaitCancellationKind",
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "turnId"
+          ],
+          "title": "ShellOutputCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "diagnostic": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "dispatchRejected"
+              ],
+              "title": "DispatchRejectedCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "DispatchRejectedCoordinationWaitCancellation",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "diagnostic": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "notDispatched"
+              ],
+              "title": "NotDispatchedCoordinationWaitCancellationKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "NotDispatchedCoordinationWaitCancellation",
+          "type": "object"
+        }
+      ]
+    },
+    "CoordinationWaitDisposition": {
+      "description": "A stopped wait target need not have authored a terminal final.",
+      "enum": [
+        "completed",
+        "failed",
+        "interrupted",
+        "paused"
+      ],
+      "type": "string"
+    },
+    "CoordinationWaitMessage": {
+      "properties": {
+        "body": {
+          "description": "Exact message payload and frozen sources, without native attribution headers.",
+          "type": "string"
+        },
+        "deliveryId": {
+          "type": "string"
+        },
+        "recipient": {
+          "$ref": "#/definitions/AgentPath"
+        },
+        "senderTaskName": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "senderThreadId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "body",
+        "deliveryId",
+        "recipient"
+      ],
+      "type": "object"
+    },
+    "CoordinationWaitMode": {
+      "enum": [
+        "any",
+        "all"
+      ],
+      "type": "string"
+    },
+    "CoordinationWaitOrigin": {
+      "oneOf": [
+        {
+          "properties": {
+            "cellId": {
+              "type": "string"
+            },
+            "itemId": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "cell"
+              ],
+              "title": "CellCoordinationWaitOriginKind",
+              "type": "string"
+            },
+            "turnId": {
+              "type": "string"
+            },
+            "windowId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cellId",
+            "itemId",
+            "kind",
+            "turnId",
+            "windowId"
+          ],
+          "title": "CellCoordinationWaitOrigin",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "turn"
+              ],
+              "title": "TurnCoordinationWaitOriginKind",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/definitions/CoordinationTurnWaitReason"
+            },
+            "turnId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason",
+            "turnId"
+          ],
+          "title": "TurnCoordinationWaitOrigin",
+          "type": "object"
+        }
+      ]
+    },
+    "CoordinationWaitOutcome": {
+      "properties": {
+        "disposition": {
+          "$ref": "#/definitions/CoordinationWaitDisposition"
+        },
+        "target": {
+          "$ref": "#/definitions/CoordinationTarget"
+        }
+      },
+      "required": [
+        "disposition",
+        "target"
+      ],
+      "type": "object"
+    },
+    "CoordinationWaitResult": {
+      "oneOf": [
+        {
+          "description": "The frozen result is exposed to the caller, not proof of provider consumption.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "released"
+              ],
+              "title": "ReleasedCoordinationWaitResultKind",
+              "type": "string"
+            },
+            "wake": {
+              "$ref": "#/definitions/CoordinationWaitWake"
+            }
+          },
+          "required": [
+            "kind",
+            "wake"
+          ],
+          "title": "ReleasedCoordinationWaitResult",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cause": {
+              "$ref": "#/definitions/CoordinationWaitCancellation"
+            },
+            "kind": {
+              "enum": [
+                "cancelled"
+              ],
+              "title": "CancelledCoordinationWaitResultKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "cause",
+            "kind"
+          ],
+          "title": "CancelledCoordinationWaitResult",
+          "type": "object"
+        }
+      ]
+    },
+    "CoordinationWaitSettlement": {
+      "properties": {
+        "callerThreadId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "callerWorkId": {
+          "type": "string"
+        },
+        "claimId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/definitions/CoordinationWaitMessage"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "$ref": "#/definitions/CoordinationWaitMode"
+        },
+        "origin": {
+          "$ref": "#/definitions/CoordinationWaitOrigin"
+        },
+        "outcomes": {
+          "items": {
+            "$ref": "#/definitions/CoordinationWaitOutcome"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/CoordinationWaitResult"
+        },
+        "selected": {
+          "items": {
+            "$ref": "#/definitions/CoordinationTarget"
+          },
+          "type": "array"
+        },
+        "waitId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callerThreadId",
+        "callerWorkId",
+        "messages",
+        "mode",
+        "origin",
+        "outcomes",
+        "result",
+        "selected",
+        "waitId"
+      ],
+      "type": "object"
+    },
+    "CoordinationWaitWake": {
+      "enum": [
+        "events",
+        "deadline",
+        "progress"
       ],
       "type": "string"
     },
@@ -8376,289 +9710,6 @@
       ],
       "type": "object"
     },
-    "FeatureUseEvent": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "type": {
-              "enum": [
-                "resetCompleted"
-              ],
-              "title": "ResetCompletedFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "ResetCompletedFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "preload": {
-              "default": false,
-              "type": "boolean"
-            },
-            "type": {
-              "enum": [
-                "selfResetRequested"
-              ],
-              "title": "SelfResetRequestedFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "SelfResetRequestedFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "type": {
-              "enum": [
-                "selfResetCompleted"
-              ],
-              "title": "SelfResetCompletedFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "SelfResetCompletedFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "type": {
-              "enum": [
-                "selfResetFailed"
-              ],
-              "title": "SelfResetFailedFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "SelfResetFailedFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "preload": {
-              "default": false,
-              "type": "boolean"
-            },
-            "sources": {
-              "default": false,
-              "type": "boolean"
-            },
-            "type": {
-              "enum": [
-                "childAdmitted"
-              ],
-              "title": "ChildAdmittedFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "ChildAdmittedFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "type": {
-              "enum": [
-                "preloadRejected"
-              ],
-              "title": "PreloadRejectedFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "PreloadRejectedFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "changes": {
-              "default": false,
-              "type": "boolean"
-            },
-            "type": {
-              "enum": [
-                "finalDelivered"
-              ],
-              "title": "FinalDeliveredFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "FinalDeliveredFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "btw": {
-              "default": false,
-              "type": "boolean"
-            },
-            "sources": {
-              "default": false,
-              "type": "boolean"
-            },
-            "type": {
-              "enum": [
-                "messageAccepted"
-              ],
-              "title": "MessageAcceptedFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "MessageAcceptedFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "type": {
-              "enum": [
-                "sideQuestionRejected"
-              ],
-              "title": "SideQuestionRejectedFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "SideQuestionRejectedFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "type": {
-              "enum": [
-                "sideQuestionFailed"
-              ],
-              "title": "SideQuestionFailedFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "SideQuestionFailedFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "all": {
-              "default": false,
-              "type": "boolean"
-            },
-            "progress": {
-              "default": false,
-              "type": "boolean"
-            },
-            "type": {
-              "enum": [
-                "waitRegistered"
-              ],
-              "title": "WaitRegisteredFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "WaitRegisteredFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "type": {
-              "enum": [
-                "progressDelivered"
-              ],
-              "title": "ProgressDeliveredFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "ProgressDeliveredFeatureUseEvent",
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "sources": {
-              "default": false,
-              "type": "boolean"
-            },
-            "type": {
-              "enum": [
-                "assignmentDelivered"
-              ],
-              "title": "AssignmentDeliveredFeatureUseEventType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "AssignmentDeliveredFeatureUseEvent",
-          "type": "object"
-        }
-      ]
-    },
-    "FeatureUseFact": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": false,
-      "properties": {
-        "event": {
-          "$ref": "#/definitions/FeatureUseEvent"
-        },
-        "operation": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "event",
-        "operation",
-        "threadId"
-      ],
-      "title": "FeatureUseFact",
-      "type": "object"
-    },
     "FeatureUseReadParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
@@ -8690,28 +9741,6 @@
         "threads"
       ],
       "title": "FeatureUseReadResponse",
-      "type": "object"
-    },
-    "FeatureUseRecordResponse": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "FeatureUseRecordResponse",
-      "type": "object"
-    },
-    "FeatureUseUnavailableNotification": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "message": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "message",
-        "threadId"
-      ],
-      "title": "FeatureUseUnavailableNotification",
       "type": "object"
     },
     "FeedbackRequirements": {
@@ -9020,6 +10049,7 @@
               "enum": [
                 "root"
               ],
+              "title": "RootFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -9035,6 +10065,7 @@
               "enum": [
                 "minimal"
               ],
+              "title": "MinimalFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -9050,6 +10081,7 @@
               "enum": [
                 "project_roots"
               ],
+              "title": "ProjectRootsFileSystemSpecialPathKind",
               "type": "string"
             },
             "subpath": {
@@ -9066,7 +10098,7 @@
           "required": [
             "kind"
           ],
-          "title": "KindFileSystemSpecialPath",
+          "title": "ProjectRootsFileSystemSpecialPath",
           "type": "object"
         },
         {
@@ -9075,6 +10107,7 @@
               "enum": [
                 "tmpdir"
               ],
+              "title": "TmpdirFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -9090,6 +10123,7 @@
               "enum": [
                 "slash_tmp"
               ],
+              "title": "SlashTmpFileSystemSpecialPathKind",
               "type": "string"
             }
           },
@@ -9105,6 +10139,7 @@
               "enum": [
                 "unknown"
               ],
+              "title": "UnknownFileSystemSpecialPathKind",
               "type": "string"
             },
             "path": {
@@ -9125,6 +10160,7 @@
             "kind",
             "path"
           ],
+          "title": "UnknownFileSystemSpecialPath",
           "type": "object"
         }
       ]
@@ -16354,8 +17390,28 @@
     "RawResponseItemCompletedNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "coordination": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CoordinationProjection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "item": {
           "$ref": "#/definitions/ResponseItem"
+        },
+        "sourceAcquisition": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SourceAcquisition"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "threadId": {
           "type": "string"
@@ -18377,6 +19433,26 @@
           "properties": {
             "method": {
               "enum": [
+                "agent/treeChanged"
+              ],
+              "title": "Agent/treeChangedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/AgentTreeChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Agent/treeChangedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/contextReset"
               ],
               "title": "Thread/contextResetNotificationMethod",
@@ -18391,66 +19467,6 @@
             "params"
           ],
           "title": "Thread/contextResetNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "thread/compoundWait/reset"
-              ],
-              "title": "Thread/compoundWait/resetNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/CompoundWaitReset"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/compoundWait/resetNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "featureUse/observed"
-              ],
-              "title": "FeatureUse/observedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/FeatureUseFact"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "FeatureUse/observedNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
-                "featureUse/unavailable"
-              ],
-              "title": "FeatureUse/unavailableNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/FeatureUseUnavailableNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "FeatureUse/unavailableNotification",
           "type": "object"
         },
         {
@@ -18972,6 +19988,46 @@
             "params"
           ],
           "title": "Turn/completedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "turn/checkpointed"
+              ],
+              "title": "Turn/checkpointedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/TurnCheckpointedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Turn/checkpointedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "agent/coordination"
+              ],
+              "title": "Agent/coordinationNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/AgentCoordinationEvent"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Agent/coordinationNotification",
           "type": "object"
         },
         {
@@ -20688,6 +21744,35 @@
       "enum": [
         "asc",
         "desc"
+      ],
+      "type": "string"
+    },
+    "SourceAcquisition": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "purpose": {
+          "$ref": "#/definitions/SourceAcquisitionPurpose"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/definitions/AcquiredSource"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "purpose",
+        "sources"
+      ],
+      "type": "object"
+    },
+    "SourceAcquisitionPurpose": {
+      "enum": [
+        "preload",
+        "reload"
       ],
       "type": "string"
     },
@@ -22635,6 +23720,15 @@
                 }
               ],
               "description": "Current status of the collab tool call."
+            },
+            "timeoutMs": {
+              "description": "Effective timeout captured at wait registration, when requested.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "tool": {
               "allOf": [
@@ -25963,6 +27057,94 @@
       ],
       "type": "object"
     },
+    "TurnCheckpoint": {
+      "oneOf": [
+        {
+          "properties": {
+            "deadline_unix_ms": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "wait"
+              ],
+              "title": "WaitTurnCheckpointKind",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/definitions/WaitCheckpointReason"
+            },
+            "wait_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason",
+            "wait_id"
+          ],
+          "title": "WaitTurnCheckpoint",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "delivery_id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "completion_pending"
+              ],
+              "title": "CompletionPendingTurnCheckpointKind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "delivery_id",
+            "kind"
+          ],
+          "title": "CompletionPendingTurnCheckpoint",
+          "type": "object"
+        }
+      ]
+    },
+    "TurnCheckpointedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Execution stopped at a native logical checkpoint; the assignment is not complete.",
+      "properties": {
+        "checkpoint": {
+          "$ref": "#/definitions/TurnCheckpoint"
+        },
+        "targets": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "workId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "checkpoint",
+        "targets",
+        "threadId",
+        "turnId",
+        "workId"
+      ],
+      "title": "TurnCheckpointedNotification",
+      "type": "object"
+    },
     "TurnCompletedNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -26716,6 +27898,15 @@
         "low",
         "medium",
         "high"
+      ],
+      "type": "string"
+    },
+    "WaitCheckpointReason": {
+      "enum": [
+        "explicit",
+        "descendant_recovery",
+        "provider_capacity",
+        "provider_usage_limit"
       ],
       "type": "string"
     },

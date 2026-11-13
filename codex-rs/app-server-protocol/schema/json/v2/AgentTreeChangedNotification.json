@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "observationRevision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "rootThreadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "observationRevision",
+    "rootThreadId"
+  ],
+  "title": "AgentTreeChangedNotification",
+  "type": "object"
+}

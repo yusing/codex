@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AgentCaptureCursor": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "throughChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "throughChunk"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "recipientContextId": {
+      "type": "string"
+    },
+    "recipientCwd": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "recipientThreadId": {
+      "type": "string"
+    },
+    "resourceRef": {
+      "type": "string"
+    },
+    "rootThreadId": {
+      "type": "string"
+    },
+    "seen": {
+      "items": {
+        "$ref": "#/definitions/AgentCaptureCursor"
+      },
+      "type": "array"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "workId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "recipientContextId",
+    "recipientThreadId",
+    "resourceRef",
+    "rootThreadId",
+    "seen",
+    "threadId",
+    "workId"
+  ],
+  "title": "AgentProjectFinalCaptureParams",
+  "type": "object"
+}

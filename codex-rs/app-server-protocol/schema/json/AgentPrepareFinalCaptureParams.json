@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "recipientCwd": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "recipientThreadId": {
+      "type": "string"
+    },
+    "rootThreadId": {
+      "type": "string"
+    },
+    "sources": {
+      "description": "Explicit captured-change references selected by the native successful-final owner.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "workId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "recipientThreadId",
+    "rootThreadId",
+    "sources",
+    "threadId",
+    "workId"
+  ],
+  "title": "AgentPrepareFinalCaptureParams",
+  "type": "object"
+}

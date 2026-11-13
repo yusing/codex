@@ -2257,6 +2257,15 @@
               ],
               "description": "Current status of the collab tool call."
             },
+            "timeoutMs": {
+              "description": "Effective timeout captured at wait registration, when requested.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "tool": {
               "allOf": [
                 {

@@ -13,7 +13,7 @@
       "type": "string"
     }
   },
-  "description": "Live manual-request correlation. A reset covers only generations captured before acquisition starts; a later request remains pending independently.",
+  "description": "Exact reset correlation and retained outcome. A reset covers only generations captured before acquisition starts; a later request remains pending independently.",
   "properties": {
     "diagnostic": {
       "type": [
