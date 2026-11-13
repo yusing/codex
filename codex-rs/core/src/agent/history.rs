@@ -72,6 +72,9 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_context_baselines: bool
             | ResponseItem::ContextCompaction { .. }
             | ResponseItem::Other => false,
         },
+        RolloutItem::RetainedContext(codex_history::RetainedContextEvent::ReloadSelection {
+            ..
+        }) => true,
         RolloutItem::RealtimeItem(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
@@ -399,8 +402,19 @@ pub(super) async fn prepare_forked_history(
                 compacted.guardian_history = None;
                 // Only V2 fetches root authorization live. Its local scope starts known-empty;
                 // V1 must remain incomplete when inherited authorization has been stripped.
-                compacted.retained_context = (multi_agent_version == MultiAgentVersion::V2)
-                    .then(codex_history::RetainedContext::default);
+                let reload = compacted
+                    .retained_context
+                    .as_ref()
+                    .and_then(|retained| retained.reload_selection().cloned());
+                compacted.retained_context =
+                    (multi_agent_version == MultiAgentVersion::V2 || reload.is_some()).then(|| {
+                        let mut retained = codex_history::RetainedContext::default();
+                        if multi_agent_version != MultiAgentVersion::V2 {
+                            retained.mark_user_messages_incomplete();
+                        }
+                        retained.restore_reload_selection(reload);
+                        retained
+                    });
                 if let Some(replacement_history) = compacted.replacement_history.as_mut() {
                     // Matches before this checkpoint cannot survive its replacement history.
                     replaced_parent_developer_instructions = false;
@@ -426,6 +440,9 @@ pub(super) async fn prepare_forked_history(
             | RolloutItem::TurnContext(_)
             | RolloutItem::InterAgentCommunication(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. } => true,
+            RolloutItem::RetainedContext(
+                codex_history::RetainedContextEvent::ReloadSelection { .. },
+            ) => true,
             RolloutItem::RetainedContext(_)
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::SecurityRiskScore(_) => false,

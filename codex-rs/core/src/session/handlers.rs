@@ -268,13 +268,23 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
     Box::pin(sess.reload_user_config_layer()).await;
 }
 
-pub async fn compact(sess: &Arc<Session>, sub_id: String) {
+pub async fn compact(
+    sess: &Arc<Session>,
+    sub_id: String,
+    reload: Option<codex_protocol::protocol::ReloadSelection>,
+) {
     // Stop the old turn before the compact task picks up the next turn's environments.
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
 
+    if let Some(selection) = reload {
+        sess.record_retained_context(codex_history::RetainedContextEvent::ReloadSelection {
+            selection,
+        })
+        .await;
+    }
     sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
 }
 
@@ -798,8 +808,8 @@ pub(super) async fn submission_loop(
                     reload_user_config(&sess).await;
                     false
                 }
-                Op::Compact => {
-                    compact(&sess, sub.id.clone()).await;
+                Op::Compact { reload } => {
+                    compact(&sess, sub.id.clone(), reload).await;
                     false
                 }
                 Op::SetThreadMemoryMode { mode } => {

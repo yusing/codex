@@ -5347,6 +5347,18 @@ impl Session {
         state.advance_auto_compact_window()
     }
 
+    pub(crate) async fn reload_selection(
+        &self,
+    ) -> Option<codex_protocol::protocol::ReloadSelection> {
+        self.state
+            .lock()
+            .await
+            .history
+            .retained_context()
+            .reload_selection()
+            .cloned()
+    }
+
     pub(crate) async fn request_new_context_window(&self) {
         let mut state = self.state.lock().await;
         state.request_new_context_window();
@@ -5361,6 +5373,7 @@ impl Session {
         &self,
         step_context: &StepContext,
         world_state: Arc<WorldState>,
+        reload: Option<String>,
     ) {
         let turn_context = step_context.turn.as_ref();
         let history = self.clone_history().await;
@@ -5388,11 +5401,22 @@ impl Session {
         let (window_number, window_ids) = self.state.lock().await.start_new_context_window();
         let (context_updates, world_state_snapshot) =
             self.assemble_initial_context(step_context, rendered).await;
+        let reload_items = reload.map(|text| {
+            ResponseItemEnvelope::new(ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: None,
+                name: Some("reload".to_string()),
+                namespace: Some("context".to_string()),
+                output: codex_protocol::models::FunctionCallOutputPayload::from_text(text),
+                internal_chat_message_metadata_passthrough: None,
+            })
+        });
         let context_items =
             crate::context_manager::updates::merge_world_state_updates(context_updates)
                 .into_iter()
                 .map(ResponseItemEnvelope::new)
                 .chain(retained_client_items)
+                .chain(reload_items)
                 .collect();
         let turn_context_item = step_context.to_turn_context_item();
         self.replace_compacted_history(

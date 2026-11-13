@@ -80,7 +80,7 @@ async fn compact(test: &TestCodex, server: &MockServer) -> Result<()> {
         responses::ev_completed("compaction"),
     ];
     responses::mount_sse_once(server, responses::sse(events)).await;
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| matches!(event, TurnComplete(_))).await;
     Ok(())
 }

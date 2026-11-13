@@ -81,7 +81,7 @@ async fn cross_host_sender_context(history_mode: ThreadHistoryMode) -> Result<()
         .submit_text_turn("Yes. Staging only; never production.")
         .await?;
     if history_mode == ThreadHistoryMode::Paginated {
-        sender.codex.submit(Op::Compact).await?;
+        sender.codex.submit(Op::Compact { reload: None }).await?;
         wait_for_event(&sender.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })

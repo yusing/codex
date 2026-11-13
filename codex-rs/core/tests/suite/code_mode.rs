@@ -1642,7 +1642,7 @@ await new Promise(() => {});
                 ]),
             )
             .await;
-            test.codex.submit(Op::Compact).await?;
+            test.codex.submit(Op::Compact { reload: None }).await?;
             wait_for_event(&test.codex, |event| {
                 matches!(event, EventMsg::TurnComplete(_))
             })
@@ -1754,7 +1754,7 @@ async fn code_mode_compaction_request_preserves_tool_inventory(
     });
     let compact =
         responses::mount_sse_once(&server, sse(vec![summary, ev_completed("resp-compact")])).await;
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -1846,7 +1846,7 @@ async fn code_mode_wait_id_stays_known_after_compaction(
         ]),
     )
     .await;
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -2105,7 +2105,7 @@ text("done");"#,
         ]),
     )
     .await;
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

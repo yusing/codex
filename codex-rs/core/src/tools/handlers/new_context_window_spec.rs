@@ -10,10 +10,21 @@ pub(crate) const NEW_CONTEXT_WINDOW_TOOL_NAME: &str = "new_context";
 pub fn create_new_context_window_tool(messages: Option<&ToolMessage>) -> ToolSpec {
     let tool = ResponsesApiTool {
         name: NEW_CONTEXT_WINDOW_TOOL_NAME.to_string(),
-        description: "Start a new context window. Does not clear, reset, or otherwise affect environment state.".to_string(),
+        description: "Start a summary-free context window and continue unfinished work. Use at a safe checkpoint when discarding obsolete context materially reduces what remaining work must carry, or at the 90% context notice; smaller notices and waiting alone do not trigger reset. Finish current executions and save needed state first. Omitted reload reuses the retained selection; sources:[] clears it. Sources are read before inference after this and later manual or automatic resets. Environment state is unchanged.".to_string(),
         strict: false,
         defer_loading: None,
-        parameters: JsonSchema::object(BTreeMap::new(), /*required*/ None, Some(false.into())),
+        parameters: JsonSchema::object(
+            BTreeMap::from([("reload".to_string(), JsonSchema::object(
+                BTreeMap::from([("sources".to_string(), JsonSchema::array(
+                    JsonSchema::string(None),
+                    Some("Source references to reacquire.".to_string()),
+                ))]),
+                Some(vec!["sources".to_string()]),
+                Some(false.into()),
+            ))]),
+            None,
+            Some(false.into()),
+        ),
         output_schema: None,
     };
     ToolSpec::Function(with_catalog_tool_message(tool, messages))

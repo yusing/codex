@@ -1341,7 +1341,7 @@ async fn astra_kickoff_with_skills_plugins_and_remote_compaction() -> Result<()>
         .await;
     }
 
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -4486,7 +4486,7 @@ async fn async_compaction_reuses_pending_work(
         Some(release_background)
     };
     if manual {
-        test.codex.submit(Op::Compact).await?;
+        test.codex.submit(Op::Compact { reload: None }).await?;
     } else if over_budget {
         test.codex.start_or_steer_turn(TurnInputRequest::new(TurnInput::AnnotatedResponseItem(
             codex_protocol::turn_input::AnnotatedResponseItem {

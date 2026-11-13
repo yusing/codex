@@ -64,7 +64,7 @@ remote_compaction = "v2"
         PermissionProfile::Disabled,
     )
     .await?;
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| {
         assert!(!matches!(event, EventMsg::Error(_)), "{event:?}");
         matches!(event, EventMsg::TurnComplete(_))

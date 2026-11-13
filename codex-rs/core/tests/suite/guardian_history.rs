@@ -89,7 +89,7 @@ async fn guardian_history_survives_restart_and_user_fork(
     let authorization = "You may publish the reviewed release.";
     mount_sse_once(&server, sse(vec![ev_completed("authorized")])).await;
     initial.submit_text_turn(authorization).await?;
-    initial.codex.submit(Op::Compact).await?;
+    initial.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&initial.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -255,7 +255,7 @@ async fn guardian_history_preserves_reviewer_across_parent_compaction() -> Resul
     let mock = mount_sse_sequence(&server, events).await;
     test.submit_text_turn("Keep files private. Run a check before compaction.")
         .await?;
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -339,7 +339,7 @@ async fn guardian_attributes_local_compaction_to_assistant(
     )
     .await;
     test.submit_text_turn(INSTRUCTION).await?;
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -647,7 +647,7 @@ async fn guardian_answers_survive_compaction_and_eviction() -> Result<()> {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

@@ -1741,7 +1741,7 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
     }
     let test = builder.build_with_auto_env(&server).await?;
     if matches!(selection, FullHistoryV2ModelSelection::WorldStateIdentity) {
-        test.codex.submit(Op::Compact).await?;
+        test.codex.submit(Op::Compact { reload: None }).await?;
         wait_for_event(&test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })

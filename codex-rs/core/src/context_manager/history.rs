@@ -393,7 +393,8 @@ impl ContextManager {
             return false;
         }
         match event {
-            RetainedContextEvent::AcceptedFileAudio { .. } => {}
+            RetainedContextEvent::AcceptedFileAudio { .. }
+            | RetainedContextEvent::ReloadSelection { .. } => {}
             RetainedContextEvent::VerifiedAnswer { .. } => {
                 self.user_message_revision =
                     self.user_message_revision.saturating_add(/*rhs*/ 1);

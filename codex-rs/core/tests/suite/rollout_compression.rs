@@ -65,7 +65,7 @@ async fn compressed_shared_fork_resume_preserves_checkpoint_and_frozen_history()
         ]),
     )
     .await;
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

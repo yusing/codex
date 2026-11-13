@@ -651,7 +651,7 @@ async fn user_turn(conversation: &Arc<CodexThread>, text: &str) {
 
 async fn compact_conversation(conversation: &Arc<CodexThread>) {
     conversation
-        .submit(Op::Compact)
+        .submit(Op::Compact { reload: None })
         .await
         .expect("compact conversation");
     wait_for_event(conversation, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;

@@ -4030,7 +4030,7 @@ async fn start_new_context_window_persists_checkpoint_state(clear_tools: bool) {
     );
     let expected_snapshot = world_state.render_full().0.into_object();
     session
-        .start_new_context_window(&step_context, world_state)
+        .start_new_context_window(&step_context, world_state, None)
         .await;
 
     let live_history = session.clone_history().await;

@@ -164,6 +164,9 @@ impl AcceptedFileAudio {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RetainedContextEvent {
+    ReloadSelection {
+        selection: codex_protocol::protocol::ReloadSelection,
+    },
     AcceptedFileAudio {
         evidence: Arc<AcceptedFileAudio>,
     },
@@ -186,6 +189,8 @@ pub enum RetainedContextEvent {
 /// Facts live until their instruction boundary is rolled back; compaction does not expire them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RetainedContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reload_selection: Option<codex_protocol::protocol::ReloadSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     accepted_file_audio: Option<Arc<AcceptedFileAudio>>,
     verified_answers: VecDeque<Ordered<VerifiedAnswer>>,
@@ -258,12 +263,23 @@ impl RetainedContextEvent {
             }
             Self::DeliveredAssistantMessage { message, .. } => message.bound(),
             // An oversized audio record is omitted in record(); IDs must never be truncated.
-            Self::AcceptedFileAudio { .. } => {}
+            Self::AcceptedFileAudio { .. } | Self::ReloadSelection { .. } => {}
         }
     }
 }
 
 impl RetainedContext {
+    pub fn reload_selection(&self) -> Option<&codex_protocol::protocol::ReloadSelection> {
+        self.reload_selection.as_ref()
+    }
+
+    pub fn restore_reload_selection(
+        &mut self,
+        selection: Option<codex_protocol::protocol::ReloadSelection>,
+    ) {
+        self.reload_selection = selection;
+    }
+
     pub fn accepted_file_audio(&self, model: &str, provider: &str) -> Option<&AcceptedFileAudio> {
         self.accepted_file_audio
             .as_deref()
@@ -480,6 +496,13 @@ impl RetainedContext {
         let mut event = event.clone();
         event.bound();
         match event {
+            RetainedContextEvent::ReloadSelection { selection } => {
+                if self.reload_selection.as_ref() == Some(&selection) {
+                    return false;
+                }
+                self.reload_selection = Some(selection);
+                true
+            }
             RetainedContextEvent::AcceptedFileAudio { evidence } => {
                 if !evidence.fits_record_budget()
                     || self.accepted_file_audio.as_ref() == Some(&evidence)

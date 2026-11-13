@@ -440,6 +440,7 @@ pub(crate) async fn run_turn(
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
             /*candidate*/ None,
+            &cancellation_token,
         )
         .await?;
         world_state = sess
@@ -768,6 +769,7 @@ pub(crate) async fn run_turn(
                         CompactionReason::ContextLimit,
                         CompactionPhase::MidTurn,
                         candidate,
+                        &cancellation_token,
                     )
                     .await;
                     match compacted {
@@ -888,6 +890,7 @@ pub(crate) async fn run_turn(
                                 CompactionReason::ContextLimit,
                                 CompactionPhase::PostTurn,
                                 candidate,
+                                &cancellation_token,
                             )
                             .await
                         {
@@ -940,6 +943,7 @@ pub(crate) async fn run_turn(
                     CompactionReason::ContextLimit,
                     CompactionPhase::MidTurn,
                     /*candidate*/ None,
+                    &cancellation_token,
                 )
                 .await?;
                 can_drain_pending_input = false;
@@ -1571,6 +1575,7 @@ async fn run_pre_sampling_compact(
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
             candidate,
+            cancellation_token,
         )
         .await?;
     }
@@ -1668,6 +1673,7 @@ async fn maybe_run_previous_model_inline_compact(
         reason,
         CompactionPhase::PreTurn,
         /*candidate*/ None,
+        cancellation_token,
     )
     .await?;
     Ok(())
@@ -1688,6 +1694,7 @@ async fn run_auto_compact(
     reason: CompactionReason,
     phase: CompactionPhase,
     candidate: Option<Box<BackgroundCompactionCandidate>>,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
     let turn_context = &step_context.turn;
     if matches!(phase, CompactionPhase::PreTurn)
@@ -1714,6 +1721,7 @@ async fn run_auto_compact(
             Arc::clone(sess),
             replacement_step_context,
             world_state,
+            cancellation_token,
         )
         .await?;
         return Ok(true);

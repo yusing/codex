@@ -709,6 +709,22 @@ impl AdditionalContextEntry {
     }
 }
 
+/// Sources reacquired before the first inference in a replacement context window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ReloadSelection {
+    pub sources: Vec<String>,
+}
+
+impl ReloadSelection {
+    pub fn deserialize_optional<'de, D>(deserializer: D) -> Result<Option<Self>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::deserialize(deserializer).map(Some)
+    }
+}
+
 /// Submission operation
 // Keep diagnostic fields explicit so new payload fields do not enter logs by default.
 #[derive(derive_more::Debug)]
@@ -908,10 +924,9 @@ pub enum Op {
     /// enable/disable state) without restarting the thread.
     ReloadUserConfig,
 
-    /// Request the agent to summarize the current conversation context.
-    /// The agent will use its existing context (either conversation history or previous response id)
-    /// to generate a summary which will be returned as an AgentMessage event.
-    Compact,
+    /// Reset the context window, optionally replacing the retained reload selection.
+    #[debug("Compact")]
+    Compact { reload: Option<ReloadSelection> },
 
     /// Set whether the thread remains eligible for memory generation.
     ///
@@ -1150,7 +1165,7 @@ impl Op {
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
-            Self::Compact => "compact",
+            Self::Compact { .. } => "compact",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",

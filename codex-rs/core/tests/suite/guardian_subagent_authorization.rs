@@ -1833,7 +1833,7 @@ async fn run_guardian_subagent_review(
                 ]),
             )
             .await;
-            root.submit(Op::Compact).await?;
+            root.submit(Op::Compact { reload: None }).await?;
             wait_for_event(&root, |event| matches!(event, EventMsg::TurnComplete(_))).await;
             compact.single_request();
             assert!(!root.conversation_history_snapshot().await.items().any(|item| {

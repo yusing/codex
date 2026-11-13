@@ -632,7 +632,7 @@ async fn guardian_review_recovers_after_compaction(
         ]).await;
         test.submit_text_turn("Only monitor; do not change settings yet.")
             .await?;
-        test.codex.submit(Op::Compact).await?;
+        test.codex.submit(Op::Compact { reload: None }).await?;
         wait_for_event(&test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })

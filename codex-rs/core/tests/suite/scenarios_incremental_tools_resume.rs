@@ -91,7 +91,7 @@ async fn legacy_resume_switches_only_after_window_replacement(token_budget: bool
         .submit_turn("Resume without moving the tool prefix.")
         .await?;
     if token_budget {
-        resumed.codex.submit(Op::Compact).await?;
+        resumed.codex.submit(Op::Compact { reload: None }).await?;
         wait_for_event(&resumed.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })
@@ -198,7 +198,7 @@ async fn disable_incremental_tools_at_next_window() -> Result<()> {
     disabled
         .submit_turn("Disable incremental tools, enable planning, and remove shell tools in the existing window.")
         .await?;
-    disabled.codex.submit(Op::Compact).await?;
+    disabled.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&disabled.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -367,7 +367,7 @@ async fn exec_tools_follow_current_settings_across_history() -> Result<()> {
     disabled
         .submit_turn("Resume with planning enabled and granular updates disabled.")
         .await?;
-    disabled.codex.submit(Op::Compact).await?;
+    disabled.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_successful_turn(&disabled.codex).await;
     disabled
         .submit_turn("Rebuild the complete catalog with granular updates disabled.")

@@ -655,7 +655,7 @@ async fn compact_v2_uses_retry_after() -> Result<()> {
         .await?;
     test.submit_turn("seed history for compaction").await?;
 
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     let retry = telemetry.next_retry().await;
     assert!(retry.delay <= Duration::from_secs(1));
     assert_eq!(
@@ -729,7 +729,7 @@ async fn compact_v2_stream_failure_uses_local_backoff_despite_retry_after() -> R
         .await?;
     test.submit_turn("seed history for compaction").await?;
 
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     let retry = telemetry.next_retry().await;
     assert!((FIRST_RETRY_MIN_DELAY..FIRST_RETRY_MAX_DELAY).contains(&retry.delay));
     assert_eq!(
@@ -798,7 +798,7 @@ async fn compact_v2_stream_failure_without_retry_after_exhausts_stream_retries()
         .await?;
     test.submit_turn("seed history for compaction").await?;
 
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     let retry = telemetry.next_retry().await;
     assert!((FIRST_RETRY_MIN_DELAY..FIRST_RETRY_MAX_DELAY).contains(&retry.delay));
     assert_eq!(
@@ -906,7 +906,7 @@ async fn compact_v2_rate_limit_uses_server_advice(
         .await?;
     test.submit_turn("seed history for compaction").await?;
 
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     let retry = telemetry.next_retry().await;
     assert!(retry.delay <= Duration::from_secs(1));
     assert_eq!(
@@ -971,7 +971,7 @@ async fn compact_v2_overload_without_retry_after_exhausts_request_retries() -> R
         .await?;
     test.submit_turn("seed history for compaction").await?;
 
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     let first_retry = telemetry.next_retry().await;
     assert!((FIRST_RETRY_MIN_DELAY..FIRST_RETRY_MAX_DELAY).contains(&first_retry.delay));
     assert_eq!(

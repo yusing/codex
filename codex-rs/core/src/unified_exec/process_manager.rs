@@ -649,19 +649,42 @@ impl UnifiedExecProcessManager {
         // (via start_streaming_output above) and collect a snapshot here for
         // the tool response body.
         let wait = completion.as_ref().map_or_else(
-            || Duration::from_millis(yield_time_ms),
+            || Some(Duration::from_millis(yield_time_ms)),
             |completion| completion.timeout,
         );
-        let deadline = start
-            .checked_add(wait)
-            .ok_or_else(|| UnifiedExecError::process_failed("timeout_ms is too large".into()))?;
-        let collected_output = Self::collect_output_until_deadline(
-            process.output_handles(),
-            Some(context.session.subscribe_elicitation_pause_state()),
-            deadline,
-        )
-        .await;
+        let collected_output = if let Some(wait) = wait {
+            let deadline = start.checked_add(wait).ok_or_else(|| {
+                UnifiedExecError::process_failed("timeout_ms is too large".into())
+            })?;
+            Self::collect_output_until_deadline(
+                process.output_handles(),
+                Some(context.session.subscribe_elicitation_pause_state()),
+                deadline,
+            )
+            .await
+        } else {
+            // Internal source readers wait for exit and closed pipes without a polling deadline.
+            let output = process.output_handles();
+            tokio::select! {
+                _ = process.wait_for_exit() => {}
+                _ = context.cancellation_token.cancelled() => {}
+            }
+            loop {
+                let closed = output.output_closed_notify.notified();
+                tokio::pin!(closed);
+                closed.as_mut().enable();
+                if output.output_closed.load(Ordering::Acquire) {
+                    break;
+                }
+                tokio::select! {
+                    _ = &mut closed => {}
+                    _ = context.cancellation_token.cancelled() => break,
+                }
+            }
+            std::mem::take(&mut output.output_buffer.lock().await.pending)
+        };
         if let Some(completion) = completion.as_mut()
+            && completion.timeout.is_some()
             && !process.has_exited()
         {
             completion.timed_out = true;

@@ -384,7 +384,7 @@ async fn self_aborted_turn_runs_interrupt_hook_before_turn_aborted() -> Result<(
         .build_with_auto_env(&server)
         .await?;
 
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     let pre_compact = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::HookCompleted(completed)
             if completed.run.event_name == HookEventName::PreCompact =>

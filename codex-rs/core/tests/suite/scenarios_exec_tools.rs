@@ -271,7 +271,7 @@ async fn changed_sections_and_entries_append_without_repeating_the_catalog(
     .await?;
     test.submit_text_turn("Only common instructions and shared types change: wait for compaction.")
         .await?;
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_successful_turn(&test.codex).await;
     test.submit_text_turn("After compaction: restore the full current catalog.")
         .await?;

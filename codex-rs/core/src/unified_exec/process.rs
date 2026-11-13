@@ -212,6 +212,11 @@ impl UnifiedExecProcess {
         }
     }
 
+    pub(super) async fn wait_for_exit(&self) {
+        let mut state = self.state_rx.clone();
+        let _ = state.wait_for(|state| state.has_exited).await;
+    }
+
     pub(super) fn exit_code(&self) -> Option<i32> {
         if self.timed_out() {
             return Some(124);
@@ -589,7 +594,10 @@ impl UnifiedExecProcess {
                         output_closed.store(true, Ordering::Release);
                         output_closed_notify.notify_waiters();
                         cancellation_token.cancel();
-                        break;
+                        // Closed pipes need not mean that the process has exited yet.
+                        if state_tx.borrow().has_exited {
+                            break;
+                        }
                     }
                     continue;
                 }
@@ -625,15 +633,21 @@ impl UnifiedExecProcess {
                         if output_drain_policy == OutputDrainPolicy::BoundedAfterExit {
                             cancellation_token.cancel();
                         }
+                        if output_closed.load(Ordering::Acquire) {
+                            break;
+                        }
                     }
                     ExecProcessEvent::Closed { seq } => {
                         if seq <= last_seq {
                             continue;
                         }
+                        last_seq = seq;
                         output_closed.store(true, Ordering::Release);
                         output_closed_notify.notify_waiters();
                         cancellation_token.cancel();
-                        break;
+                        if state_tx.borrow().has_exited {
+                            break;
+                        }
                     }
                     ExecProcessEvent::Failed(message) => {
                         let state = state_tx.borrow().clone();

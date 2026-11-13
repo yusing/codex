@@ -336,7 +336,7 @@ async fn run_review_on_session(
         let compact_submission = run_before_review_deadline(
             deadline,
             params.external_cancel.as_ref(),
-            review_session.io.submit(Op::Compact),
+            review_session.io.submit(Op::Compact { reload: None }),
         )
         .await;
         let compact_turn_id = match compact_submission {

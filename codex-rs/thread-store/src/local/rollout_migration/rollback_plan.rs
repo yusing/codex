@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use codex_protocol::ResponseItemId;
 use codex_protocol::models::AudioReference;
@@ -16,6 +17,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ReloadSelection;
 use codex_protocol::protocol::UserMessageAudioKind;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::UserMessageImageKind;
@@ -50,6 +52,7 @@ struct InstructionBoundary {
     input_source: RetainedInputSource,
     is_communication: bool,
     alive: bool,
+    reload_before: Option<Arc<ReloadSelection>>,
 }
 
 struct RetainedFactSource {
@@ -114,6 +117,7 @@ pub(super) struct RollbackPlanner {
     retained_fact_sources: Vec<RetainedFactSource>,
     compactions: Vec<CompactionFrame>,
     model_replay: ModelReplayPlanner,
+    reload_selection: Option<Arc<ReloadSelection>>,
 }
 
 impl RollbackPlanner {
@@ -133,6 +137,7 @@ impl RollbackPlanner {
             retained_fact_sources: Vec::new(),
             compactions: Vec::new(),
             model_replay: ModelReplayPlanner::new(),
+            reload_selection: None,
         }
     }
 
@@ -257,6 +262,11 @@ impl RollbackPlanner {
                 self.pending_delivery_boundary = Some(boundary);
             }
             RolloutItem::Compacted(item) => {
+                self.reload_selection = item
+                    .retained_context
+                    .as_ref()
+                    .and_then(|context| context.reload_selection().cloned())
+                    .map(Arc::new);
                 let owner = self
                     .active_turn_id
                     .as_deref()
@@ -288,6 +298,11 @@ impl RollbackPlanner {
                 self.assign_targeted_record(index, Some(record.turn_id.as_str()));
             }
             RolloutItem::WorldState(_) | RolloutItem::RealtimeItem(_) => {}
+            RolloutItem::RetainedContext(
+                codex_rollout::RetainedContextEvent::ReloadSelection { selection },
+            ) => {
+                self.reload_selection = Some(Arc::new(selection.clone()));
+            }
             RolloutItem::RetainedContext(codex_rollout::RetainedContextEvent::VerifiedAnswer {
                 answer,
                 acceptance_order,
@@ -403,6 +418,7 @@ impl RollbackPlanner {
             input_source: RetainedInputSource::Local(None),
             is_communication: false,
             alive: true,
+            reload_before: self.reload_selection.clone(),
         });
         let had_prior_boundary = !self.boundary_stack.is_empty();
         if had_prior_boundary {
@@ -461,6 +477,7 @@ impl RollbackPlanner {
         }
         if let Some(boundary) = first_removed_boundary {
             let source = &self.boundaries[boundary];
+            self.reload_selection = source.reload_before.clone();
             let acceptance_order = source.input_source.acceptance_order();
             if let Some(order) = acceptance_order {
                 // An answer may have been persisted before the queued instruction
@@ -496,6 +513,14 @@ impl RollbackPlanner {
                 acceptance_order.is_some() || frame.record_index >= source.record_index
             }) {
                 if let Some(context) = &mut frame.item.retained_context {
+                    // Migration may keep an emptied checkpoint from a removed instruction as
+                    // the model-history anchor. Its selection must follow the same cut, not
+                    // the removed turn or a replay-time scan of paired lifecycle records.
+                    if frame.record_index >= source.record_index {
+                        context.restore_reload_selection(
+                            self.reload_selection.as_deref().cloned(),
+                        );
+                    }
                     if acceptance_order.is_some()
                         || context
                             .ordered_entries()

@@ -56,7 +56,7 @@ async fn remote_slash_compact_preserves_context_across_windows() -> Result<()> {
         .inject_response_items(vec![serde_json::from_value(mail.clone())?])
         .await?;
     for compaction in 0..2 {
-        test.codex.submit(Op::Compact).await?;
+        test.codex.submit(Op::Compact { reload: None }).await?;
         wait_for_event(&test.codex, |event| {
             assert!(!matches!(event, EventMsg::Error(_)), "{event:?}");
             matches!(event, EventMsg::TurnComplete(_))
@@ -69,7 +69,7 @@ async fn remote_slash_compact_preserves_context_across_windows() -> Result<()> {
     }
 
     test.submit_turn("Continue with the first step.").await?;
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

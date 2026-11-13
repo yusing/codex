@@ -423,7 +423,7 @@ async fn direct_call_metadata_during_compaction_respects_provider_support(
             .refresh_runtime_config(current_config, config)
             .await;
     }
-    test.codex.submit(Op::Compact).await?;
+    test.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

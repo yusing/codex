@@ -325,6 +325,7 @@ fn review_original(mut item: RolloutItem) -> anyhow::Result<Option<RolloutItem>>
             anyhow::bail!("evidence history was replaced");
         }
         RolloutItem::RetainedContext(RetainedContextEvent::AcceptedFileAudio { .. })
+        | RolloutItem::RetainedContext(RetainedContextEvent::ReloadSelection { .. })
         | RolloutItem::DynamicToolsUpdated { .. }
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }

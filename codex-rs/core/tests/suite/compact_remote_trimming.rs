@@ -67,7 +67,7 @@ async fn remote_compact_v2_token_estimate_ignores_message_bookkeeping_and_json_e
             .inject_response_items(vec![serde_json::from_value(message.clone())?])
             .await?;
         let mock = mount_sse_once(harness.server(), compact_response()).await;
-        codex.submit(Op::Compact).await?;
+        codex.submit(Op::Compact { reload: None }).await?;
         wait_for_turn_complete(&codex).await;
 
         estimates.push(codex.token_usage_info().await.context("token usage")?);
@@ -119,7 +119,7 @@ async fn remote_compact_v2_trims_tool_search_output_to_empty_tools_array() -> Re
         .collect::<serde_json::Result<Vec<ResponseItem>>>()?;
         codex.inject_response_items(history).await?;
         let mock = mount_sse_once(harness.server(), compact_response()).await;
-        codex.submit(Op::Compact).await?;
+        codex.submit(Op::Compact { reload: None }).await?;
         wait_for_turn_complete(codex).await;
 
         let request = mock.single_request();
@@ -195,7 +195,7 @@ async fn remote_compact_v2_trim_estimate_uses_session_base_instructions(
         .collect::<serde_json::Result<Vec<ResponseItem>>>()?;
         codex.inject_response_items(history).await?;
         let mock = mount_sse_once(harness.server(), compact_response()).await;
-        codex.submit(Op::Compact).await?;
+        codex.submit(Op::Compact { reload: None }).await?;
         wait_for_turn_complete(codex).await;
 
         let request = mock.single_request();

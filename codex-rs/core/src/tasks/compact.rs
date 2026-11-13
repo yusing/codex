@@ -55,6 +55,7 @@ impl SessionTask for CompactTask {
                 session,
                 step_context,
                 world_state,
+                &cancellation_token,
             )
             .await?;
             return Ok(None);

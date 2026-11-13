@@ -1162,7 +1162,7 @@ async fn compaction_and_review_submissions_share_execution_observer() {
             .expect("child submission deadline")
             .expect("child submission");
         if index == 0 {
-            assert!(matches!(submission.op, Op::Compact));
+            assert!(matches!(submission.op, Op::Compact { reload: None }));
         } else {
             let Op::TurnInput { reply, .. } = submission.op else {
                 panic!("expected review input after compaction");

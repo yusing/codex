@@ -1214,10 +1214,15 @@ pub struct ThreadUnarchiveResponse {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export_to = "v2/")]
 pub struct ThreadCompactStartParams {
     pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "codex_protocol::protocol::ReloadSelection::deserialize_optional")]
+    #[schemars(with = "codex_protocol::protocol::ReloadSelection")]
+    #[ts(optional)]
+    pub reload: Option<codex_protocol::protocol::ReloadSelection>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

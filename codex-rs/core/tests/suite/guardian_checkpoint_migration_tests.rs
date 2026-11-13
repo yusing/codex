@@ -148,7 +148,7 @@ async fn independent_history_resume_filters_rolled_back_sources(compaction: &str
         responses::sse(vec![summary, responses::ev_completed("compacted")]),
     )
     .await;
-    thread.submit(Op::Compact).await?;
+    thread.submit(Op::Compact { reload: None }).await?;
     finish_turn(&thread).await;
     mock.single_request();
     let snapshot = thread.conversation_history_snapshot().await;
@@ -336,7 +336,7 @@ pub(super) async fn migration_scenario() -> Result<Vec<responses::ResponsesReque
     for (call_id, checkpoint) in [("resumed", None), ("after", Some("cmp_migrated"))] {
         if let Some(checkpoint) = checkpoint {
             let compaction = responses::mount_sse_once(&server, compact(checkpoint)).await;
-            thread.submit(Op::Compact).await?;
+            thread.submit(Op::Compact { reload: None }).await?;
             finish_turn(&thread).await;
             all_requests.extend(compaction.requests());
         }

@@ -395,7 +395,7 @@ async fn compact_and_assert_answers(
 ) -> Result<RetainedContext> {
     // Inspect live state by persisting a real compaction checkpoint, not a private getter.
     // Repeating this after legacy rollback replay also catches checkpoint resurrection.
-    thread.submit(Op::Compact).await?;
+    thread.submit(Op::Compact { reload: None }).await?;
     wait_for_event(thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     thread.flush_rollout().await?;
     let history = load_context(test, thread).await?;
@@ -1104,7 +1104,7 @@ async fn forked_parent_instructions_do_not_become_local_authorization(
         })).expect("approval message")
     });
     if compact_parent {
-        test.codex.submit(Op::Compact).await?;
+        test.codex.submit(Op::Compact { reload: None }).await?;
         wait_for_event(&test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })
@@ -1272,7 +1272,7 @@ async fn forked_parent_instructions_do_not_become_local_authorization(
             .retained_context(),
         expected.as_ref()
     );
-    child.submit(Op::Compact).await?;
+    child.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&child, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     let child = resume(&test, &child).await?;
     assert_eq!(

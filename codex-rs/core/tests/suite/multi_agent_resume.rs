@@ -522,7 +522,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         ]),
     )
     .await;
-    resumed.codex.submit(Op::Compact).await?;
+    resumed.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&resumed.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -630,7 +630,7 @@ openai_base_url = "{redirected_base_url}"
         ]),
     )
     .await;
-    resumed.codex.submit(Op::Compact).await?;
+    resumed.codex.submit(Op::Compact { reload: None }).await?;
     wait_for_event(&resumed.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

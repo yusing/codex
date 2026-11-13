@@ -14,6 +14,16 @@ use codex_tools::ToolSpec;
 pub(crate) const NEW_CONTEXT_WINDOW_MESSAGE: &str =
     "A new context window will start without summarizing conversation history.";
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewContextArgs {
+    #[serde(
+        default,
+        deserialize_with = "codex_protocol::protocol::ReloadSelection::deserialize_optional"
+    )]
+    reload: Option<codex_protocol::protocol::ReloadSelection>,
+}
+
 pub struct NewContextWindowHandler {
     spec: ToolSpec,
 }
@@ -40,11 +50,12 @@ impl ToolExecutor<ToolInvocation> for NewContextWindowHandler {
         ToolInvocation: 'a,
     {
         Box::pin(async move {
-            if !matches!(invocation.payload, ToolPayload::Function { .. }) {
+            let ToolPayload::Function { arguments } = &invocation.payload else {
                 return Err(FunctionCallError::RespondToModel(
                     "new_context handler received unsupported payload".to_string(),
                 ));
-            }
+            };
+            let args: NewContextArgs = super::parse_arguments(arguments)?;
 
             if invocation
                 .session
@@ -58,6 +69,14 @@ impl ToolExecutor<ToolInvocation> for NewContextWindowHandler {
                 ));
             }
 
+            if let Some(selection) = args.reload {
+                invocation
+                    .session
+                    .record_retained_context(codex_history::RetainedContextEvent::ReloadSelection {
+                        selection,
+                    })
+                    .await;
+            }
             invocation.session.request_new_context_window().await;
 
             Ok(boxed_tool_output(FunctionToolOutput::from_text(
