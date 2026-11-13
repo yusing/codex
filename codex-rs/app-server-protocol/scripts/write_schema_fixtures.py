@@ -55,31 +55,6 @@ def main() -> None:
         check=True,
     )
 
-    # Scratch exports and experimental-only bundles do not update checked-in SDK code.
-    if (
-        not args.experimental
-        and schema_root.resolve() == repository_schema_root.resolve()
-    ):
-        sdk_root = workspace_root.parent / "sdk" / "python"
-        subprocess.run(
-            [
-                "uv",
-                "run",
-                "--project",
-                str(sdk_root),
-                "--frozen",
-                "--only-group",
-                "test",
-                "python",
-                str(sdk_root / "scripts" / "update_sdk_artifacts.py"),
-                "generate-types",
-                "--schema-dir",
-                str(schema_root / "json"),
-            ],
-            cwd=workspace_root,
-            check=True,
-        )
-
 
 if __name__ == "__main__":
     main()

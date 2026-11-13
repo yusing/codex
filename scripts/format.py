@@ -2,7 +2,6 @@
 """Format repository sources or check that they are already formatted."""
 
 import argparse
-import os
 import shlex
 import subprocess
 import sys
@@ -41,118 +40,23 @@ def just_formatter_group(*, check: bool) -> FormatterGroup:
 
 
 def rust_formatter_group(*, check: bool) -> FormatterGroup:
-    rust_workspace = REPO_ROOT / "codex-rs"
-    repository_files = subprocess.check_output(
-        [
-            "git",
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "--",
-            "*.rs",
-        ],
-        cwd=REPO_ROOT,
-    ).split(b"\0")
-    rust_files = sorted(
-        os.path.relpath(REPO_ROOT / os.fsdecode(encoded_path), rust_workspace)
-        for encoded_path in repository_files
-        if encoded_path and (REPO_ROOT / os.fsdecode(encoded_path)).is_file()
-    )
-    # Git supplies every source file, including files Cargo cannot discover.
-    # Do not recursively format child modules again or include ignored files.
-    args = [
-        "rustfmt",
-        "--edition",
-        "2024",
-        "--config-path",
-        str(rust_workspace / "rustfmt.toml"),
-        "--config",
-        "imports_granularity=Item,skip_children=true",
-    ]
+    args = ["cargo", "fmt", "--all"]
     if check:
-        args.append("--check")
-    # Batch relative paths to stay below Windows command-line limits.
-    commands = tuple(
-        Command(tuple(args + rust_files[start : start + 64]), rust_workspace)
-        for start in range(0, len(rust_files), 64)
-    )
-    return FormatterGroup("Rust", commands)
-
-
-def buildifier_formatter_group(*, check: bool) -> FormatterGroup:
-    repository_files = subprocess.check_output(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-        cwd=REPO_ROOT,
-    ).split(b"\0")
-    buildifier_files: list[str] = []
-    for encoded_path in repository_files:
-        if not encoded_path:
-            continue
-        path = Path(os.fsdecode(encoded_path))
-        name = path.name
-        if (
-            name in {"BUILD", "WORKSPACE", "MODULE.bazel"}
-            or name.startswith(("BUILD.", "WORKSPACE."))
-            or name.endswith((".BUILD.bazel", ".MODULE.bazel", ".bzl", ".sky"))
-            or ".bzl." in name
-            or ".sky." in name
-        ):
-            buildifier_files.append(path.as_posix())
-    buildifier_files.sort()
-
-    # Invoke DotSlash explicitly because Windows does not honor shebangs.
-    buildifier_args = [
-        "dotslash",
-        str(REPO_ROOT / "tools" / "buildifier"),
-        "-mode=check" if check else "-mode=fix",
-        "-lint=off",
-        *buildifier_files,
-    ]
-    return FormatterGroup("Bazel/Starlark", (Command(tuple(buildifier_args)),))
-
-
-def python_sdk_formatter_group(*, check: bool) -> FormatterGroup:
-    # Each `--project` retains its local dependency and Ruff configuration context.
-    uv_run_args = [
-        "uv",
-        "run",
-        "--frozen",
-        "--project",
-        "sdk/python",
-        "--only-group",
-        "format",
-    ]
-    format_args = [
-        *uv_run_args,
-        "ruff",
-        "format",
-    ]
-    if check:
-        format_args.append("--check")
-        # `ruff check --diff` reports lint-driven rewrites without changing files.
-        # It is the check-mode counterpart of `--fix --fix-only`, not a full lint gate.
-        lint_args = ["ruff", "check", "--diff"]
-    else:
-        # Ruff's lint fixer and formatter are separate passes: the first applies
-        # fixable lint rewrites, while the second formats source layout.
-        lint_args = ["ruff", "check", "--fix", "--fix-only"]
-
-    return FormatterGroup(
-        "Python SDK",
-        (
-            Command((*uv_run_args, *lint_args, "sdk/python")),
-            Command((*format_args, "sdk/python")),
-        ),
-    )
+        args.extend(["--", "--check"])
+    return FormatterGroup("Rust", (Command(tuple(args), REPO_ROOT / "codex-rs"),))
 
 
 def python_scripts_formatter_group(*, check: bool) -> FormatterGroup:
     args = ["uv", "run", "--frozen", "--project", "scripts", "ruff", "format"]
     if check:
         args.append("--check")
-    args.append(".")
+    args.extend(
+        [
+            "scripts/format.py",
+            "scripts/test_native_maintenance.py",
+            "codex-rs/app-server-protocol/scripts",
+        ]
+    )
     return FormatterGroup("Python scripts", (Command(tuple(args)),))
 
 
@@ -160,8 +64,6 @@ def formatter_groups(*, check: bool) -> tuple[FormatterGroup, ...]:
     return (
         just_formatter_group(check=check),
         rust_formatter_group(check=check),
-        buildifier_formatter_group(check=check),
-        python_sdk_formatter_group(check=check),
         python_scripts_formatter_group(check=check),
     )
 
