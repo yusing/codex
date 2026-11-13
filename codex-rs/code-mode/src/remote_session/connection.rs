@@ -19,6 +19,8 @@ use codex_code_mode_protocol::StartedCell;
 use codex_code_mode_protocol::TerminateRequest;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
+use codex_code_mode_protocol::WaitToPendingOutcome;
+use codex_code_mode_protocol::WaitToPendingRequest;
 use codex_code_mode_protocol::host::BOUNDED_OUTPUT_CAPABILITY;
 use codex_code_mode_protocol::host::Capability;
 use codex_code_mode_protocol::host::CapabilitySet;
@@ -447,6 +449,25 @@ impl Connection {
                 self.receive(response_rx).await
             })
             .await;
+        cancellation.disarm();
+        result
+    }
+
+    pub(super) async fn wait_to_pending(
+        &self,
+        session: RemoteSession,
+        request: WaitToPendingRequest,
+    ) -> Result<WaitToPendingOutcome, String> {
+        let cancellation = CallerCancellation::new();
+        let (response_tx, response_rx) = oneshot::channel();
+        self.send(DriverCommand::WaitToPending {
+            session,
+            request,
+            caller_cancellation: cancellation.token(),
+            response_tx,
+        })
+        .await?;
+        let result = self.receive(response_rx).await;
         cancellation.disarm();
         result
     }

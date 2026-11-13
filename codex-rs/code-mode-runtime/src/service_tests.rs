@@ -1209,6 +1209,7 @@ await Promise.all([
     let resumed_response = tokio::time::timeout(
         Duration::from_secs(1),
         service.wait_to_pending(WaitToPendingRequest {
+            max_output_tokens: None,
             cell_id: cell_id("1"),
         }),
     )
@@ -1274,6 +1275,7 @@ await new Promise(() => {});
     let resumed_response = tokio::time::timeout(
         Duration::from_secs(1),
         service.wait_to_pending(WaitToPendingRequest {
+            max_output_tokens: None,
             cell_id: cell_id("1"),
         }),
     )
@@ -1340,6 +1342,7 @@ text("done");
     let resumed_response = tokio::time::timeout(
         Duration::from_secs(1),
         service.wait_to_pending(WaitToPendingRequest {
+            max_output_tokens: None,
             cell_id: cell_id("1"),
         }),
     )

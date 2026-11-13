@@ -126,9 +126,6 @@ fn validate_agent_name(agent_name: &str) -> Result<(), String> {
     if agent_name.is_empty() {
         return Err("agent_name must not be empty".to_string());
     }
-    if agent_name == AgentPath::ROOT_SEGMENT {
-        return Err("agent_name `root` is reserved".to_string());
-    }
     if agent_name == "." || agent_name == ".." {
         return Err(format!("agent_name `{agent_name}` is reserved"));
     }
@@ -137,10 +134,11 @@ fn validate_agent_name(agent_name: &str) -> Result<(), String> {
     }
     if !agent_name
         .chars()
-        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-')
     {
         return Err(
-            "agent_name must use only lowercase letters, digits, and underscores".to_string(),
+            "agent_name must use only lowercase letters, digits, underscores, and hyphens"
+                .to_string(),
         );
     }
     Ok(())
@@ -210,6 +208,34 @@ mod tests {
     }
 
     #[test]
+    fn documented_name_segments_preserve_distinct_canonical_identities() {
+        let root = AgentPath::root();
+        let mut paths = std::collections::HashSet::new();
+        for parent in [root.clone(), root.join("parent-1").unwrap()] {
+            for name in [
+                "worker-1", "worker_1", "-worker", "worker-", "-", "_", "9", "root",
+            ] {
+                let child = parent.join(name).unwrap();
+                assert_eq!(child.as_str(), format!("{parent}/{name}"));
+                assert_eq!(child.name(), name);
+                assert!(!child.is_root());
+                assert_eq!(AgentPath::try_from(child.as_str()).unwrap(), child);
+                assert_eq!(parent.resolve(name).unwrap(), child);
+                assert_eq!(
+                    serde_json::from_str::<AgentPath>(&serde_json::to_string(&child).unwrap())
+                        .unwrap(),
+                    child,
+                );
+                assert!(
+                    paths.insert(child),
+                    "distinct names and parents cannot alias"
+                );
+            }
+        }
+        assert_eq!(root.resolve("/root").unwrap(), root);
+    }
+
+    #[test]
     fn resolve_supports_relative_and_absolute_references() {
         let current = AgentPath::try_from("/root/researcher").expect("path");
         assert_eq!(
@@ -226,7 +252,10 @@ mod tests {
     fn invalid_names_and_paths_are_rejected() {
         assert_eq!(
             AgentPath::root().join("BadName"),
-            Err("agent_name must use only lowercase letters, digits, and underscores".to_string())
+            Err(
+                "agent_name must use only lowercase letters, digits, underscores, and hyphens"
+                    .to_string()
+            )
         );
         assert_eq!(
             AgentPath::try_from("/not-root"),
@@ -236,5 +265,8 @@ mod tests {
             AgentPath::root().resolve("../sibling"),
             Err("agent_name `..` is reserved".to_string())
         );
+        for name in ["", "Worker", "a/b", "a.b", "a b", "aé", "a–b", ".", ".."] {
+            assert!(AgentPath::root().join(name).is_err(), "{name:?}");
+        }
     }
 }

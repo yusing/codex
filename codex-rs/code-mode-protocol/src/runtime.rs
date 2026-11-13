@@ -54,6 +54,9 @@ impl From<CellId> for TerminateRequest {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct WaitToPendingRequest {
     pub cell_id: CellId,
+    /// Limit for this observation in Server mode; ignored in Client mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
@@ -111,6 +114,32 @@ pub enum ExecuteToPendingOutcome {
 pub enum WaitToPendingOutcome {
     LiveCell(ExecuteToPendingOutcome),
     MissingCell(RuntimeResponse),
+}
+
+impl WaitToPendingOutcome {
+    pub fn cell_id(&self) -> &CellId {
+        match self {
+            Self::LiveCell(ExecuteToPendingOutcome::Pending { cell_id, .. }) => cell_id,
+            Self::LiveCell(ExecuteToPendingOutcome::Completed(response))
+            | Self::MissingCell(response) => match response {
+                RuntimeResponse::Yielded { cell_id, .. }
+                | RuntimeResponse::Terminated { cell_id, .. }
+                | RuntimeResponse::Result { cell_id, .. } => cell_id,
+            },
+        }
+    }
+
+    pub fn with_code_mode_host_duration(self, duration: Duration) -> Self {
+        match self {
+            Self::LiveCell(ExecuteToPendingOutcome::Completed(response)) => Self::LiveCell(
+                ExecuteToPendingOutcome::Completed(response.with_code_mode_host_duration(duration)),
+            ),
+            Self::MissingCell(response) => {
+                Self::MissingCell(response.with_code_mode_host_duration(duration))
+            }
+            pending => pending,
+        }
+    }
 }
 
 impl From<WaitOutcome> for RuntimeResponse {

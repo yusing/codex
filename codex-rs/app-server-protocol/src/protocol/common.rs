@@ -773,15 +773,30 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadUnarchiveResponse,
     },
-    FeatureUseRecord => "featureUse/record" {
-        params: v2::FeatureUseFact,
+    AgentForeignReceive => "agent/foreign/receive" {
+        params: v2::AgentForeignRequest,
         serialization: None,
-        response: v2::FeatureUseRecordResponse,
+        response: v2::AgentForeignResponse,
     },
-    FeatureUseRead => "featureUse/read" {
-        params: v2::FeatureUseReadParams,
+    AgentObserve => "agent/observe" {
+        params: v2::AgentObserveParams,
         serialization: None,
-        response: v2::FeatureUseReadResponse,
+        response: v2::AgentObserveResponse,
+    },
+    AgentObserveTree => "agent/observeTree" {
+        params: v2::AgentObserveTreeParams,
+        serialization: None,
+        response: v2::AgentObserveTreeResponse,
+    },
+    AgentEnd => "agent/end" {
+        params: v2::AgentEndParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::AgentEndResponse,
+    },
+    AgentInterrupt => "agent/interrupt" {
+        params: v2::AgentInterruptParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::AgentInterruptResponse,
     },
     ThreadCompactCancel => "thread/compact/cancel" {
         params: v2::ThreadCompactCancelParams,
@@ -1902,10 +1917,6 @@ impl TryFrom<JSONRPCRequest> for ServerRequest {
 }
 
 server_request_definitions! {
-    CompoundWaitSettle => "thread/compoundWait/settle" {
-        params: v2::CompoundWaitSettlement,
-        response: v2::CompoundWaitDisposition,
-    },
     /// NEW APIs
     /// Sent when approval is requested for a specific command execution.
     /// This request is used for Turns started via turn/start.
@@ -1943,6 +1954,42 @@ server_request_definitions! {
     DynamicToolCall => "item/tool/call" {
         params: v2::DynamicToolCallParams,
         response: v2::DynamicToolCallResponse,
+    },
+
+    /// Execute an admitted external actor on its original host connection.
+    AgentForeignRoute => "agent/foreign/route" {
+        params: v2::AgentForeignRequest,
+        response: v2::AgentForeignResponse,
+    },
+
+    /// Freeze final-answer capture evidence through the owning host connection.
+    AgentPrepareFinalCapture => "agent/finalCapture/prepare" {
+        params: v2::AgentPrepareFinalCaptureParams,
+        response: v2::AgentPrepareFinalCaptureResponse,
+    },
+
+    /// Project a frozen final resource for the recipient's current delivery context.
+    AgentProjectFinalCapture => "agent/finalCapture/project" {
+        params: v2::AgentProjectFinalCaptureParams,
+        response: v2::AgentProjectFinalCaptureResponse,
+    },
+
+    /// Freeze changed capture intervals without selecting work or starting inference.
+    AgentFreezeProgress => "agent/progress/freeze" {
+        params: v2::AgentFreezeProgressParams,
+        response: v2::AgentFreezeProgressResponse,
+    },
+
+    /// Bound frozen progress output and retain omitted evidence for explicit recovery.
+    AgentPrepareProgressOutput => "agent/progress/prepareOutput" {
+        params: v2::AgentPrepareProgressOutputParams,
+        response: v2::AgentPrepareProgressOutputResponse,
+    },
+
+    /// Admit native-confirmed child resources before startup can execute work.
+    AgentPrepareHostAdmission => "agent/hostAdmission/prepare" {
+        params: v2::AgentPrepareHostAdmissionParams,
+        response: v2::AgentPrepareHostAdmissionResponse,
     },
 
     ChatgptAuthTokensRefresh => "account/chatgptAuthTokens/refresh" {
@@ -2061,10 +2108,8 @@ pub struct FuzzyFileSearchSessionCompletedNotification {
 }
 
 server_notification_definitions! {
+    AgentTreeChanged => "agent/treeChanged" (v2::AgentTreeChangedNotification),
     ContextReset => "thread/contextReset" (v2::ContextReset),
-    CompoundWaitReset => "thread/compoundWait/reset" (v2::CompoundWaitReset),
-    FeatureUseObserved => "featureUse/observed" (v2::FeatureUseFact),
-    FeatureUseUnavailable => "featureUse/unavailable" (v2::FeatureUseUnavailableNotification),
     /// NEW NOTIFICATIONS
     Error => "error" (v2::ErrorNotification),
     ThreadStarted => "thread/started" (v2::ThreadStartedNotification),
@@ -2100,6 +2145,8 @@ server_notification_definitions! {
     TurnStarted => "turn/started" (v2::TurnStartedNotification),
     HookStarted => "hook/started" (v2::HookStartedNotification),
     TurnCompleted => "turn/completed" (v2::TurnCompletedNotification),
+    TurnCheckpointed => "turn/checkpointed" (v2::TurnCheckpointedNotification),
+    AgentCoordination => "agent/coordination" (v2::AgentCoordinationEvent),
     HookCompleted => "hook/completed" (v2::HookCompletedNotification),
     TurnDiffUpdated => "turn/diff/updated" (v2::TurnDiffUpdatedNotification),
     TurnPlanUpdated => "turn/plan/updated" (v2::TurnPlanUpdatedNotification),

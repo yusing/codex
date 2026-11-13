@@ -17,6 +17,110 @@ fn agent_metadata(thread_id: ThreadId) -> AgentMetadata {
 }
 
 #[test]
+fn observation_snapshot_includes_root_and_only_admitted_children() {
+    let registry = Arc::new(AgentRegistry::default());
+    let root = ThreadId::new();
+    let child = ThreadId::new();
+    let mut changes = registry.subscribe();
+    registry.register_root_thread(root);
+    let mut reservation = registry.reserve_spawn_slot(None).unwrap();
+    reservation
+        .reserve_agent_path(&AgentPath::root().join("child").unwrap())
+        .unwrap();
+    let snapshot = registry.snapshot();
+    assert_eq!(snapshot.agents.len(), 1);
+    assert_eq!(snapshot.agents[0].agent_id, Some(root));
+    assert_eq!(*changes.borrow_and_update(), snapshot.revision);
+    reservation.commit(AgentMetadata {
+        agent_id: Some(child),
+        agent_path: Some(AgentPath::root().join("child").unwrap()),
+        ..Default::default()
+    });
+    assert!(changes.has_changed().unwrap());
+    let admitted = registry.snapshot();
+    assert_eq!(admitted.agents.len(), 2);
+    assert!(admitted.revision > snapshot.revision);
+    registry.release_spawned_thread(child);
+    let removed = registry.snapshot();
+    assert_eq!(removed.agents.len(), 1);
+    assert!(removed.revision > admitted.revision);
+}
+
+#[test]
+fn observation_invalidation_coalesces_without_losing_latest_snapshot() {
+    let registry = Arc::new(AgentRegistry::default());
+    let mut changes = registry.subscribe();
+    registry.register_root_thread(ThreadId::new());
+    let before = registry.snapshot();
+    for _ in 0..128 {
+        let child = ThreadId::new();
+        registry
+            .reserve_spawn_slot(None)
+            .unwrap()
+            .commit(agent_metadata(child));
+        registry.release_spawned_thread(child);
+    }
+    let after = registry.snapshot();
+    assert_eq!(after.agents.len(), 1);
+    assert_eq!(after.revision, before.revision + 256);
+    assert_eq!(*changes.borrow_and_update(), after.revision);
+    assert!(!changes.has_changed().unwrap());
+}
+
+#[test]
+fn provisional_identity_is_observable_but_not_admitted_until_sources_are_accepted() {
+    let registry = Arc::new(AgentRegistry::default());
+    let root = ThreadId::new();
+    let child = ThreadId::new();
+    registry.register_root_thread(root);
+    let before = registry.snapshot().revision;
+    registry
+        .reserve_spawn_slot(None)
+        .unwrap()
+        .commit_provisional(AgentMetadata {
+            agent_id: Some(child),
+            agent_path: Some(AgentPath::root().join("pending").unwrap()),
+            ..Default::default()
+        });
+    let pending = registry.snapshot();
+    assert!(
+        pending
+            .agents
+            .iter()
+            .any(|agent| agent.agent_id == Some(child))
+    );
+    assert!(pending.revision > before);
+    assert!(!registry.is_admitted(child));
+    registry.finish_provisional_admission(child);
+    assert!(registry.is_admitted(child));
+    assert!(registry.snapshot().revision > pending.revision);
+    let accepted = registry.snapshot().revision;
+    registry.finish_provisional_admission(child);
+    assert_eq!(registry.snapshot().revision, accepted);
+
+    let rejected = ThreadId::new();
+    registry
+        .reserve_spawn_slot(None)
+        .unwrap()
+        .commit_provisional(AgentMetadata {
+            agent_id: Some(rejected),
+            agent_path: Some(AgentPath::root().join("rejected").unwrap()),
+            ..Default::default()
+        });
+    registry.release_spawned_thread(rejected);
+    registry.finish_provisional_admission(rejected);
+    assert!(!registry.is_admitted(rejected));
+    assert!(
+        !registry
+            .snapshot()
+            .agents
+            .iter()
+            .any(|agent| agent.agent_id == Some(rejected))
+    );
+    assert!(registry.is_admitted(child));
+}
+
+#[test]
 fn format_agent_nickname_adds_ordinals_after_reset() {
     assert_eq!(
         format_agent_nickname("Plato", /*nickname_reset_count*/ 0),

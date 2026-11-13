@@ -102,9 +102,10 @@ fn unchanged_mode_is_reemitted_after_usage_hint_migration() {
 fn catalog_role_updates_remain_separate_from_active_mode() {
     let catalog_role = |base: &str| MultiAgentRoleInstructions::Composed {
         base: base.to_string(),
+        subagent: false,
         marked: true,
         omit_update_plan_instructions: false,
-        max_concurrency: 2,
+        max_concurrency: Some(2),
         wait_agent_enabled: false,
         expose_model_overrides: false,
     };

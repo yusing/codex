@@ -110,6 +110,7 @@ pub(crate) struct Session {
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) realtime_history: Option<Mutex<crate::realtime_history::RealtimeHistoryState>>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
+    pub(super) preparations: Arc<super::preparation::Preparations>,
     pub(crate) async_hook_results: async_channel::Receiver<HookCompletedEvent>,
     pub(crate) input_queue: InputQueue,
     pub(crate) services: SessionServices,
@@ -1120,9 +1121,7 @@ impl Session {
             AgentControlInit::Local(control) => {
                 let control = control.with_session_id(
                     session_id,
-                    config
-                        .effective_agent_max_threads(MultiAgentVersion::V2)
-                        .unwrap_or(usize::MAX),
+                    config.effective_agent_max_threads(MultiAgentVersion::V2),
                 );
                 if parent_thread_id.is_none() {
                     control.propagate_config_update(AgentConfigUpdate::ServiceTier(
@@ -2089,6 +2088,7 @@ impl Session {
                     && services.live_thread.is_some())
                 .then(|| Mutex::new(Default::default())),
                 active_turn: Mutex::new(None),
+                preparations: Default::default(),
                 async_hook_results,
                 input_queue: InputQueue::with_controller(
                     thread_id,

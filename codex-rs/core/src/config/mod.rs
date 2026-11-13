@@ -272,7 +272,6 @@ impl Default for GhostSnapshotConfig {
 /// the context window.
 pub(crate) const AGENTS_MD_MAX_BYTES: usize = DEFAULT_PROJECT_DOC_MAX_BYTES; // 32 KiB
 pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(6);
-pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION: usize = 4;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
 pub(crate) const DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
@@ -1415,7 +1414,7 @@ impl Default for CurrentTimeReminderConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MultiAgentV2Config {
-    pub max_concurrent_threads_per_session: usize,
+    pub max_concurrent_threads_per_session: Option<usize>,
     pub min_wait_timeout_ms: i64,
     pub max_wait_timeout_ms: i64,
     pub default_wait_timeout_ms: i64,
@@ -1437,7 +1436,7 @@ pub struct MultiAgentV2Config {
 }
 
 impl MultiAgentV2Config {
-    fn defaults_for_max_concurrency(max_concurrent_threads_per_session: usize) -> Self {
+    fn defaults_for_max_concurrency(max_concurrent_threads_per_session: Option<usize>) -> Self {
         Self {
             max_concurrent_threads_per_session,
             min_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS,
@@ -1453,20 +1452,18 @@ impl MultiAgentV2Config {
             hide_spawn_agent_metadata: true,
             expose_spawn_agent_model_overrides: true,
             wait_agent_enabled: true,
-            disable_native_tools: true,
+            disable_native_tools: false,
             disable_direct_message: false,
             message_board_in_memory: false,
             message_board_remote: None,
-            non_code_mode_only: true,
+            non_code_mode_only: false,
         }
     }
 }
 
 impl Default for MultiAgentV2Config {
     fn default() -> Self {
-        Self::defaults_for_max_concurrency(
-            DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION,
-        )
+        Self::defaults_for_max_concurrency(None)
     }
 }
 
@@ -1766,11 +1763,10 @@ impl Config {
         multi_agent_version: MultiAgentVersion,
     ) -> Option<usize> {
         match multi_agent_version {
-            MultiAgentVersion::V2 => Some(
-                self.multi_agent_v2
-                    .max_concurrent_threads_per_session
-                    .saturating_sub(1),
-            ),
+            MultiAgentVersion::V2 => self
+                .multi_agent_v2
+                .max_concurrent_threads_per_session
+                .map(|limit| limit.saturating_sub(1)),
             MultiAgentVersion::Disabled | MultiAgentVersion::V1 => {
                 self.agent_max_threads.or(DEFAULT_AGENT_MAX_THREADS)
             }
@@ -2878,8 +2874,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
                 .as_ref()
                 .and_then(|agents| agents.max_concurrent_threads_per_session)
                 .map(|max_threads| max_threads.saturating_add(1))
-        })
-        .unwrap_or(DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION);
+        });
     let default =
         MultiAgentV2Config::defaults_for_max_concurrency(max_concurrent_threads_per_session);
     let min_wait_timeout_ms = base
@@ -2910,7 +2905,9 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let wait_agent_enabled = base
         .and_then(|config| config.wait_agent_enabled)
         .unwrap_or(default.wait_agent_enabled);
-    let disable_native_tools = true;
+    let disable_native_tools = base
+        .and_then(|config| config.disable_native_tools)
+        .unwrap_or(default.disable_native_tools);
     let disable_direct_message = base
         .and_then(|config| config.disable_direct_message)
         .unwrap_or(default.disable_direct_message);
@@ -4070,7 +4067,7 @@ impl Config {
 
         let history = cfg.history.unwrap_or_default();
 
-        if multi_agent_v2.max_concurrent_threads_per_session == 0 {
+        if multi_agent_v2.max_concurrent_threads_per_session == Some(0) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "features.multi_agent_v2.max_concurrent_threads_per_session must be at least 1",

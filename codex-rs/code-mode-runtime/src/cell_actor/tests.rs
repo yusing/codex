@@ -613,6 +613,24 @@ async fn dropped_pending_observer_preserves_the_frontier_for_the_next_observatio
         Err(std_mpsc::TryRecvError::Empty)
     ));
 
+    let resumed = harness
+        .handle
+        .observe(ObserveMode::YieldAfter(Duration::from_secs(60)));
+    harness
+        .event_tx
+        .blocking_send(RuntimeEvent::YieldRequested)
+        .unwrap();
+    assert_eq!(
+        resumed.await,
+        Ok(CellEvent::Yielded {
+            content_items: OutputCollector::Client(Vec::new())
+        })
+    );
+    assert!(matches!(
+        harness.runtime_control_rx.try_recv(),
+        Ok(RuntimeControlCommand::Continue)
+    ));
+
     let termination = harness.handle.terminate();
     drop(harness.event_tx);
     assert_eq!(

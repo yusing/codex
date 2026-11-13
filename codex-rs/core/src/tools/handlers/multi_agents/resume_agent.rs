@@ -64,6 +64,7 @@ async fn handle_resume_agent(
         .emit_turn_item_started(
             &turn,
             &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                timeout_ms: None,
                 id: call_id.clone(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::InProgress,
@@ -109,6 +110,7 @@ async fn handle_resume_agent(
         .emit_turn_item_completed(
             &turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                timeout_ms: None,
                 id: call_id,
                 tool: CollabAgentTool::ResumeAgent,
                 status: collab_tool_call_status(&status, Some(receiver_thread_id)),

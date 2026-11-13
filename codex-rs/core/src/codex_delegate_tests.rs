@@ -46,7 +46,7 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
         tx_sub,
         rx_event: rx_events,
         agent_status,
-        session_loop_termination: completed_session_loop_termination(),
+        session_loop_termination: futures::future::pending().boxed().shared(),
     });
 
     let (tx_out, rx_out) = bounded(1);
@@ -89,6 +89,8 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
             .unwrap();
     }
     let visible_msg = EventMsg::RawResponseItem(RawResponseItemEvent {
+        source_acquisition: None,
+        coordination: None,
         item: ResponseItem::CustomToolCall {
             encrypted_content: None,
             id: None,
@@ -223,6 +225,7 @@ async fn run_codex_thread_interactive_respects_pre_cancelled_spawn() {
                 /*initial_history*/ None,
                 crate::session::GitEnrichmentPolicy::Fresh,
                 codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+                /*tool_policy*/ None,
             ),
         )
         .await
@@ -284,6 +287,7 @@ async fn delegate_start_analytics_honors_child_opt_out_with_enabled_parent() {
             /*initial_history*/ None,
             crate::session::GitEnrichmentPolicy::Fresh,
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            /*tool_policy*/ None,
         )
         .await
         .expect("delegate session should start");
@@ -385,6 +389,7 @@ async fn delegate_isolation_does_not_depend_on_attribution() {
             /*initial_history*/ None,
             crate::session::GitEnrichmentPolicy::Fresh,
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+            /*tool_policy*/ None,
         )
         .await
         .expect("delegate session should start");
@@ -400,7 +405,12 @@ async fn delegate_isolation_does_not_depend_on_attribution() {
         assert_eq!(thread_starts.load(Ordering::SeqCst), expected_thread_starts);
         assert_eq!(
             session.thread_config_snapshot().await.thread_source,
-            Some(expected_thread_source)
+            Some(expected_thread_source.clone())
+        );
+        assert_eq!(
+            session.tool_policy.allowed_tools.is_some(),
+            expected_thread_source == ThreadSource::GuardianReview,
+            "retained delegates keep their source-specific default tool policy",
         );
         let expected_roots = match isolation {
             codex_extension_api::SessionIsolation::Inherit => vec![root.clone()],
@@ -451,6 +461,7 @@ async fn run_codex_thread_interactive_rejects_approval_policy_that_can_prompt() 
         /*initial_history*/ None,
         crate::session::GitEnrichmentPolicy::Fresh,
         codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+        /*tool_policy*/ None,
     )
     .await;
 
@@ -485,6 +496,7 @@ async fn tree_shutdown_waits_for_private_delegate() {
         /*initial_history*/ None,
         crate::session::GitEnrichmentPolicy::Fresh,
         codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+        /*tool_policy*/ None,
     )
     .await
     .expect("start private delegate");
@@ -494,5 +506,141 @@ async fn tree_shutdown_waits_for_private_delegate() {
         .await
         .expect("tree shutdown should wait for the private delegate")
         .expect("private delegate should shut down cleanly");
-    assert!(io.session_loop_termination.now_or_never().is_some());
+    timeout(Duration::from_secs(1), io.session_loop_termination)
+        .await
+        .expect("delegate IO forwarding should also join");
+}
+
+#[tokio::test]
+async fn delegate_captures_an_empty_tool_ceiling_at_startup() {
+    let (parent, context, _events) =
+        crate::session::tests::make_session_and_context_with_rx().await;
+    let mut config = context.config.as_ref().clone();
+    config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
+    let (session, io) = run_codex_thread_interactive(
+        config,
+        Arc::clone(&parent.services.auth_manager),
+        Arc::clone(&parent.services.models_manager),
+        Arc::clone(&parent),
+        Arc::clone(&context),
+        context.initial_environments.clone(),
+        CancellationToken::new(),
+        SubAgentSource::Other("side_question".to_owned()),
+        codex_extension_api::SessionIsolation::Inherit,
+        None,
+        crate::session::GitEnrichmentPolicy::Fresh,
+        codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+        Some(ToolPolicy {
+            allowed_tools: Some(Vec::new()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("start restricted delegate");
+    assert_eq!(session.tool_policy.allowed_tools, Some(Vec::new()));
+    for name in [
+        "exec",
+        "wait",
+        "shell",
+        "apply_patch",
+        "mcp_tool",
+        "dynamic_tool",
+    ] {
+        assert!(
+            !session
+                .tool_policy
+                .allows(&codex_extension_api::ToolName::plain(name))
+        );
+    }
+    io.shutdown_and_wait()
+        .await
+        .expect("join restricted delegate");
+}
+
+#[tokio::test]
+async fn forwarding_joins_on_session_exit_with_caller_channels_still_open() {
+    let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
+    let (terminated_tx, terminated_rx) = tokio::sync::oneshot::channel();
+    let raw = Arc::new(SessionIo {
+        tx_sub,
+        rx_event: rx_events,
+        agent_status,
+        session_loop_termination: async move { terminated_rx.await.unwrap() }.boxed().shared(),
+    });
+    let io = forward_session_io(raw, CancellationToken::new());
+    let shutdown = tokio::spawn(async move { io.shutdown_and_wait().await });
+    assert!(matches!(rx_sub.recv().await.unwrap().op, Op::Shutdown));
+    terminated_tx.send(()).unwrap();
+    timeout(Duration::from_secs(1), shutdown)
+        .await
+        .expect("forwarders must join after native loop exit")
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn one_shot_bridge_cancels_and_joins_when_consumer_is_gone() {
+    let (tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (tx_sub, _rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
+    let cancel = CancellationToken::new();
+    let io = one_shot_io(
+        SessionIo {
+            tx_sub,
+            rx_event: rx_events,
+            agent_status,
+            session_loop_termination: completed_session_loop_termination(),
+        },
+        cancel.clone(),
+    );
+    let joined = io.session_loop_termination.clone();
+    drop(io);
+    tx_events
+        .send(Event {
+            id: "event".to_owned(),
+            msg: EventMsg::McpStartupComplete(McpStartupCompleteEvent::default()),
+        })
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(1), joined)
+        .await
+        .expect("bridge must join after failed delivery");
+    assert!(cancel.is_cancelled());
+}
+
+#[tokio::test]
+async fn one_shot_bridge_cancellation_unblocks_a_full_consumer_channel() {
+    let (tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY * 2);
+    let (tx_sub, _rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
+    let (_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
+    for _ in 0..=SUBMISSION_CHANNEL_CAPACITY {
+        tx_events
+            .send(Event {
+                id: "event".to_owned(),
+                msg: EventMsg::McpStartupComplete(McpStartupCompleteEvent::default()),
+            })
+            .await
+            .unwrap();
+    }
+    let cancel = CancellationToken::new();
+    let io = one_shot_io(
+        SessionIo {
+            tx_sub,
+            rx_event: rx_events,
+            agent_status,
+            session_loop_termination: completed_session_loop_termination(),
+        },
+        cancel.clone(),
+    );
+    // Observe the last source event being taken: the bridge has filled its output
+    // and is at the send that cancellation must release. No timer chooses the race.
+    while tx_events.len() != 0 {
+        tokio::task::yield_now().await;
+    }
+    cancel.cancel();
+    timeout(Duration::from_secs(1), io.session_loop_termination)
+        .await
+        .expect("cancellation must release a blocked bridge send");
 }

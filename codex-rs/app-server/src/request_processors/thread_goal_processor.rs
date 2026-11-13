@@ -1,6 +1,6 @@
 use super::thread_input::DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR;
-use super::thread_input::can_accept_direct_input;
 use super::thread_input::ensure_direct_input_allowed;
+use super::thread_input::is_parent_owned_v2_child;
 use super::*;
 use codex_app_server_protocol::ThreadGoalMutationOrigin;
 use codex_core::context::UserGoalUpdate;
@@ -370,7 +370,7 @@ impl ThreadGoalRequestProcessor {
                         .map_err(|err| {
                             internal_error(format!("failed to read thread ownership: {err}"))
                         })?;
-                    if !can_accept_direct_input(
+                    if is_parent_owned_v2_child(
                         history.get_multi_agent_version(),
                         &session_meta.meta.source,
                     ) {

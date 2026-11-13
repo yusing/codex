@@ -13,11 +13,13 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use tokio::sync::Notify;
 
 #[derive(Default)]
 pub(super) struct AgentExecutionLimiter {
     active: AtomicUsize,
-    max_threads: OnceLock<usize>,
+    max_threads: OnceLock<Option<usize>>,
+    released: Notify,
 }
 
 struct LocalExecutionPermit {
@@ -27,6 +29,7 @@ struct LocalExecutionPermit {
 impl Drop for LocalExecutionPermit {
     fn drop(&mut self) {
         self.limiter.active.fetch_sub(1, Ordering::AcqRel);
+        self.limiter.released.notify_waiters();
     }
 }
 
@@ -39,8 +42,16 @@ impl LocalAgentControl {
         if !is_execution_limited(multi_agent_version, session_source) {
             return Ok(());
         }
-        let max_threads = self.runtime.agent_execution_limiter.max_threads();
-        if self.runtime.agent_execution_limiter.has_capacity() {
+        let Some(max_threads) = self.runtime.agent_execution_limiter.max_threads() else {
+            return Ok(());
+        };
+        if self
+            .runtime
+            .agent_execution_limiter
+            .active
+            .load(Ordering::Acquire)
+            < max_threads
+        {
             Ok(())
         } else {
             Err(
@@ -61,21 +72,45 @@ impl LocalAgentControl {
 }
 
 impl AgentExecutionLimiter {
-    pub(super) fn initialize(&self, max_threads: usize) {
+    pub(super) fn initialize(&self, max_threads: Option<usize>) {
         self.max_threads.get_or_init(|| max_threads);
     }
 
-    fn max_threads(&self) -> usize {
-        self.max_threads.get().copied().unwrap_or(usize::MAX)
-    }
-
-    fn has_capacity(&self) -> bool {
-        self.active.load(Ordering::Acquire) < self.max_threads()
+    fn max_threads(&self) -> Option<usize> {
+        self.max_threads.get().copied().flatten()
     }
 
     fn guard(self: Arc<Self>) -> AgentExecutionGuard {
         self.active.fetch_add(1, Ordering::AcqRel);
-        AgentExecutionGuard::new(LocalExecutionPermit { limiter: self })
+        self.reserved_guard()
+    }
+
+    fn reserved_guard(self: Arc<Self>) -> AgentExecutionGuard {
+        let limiter = Arc::clone(&self);
+        AgentExecutionGuard::resumable(LocalExecutionPermit { limiter: self }, move || {
+            Box::pin(async move { Ok(limiter.resume().await) })
+        })
+    }
+
+    async fn resume(self: Arc<Self>) -> AgentExecutionGuard {
+        loop {
+            let released = self.released.notified();
+            tokio::pin!(released);
+            // Register before inspecting the counter so a concurrent release cannot be lost.
+            released.as_mut().enable();
+            if self
+                .active
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                    self.max_threads()
+                        .is_none_or(|limit| active < limit)
+                        .then_some(active + 1)
+                })
+                .is_ok()
+            {
+                return Arc::clone(&self).reserved_guard();
+            }
+            released.await;
+        }
     }
 }
 

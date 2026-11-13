@@ -8,15 +8,9 @@ use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::input_text;
 
 const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"`.";
-const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str =
-    "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
-const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
-
-All agents share the same directory. In detail:
-- All agents have access to the same container and filesystem as you.
-- All agents use the same current working directory.
-- As a result, edits made by one agent are immediately visible to all other agents.
-"#;
+const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str = "Call wait_agent alone and let functions.exec finish. Omit timeout_ms unless there is a real deadline; the outcome arrives after the logical checkpoint.";
+const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = "Call collaboration tools inside functions.exec using their tools.* declarations. Agents share the filesystem; each has its own working directory. To attach retained changes to your parent, include explicit mchanges source references in your ordinary final answer.";
+const SUBAGENT_AUTHORITY_HINT: &str = "As a delegate, an explicit delegation request in your authenticated parent assignment carries the parent's authority within that assignment, subject to higher-priority limits. Ask the user directly for clarification with functions.request_user_input_async.";
 
 /// Multi-agent role text and the captured capabilities used to render its context segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,9 +20,10 @@ pub enum MultiAgentRoleInstructions {
     /// Selected catalog or bundled text, composed with captured runtime guidance.
     Composed {
         base: String,
+        subagent: bool,
         marked: bool,
         omit_update_plan_instructions: bool,
-        max_concurrency: usize,
+        max_concurrency: Option<usize>,
         wait_agent_enabled: bool,
         expose_model_overrides: bool,
     },
@@ -64,6 +59,7 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
             Self::Configured(text) => text.clone(),
             Self::Composed {
                 base,
+                subagent,
                 omit_update_plan_instructions,
                 max_concurrency,
                 wait_agent_enabled,
@@ -81,12 +77,17 @@ impl ContextualUserFragment for MultiAgentRoleInstructions {
                     String::new()
                 };
                 let shared = DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT;
-                let mut text = format!(
-                    "{base}\n{shared}\n{wait_agent_guidance}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."
-                );
+                let mut text = format!("{base}\n{shared}\n{wait_agent_guidance}");
+                if let Some(max_concurrency) = max_concurrency {
+                    text.push_str(&format!("There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."));
+                }
                 if *expose_model_overrides {
                     text.push_str("\n\n");
                     text.push_str(DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT);
+                }
+                if *subagent {
+                    text.push_str("\n\n");
+                    text.push_str(SUBAGENT_AUTHORITY_HINT);
                 }
                 text
             }

@@ -13,7 +13,7 @@ pub enum ContextResetStatus {
     Canceled,
 }
 
-/// Live manual-request correlation. A reset covers only generations captured
+/// Exact reset correlation and retained outcome. A reset covers only generations captured
 /// before acquisition starts; a later request remains pending independently.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

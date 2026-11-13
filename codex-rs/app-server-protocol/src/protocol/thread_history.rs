@@ -1098,6 +1098,7 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabAgentSpawnBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            timeout_ms: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::InProgress,
@@ -1134,6 +1135,7 @@ impl ThreadHistoryBuilder {
             None => (Vec::new(), HashMap::new()),
         };
         let item = ThreadItemPayload::CollabAgentToolCall {
+            timeout_ms: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
             status,
@@ -1153,6 +1155,7 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabAgentInteractionBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            timeout_ms: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::InProgress,
@@ -1178,6 +1181,7 @@ impl ThreadHistoryBuilder {
         let receiver_id = payload.receiver_thread_id.to_string();
         let received_status = CollabAgentState::from(payload.status.clone());
         let item = ThreadItemPayload::CollabAgentToolCall {
+            timeout_ms: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
             status,
@@ -1213,6 +1217,7 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabWaitingBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            timeout_ms: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::InProgress,
@@ -1253,6 +1258,7 @@ impl ThreadHistoryBuilder {
             .map(|(id, status)| (id.to_string(), CollabAgentState::from(status.clone())))
             .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
+            timeout_ms: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
             status,
@@ -1272,6 +1278,7 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabCloseBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            timeout_ms: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status: CollabAgentToolCallStatus::InProgress,
@@ -1299,6 +1306,7 @@ impl ThreadHistoryBuilder {
         .into_iter()
         .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
+            timeout_ms: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::CloseAgent,
             status,
@@ -1318,6 +1326,7 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabResumeBeginEvent,
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
+            timeout_ms: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status: CollabAgentToolCallStatus::InProgress,
@@ -1348,6 +1357,7 @@ impl ThreadHistoryBuilder {
         .into_iter()
         .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
+            timeout_ms: None,
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status,
@@ -5120,6 +5130,7 @@ mod tests {
         assert_eq!(
             item.payload,
             ThreadItemPayload::CollabAgentToolCall {
+                timeout_ms: None,
                 id: "resume-1".into(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::Completed,
@@ -5180,6 +5191,7 @@ mod tests {
         assert_eq!(
             turns[0].items[1].payload,
             ThreadItemPayload::CollabAgentToolCall {
+                timeout_ms: None,
                 id: "spawn-1".into(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
@@ -5252,6 +5264,7 @@ mod tests {
         assert_eq!(
             turns[0].items[1].payload,
             ThreadItemPayload::CollabAgentToolCall {
+                timeout_ms: None,
                 id: "send-1".into(),
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::Completed,

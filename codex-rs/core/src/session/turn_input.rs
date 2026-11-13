@@ -22,6 +22,7 @@ use super::thread_settings;
 use super::turn_context::NewTurnContextOptions;
 use super::turn_context::TurnContext;
 use crate::WithTurnExtensionData;
+use crate::agent::control::recovery::WorkCheckpoint;
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianSenderMessages;
 use crate::state::ActiveTurn;
@@ -74,6 +75,17 @@ enum TurnStartKind {
     User,
     Automatic,
     Recovery,
+}
+
+enum SteerInputError {
+    Refused(NotSubmittedReason),
+    Coordination(CodexErr),
+}
+
+impl From<CodexErr> for SteerInputError {
+    fn from(error: CodexErr) -> Self {
+        Self::Coordination(error)
+    }
 }
 
 impl TurnStartKind {
@@ -444,7 +456,7 @@ async fn start_or_steer(
                 root_turn_id,
             })
         }
-        Err(NotSubmittedReason::NoActiveTurn) => {
+        Err(SteerInputError::Refused(NotSubmittedReason::NoActiveTurn)) => {
             // MAv1 sends explicit input to spawned agents as part of an existing
             // parent's work. Client RPCs are gated separately by the host.
             let is_delegated_input = settings.start_options.parent_turn_id.is_some()
@@ -493,6 +505,14 @@ async fn start_or_steer(
                     .await,
                 );
             }
+            for input in &mut task_input {
+                session
+                    .admit_coordination_input(input, &submission_id, true)
+                    .await?;
+                session
+                    .confirm_coordination_input(input, &submission_id)
+                    .await?;
+            }
             session
                 .spawn_task(Arc::clone(&turn_context), task_input, RegularTask::new())
                 .await;
@@ -501,7 +521,8 @@ async fn start_or_steer(
                 root_turn_id: turn_context.root_turn_id(),
             })
         }
-        Err(reason) => Ok(TurnInputSubmission::NotSubmitted { reason }),
+        Err(SteerInputError::Refused(reason)) => Ok(TurnInputSubmission::NotSubmitted { reason }),
+        Err(SteerInputError::Coordination(error)) => Err(error),
     }
 }
 
@@ -672,6 +693,24 @@ async fn start_if_idle(
             }
         }
     }
+    if kind == TurnStartKind::User {
+        for input in &mut task_input {
+            if let Err(error) = session
+                .admit_coordination_input(input, &submission_id, true)
+                .await
+            {
+                session.clear_reserved_idle_turn(&turn_state).await;
+                return Err(error);
+            }
+            if let Err(error) = session
+                .confirm_coordination_input(input, &submission_id)
+                .await
+            {
+                session.clear_reserved_idle_turn(&turn_state).await;
+                return Err(error);
+            }
+        }
+    }
     session
         .start_task(Arc::clone(&turn_context), task_input, RegularTask::new())
         .await;
@@ -733,7 +772,8 @@ async fn steer(
                 root_turn_id,
             })
         }
-        Err(reason) => Ok(TurnInputSubmission::NotSubmitted { reason }),
+        Err(SteerInputError::Refused(reason)) => Ok(TurnInputSubmission::NotSubmitted { reason }),
+        Err(SteerInputError::Coordination(error)) => Err(error),
     }
 }
 
@@ -804,21 +844,90 @@ impl Session {
     )]
     pub(crate) async fn reserve_pending_work_turn(
         &self,
-    ) -> Option<(Arc<tokio::sync::Mutex<TurnState>>, TurnStartOptions)> {
+    ) -> Option<(
+        Arc<tokio::sync::Mutex<TurnState>>,
+        TurnStartOptions,
+        Option<WorkCheckpoint>,
+    )> {
         let mut active_turn = self.active_turn.lock().await;
         if active_turn.is_some() || self.outcome_handoffs_closed() {
             return None;
         }
+        let manual_reset = self.has_pending_manual_reset().await;
+        let checkpoint = if self
+            .services
+            .local_agent_runtime
+            .ensure_agent_known(self.thread_id)
+            .is_ok()
+            && self.services.local_agent_runtime.work.is_some()
+        {
+            match self
+                .services
+                .local_agent_runtime
+                .current_work_checkpoint(self.thread_id)
+                .await
+            {
+                Ok(checkpoint) => checkpoint,
+                Err(error) => {
+                    tracing::warn!(%error, "cannot observe native wait for pending-work admission");
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
+        let completion = match checkpoint {
+            Some(WorkCheckpoint::Completion(completion)) if !manual_reset => {
+                if self.is_interrupted()
+                    || self.services.local_agent_runtime.shutdown.is_cancelled()
+                {
+                    return None;
+                }
+                let ledger = self.services.local_agent_runtime.work.as_deref()?;
+                match ledger.completion_blockers(&completion).await {
+                    Ok(Some(_)) => Some(completion),
+                    Ok(None) => return None,
+                    Err(error) => {
+                        tracing::warn!(%error, "completion continuation is not admissible");
+                        return None;
+                    }
+                }
+            }
+            _ => None,
+        };
+        let pending_mail = self.input_queue.has_pending_mailbox_items().await;
+        let pending_coordination = if !manual_reset
+            && completion.is_none()
+            && !pending_mail
+            && (self.features.enabled(Feature::WakeOnAgentMessages)
+                || self.has_outstanding_durable_sleep())
+        {
+            match self.has_pending_coordination_messages().await {
+                Ok(pending) => pending,
+                Err(error) => {
+                    tracing::warn!(%error, "cannot observe managed mail for pending-work admission");
+                    return None;
+                }
+            }
+        } else {
+            false
+        };
+        if !manual_reset && completion.is_none() && !pending_mail && !pending_coordination {
+            return None;
+        }
         let has_trigger_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
-        if !has_trigger_turn
-            && !self.has_pending_manual_reset().await
+        if completion.is_none()
+            && !has_trigger_turn
+            && !manual_reset
             && !self.has_outstanding_durable_sleep()
-            && !self.should_wake_on_agent_messages().await
+            && !self
+                .should_wake_on_agent_messages(pending_mail || pending_coordination)
+                .await
         {
             return None;
         }
         let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
-        let previous_options = if has_trigger_turn {
+        let previous_options = if has_trigger_turn && completion.is_none() {
             Default::default()
         } else {
             self.state
@@ -829,7 +938,12 @@ impl Session {
                 .map(codex_history::TurnAttribution::start_options)
                 .unwrap_or_default()
         };
-        Some((Arc::clone(&active_turn.turn_state), previous_options))
+        let checkpoint = completion.map(WorkCheckpoint::Completion);
+        Some((
+            Arc::clone(&active_turn.turn_state),
+            previous_options,
+            checkpoint,
+        ))
     }
 
     /// Revalidates a reserved wake and selects its settings before any mail is consumed.
@@ -840,6 +954,7 @@ impl Session {
     pub(crate) async fn pending_work_turn_configuration(
         &self,
         turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+        checkpoint: Option<&WorkCheckpoint>,
     ) -> Option<SessionConfiguration> {
         // Discovery can outlive an interrupt or a settings update. Keep cancellation
         // atomic with admission so newly arriving mail can retry a rejected wake.
@@ -850,10 +965,25 @@ impl Session {
         {
             return None;
         }
+
+        if let Some(WorkCheckpoint::Completion(completion)) = checkpoint {
+            let retained = self
+                .services
+                .local_agent_runtime
+                .work_ledger()
+                .ok()?
+                .completion_blockers(completion)
+                .await;
+            if !matches!(retained, Ok(Some(_))) {
+                *active = None;
+                return None;
+            }
+        }
         let has_trigger_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
         let state = self.state.lock().await;
         let configuration = &state.session_configuration;
-        if !has_trigger_turn
+        if checkpoint.is_none()
+            && !has_trigger_turn
             && !self.has_outstanding_durable_sleep()
             && !TurnStartKind::Automatic
                 .permits_mode(configuration.step_settings.collaboration_mode.mode)
@@ -864,10 +994,10 @@ impl Session {
         Some(configuration.clone())
     }
 
-    async fn should_wake_on_agent_messages(&self) -> bool {
+    async fn should_wake_on_agent_messages(&self, has_pending_messages: bool) -> bool {
         if !self.features.enabled(Feature::WakeOnAgentMessages)
             || self.is_interrupted()
-            || !self.input_queue.has_pending_mailbox_items().await
+            || !has_pending_messages
         {
             return false;
         }
@@ -930,7 +1060,10 @@ impl Session {
         Ok(())
     }
 
-    pub(crate) async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {
+    pub(crate) async fn clear_reserved_idle_turn(
+        &self,
+        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
+    ) {
         let mut active_turn_guard = self.active_turn.lock().await;
         if let Some(active_turn) = active_turn_guard.as_ref()
             && active_turn.task.is_none()
@@ -960,42 +1093,48 @@ impl Session {
         required_final_output_json_schema: Option<&Value>,
         responsesapi_client_metadata: ResponsesApiClientMetadataUpdate,
         input_metadata: UserInputMetadata,
-    ) -> Result<(String, String), NotSubmittedReason> {
+    ) -> Result<(String, String), SteerInputError> {
         let mut active = self.active_turn.lock().await;
         let Some(active_turn) = active.as_mut() else {
-            return Err(NotSubmittedReason::NoActiveTurn);
+            return Err(SteerInputError::Refused(NotSubmittedReason::NoActiveTurn));
         };
 
         let Some(active_task) = active_turn.task.as_ref() else {
-            return Err(NotSubmittedReason::NoActiveTurn);
+            return Err(SteerInputError::Refused(NotSubmittedReason::NoActiveTurn));
         };
         let active_turn_id = &active_task.turn_context.sub_id;
 
         if let Some(expected_turn_id) = expected_turn_id
             && expected_turn_id != active_turn_id
         {
-            return Err(NotSubmittedReason::ExpectedTurnMismatch {
-                expected: expected_turn_id.to_string(),
-                actual: active_turn_id.clone(),
-            });
+            return Err(SteerInputError::Refused(
+                NotSubmittedReason::ExpectedTurnMismatch {
+                    expected: expected_turn_id.to_string(),
+                    actual: active_turn_id.clone(),
+                },
+            ));
         }
 
         match active_task.kind {
             crate::state::TaskKind::Regular => {}
             crate::state::TaskKind::Review => {
-                return Err(NotSubmittedReason::ActiveTurnNotSteerable {
-                    turn_kind: NonSteerableTurnKind::Review,
-                });
+                return Err(SteerInputError::Refused(
+                    NotSubmittedReason::ActiveTurnNotSteerable {
+                        turn_kind: NonSteerableTurnKind::Review,
+                    },
+                ));
             }
             crate::state::TaskKind::Compact => {
-                return Err(NotSubmittedReason::ActiveTurnNotSteerable {
-                    turn_kind: NonSteerableTurnKind::Compact,
-                });
+                return Err(SteerInputError::Refused(
+                    NotSubmittedReason::ActiveTurnNotSteerable {
+                        turn_kind: NonSteerableTurnKind::Compact,
+                    },
+                ));
             }
         }
 
         if matches!(input, SubmittedTurnInput::UserInput { content, .. } if content.is_empty()) {
-            return Err(NotSubmittedReason::EmptyInput);
+            return Err(SteerInputError::Refused(NotSubmittedReason::EmptyInput));
         }
         // Compare JSON values directly instead of serialized schema text.
         // Value equality ignores object key order while preserving array and
@@ -1003,7 +1142,9 @@ impl Session {
         if let Some(required_schema) = required_final_output_json_schema
             && active_task.turn_context.final_output_json_schema.as_ref() != Some(required_schema)
         {
-            return Err(NotSubmittedReason::ActiveTurnOutputSchemaMismatch);
+            return Err(SteerInputError::Refused(
+                NotSubmittedReason::ActiveTurnOutputSchemaMismatch,
+            ));
         }
         let mut pending_input =
             merge_additional_context_input(self, &active_task.turn_context, additional_context)
@@ -1014,7 +1155,7 @@ impl Session {
             .turn_metadata_state
             .update_responsesapi_client_metadata(responsesapi_client_metadata);
 
-        let input = match input {
+        let mut input = match input {
             SubmittedTurnInput::UserInput { content, client_id } => TurnInput::UserInput {
                 content: std::mem::take(content),
                 client_id: client_id.clone(),
@@ -1034,6 +1175,9 @@ impl Session {
                 .await
             }
         };
+        self.admit_coordination_input(&mut input, active_turn_id, false)
+            .await?;
+        let admitted = input.clone();
         pending_input.push(input);
         self.input_queue
             .extend_pending_input_and_notify_for_turn_state(
@@ -1041,6 +1185,8 @@ impl Session {
                 pending_input,
             )
             .await;
+        self.confirm_coordination_input(&admitted, active_turn_id)
+            .await?;
         Ok((
             active_turn_id.clone(),
             active_task.turn_context.root_turn_id(),

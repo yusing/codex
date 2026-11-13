@@ -221,6 +221,7 @@ impl InProcessCodeModeSession {
         &self,
         request: WaitToPendingRequest,
     ) -> Result<WaitToPendingOutcome, String> {
+        let max_output_tokens = request.max_output_tokens;
         let cell_id = request.cell_id;
         match self
             .runtime
@@ -234,13 +235,13 @@ impl InProcessCodeModeSession {
                 &cell_id,
                 event,
                 self.options.output_truncation,
-                /*max_output_tokens*/ None,
+                max_output_tokens,
             )?)),
             Err(runtime::Error::MissingCell(_) | runtime::Error::ClosedCell(_)) => {
                 Ok(WaitToPendingOutcome::MissingCell(missing_cell_response(
                     cell_id,
                     self.options.output_truncation,
-                    /*max_output_tokens*/ None,
+                    max_output_tokens,
                 )?))
             }
             Err(error) => Err(error.to_string()),
@@ -298,6 +299,13 @@ impl CodeModeSession for InProcessCodeModeSession {
         preempt: Option<CancellationToken>,
     ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
         Box::pin(InProcessCodeModeSession::wait(self, request, preempt))
+    }
+
+    fn wait_to_pending<'a>(
+        &'a self,
+        request: WaitToPendingRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitToPendingOutcome> {
+        Box::pin(InProcessCodeModeSession::wait_to_pending(self, request))
     }
 
     fn terminate<'a>(

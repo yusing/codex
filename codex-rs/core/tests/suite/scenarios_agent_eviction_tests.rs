@@ -35,7 +35,7 @@ async fn idle_eviction_preserves_worker_context_for_followup() -> Result<()> {
                 .features
                 .enable(Feature::MultiAgentV2DynamicTools)
                 .unwrap();
-            config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+            config.multi_agent_v2.max_concurrent_threads_per_session = Some(2);
         })
         .build_with_auto_env(&server)
         .await?;

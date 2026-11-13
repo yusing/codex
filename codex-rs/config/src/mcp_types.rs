@@ -82,9 +82,6 @@ impl fmt::Display for McpServerDisabledReason {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct McpServerToolConfig {
-    /// Invocation-owned compound wait binding; never inferred from tool output.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub compound_wait: bool,
     /// Approval mode for this tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_mode: Option<AppToolApproval>,

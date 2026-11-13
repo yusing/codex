@@ -12,7 +12,6 @@ use codex_model_provider_info::built_in_model_providers;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::McpServerConnectionStatus;
-use codex_protocol::models::ContentItemMetadata;
 use codex_protocol::openai_models::ModelTokenBudgetConfig;
 use codex_protocol::protocol::CONTEXT_WINDOW_CLOSE_TAG;
 use codex_protocol::protocol::CONTEXT_WINDOW_GUIDANCE_CLOSE_TAG;
@@ -1248,7 +1247,12 @@ async fn token_budget_context_uses_new_window_after_compaction(
             .await?;
     }
     test.submit_turn("before compact").await?;
-    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
+    test.codex
+        .submit(Op::Compact {
+            reload: None,
+            context_reset_request_id: None,
+        })
+        .await?;
     assert_context_compaction_item_lifecycle(&test.codex).await;
     test.submit_turn("after compact").await?;
 
@@ -1331,7 +1335,12 @@ async fn token_budget_compaction_runs_compact_hooks() -> Result<()> {
         .build(&server)
         .await?;
 
-    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
+    test.codex
+        .submit(Op::Compact {
+            reload: None,
+            context_reset_request_id: None,
+        })
+        .await?;
 
     let pre_compact = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::HookCompleted(completed)

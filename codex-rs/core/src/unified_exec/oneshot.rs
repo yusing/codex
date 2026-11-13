@@ -65,7 +65,12 @@ impl UnifiedExecProcessManager {
             context.call_id.clone(),
         );
         let _cancel_on_drop = context.cancellation_token.clone().drop_guard();
+        // Register before spawning: cancellation can drop this waiter while execution drains.
+        let preparation_execution = context
+            .session
+            .preparation_execution_token(&context.step_context.turn.sub_id);
         let task = async move {
+            let _preparation_execution = preparation_execution;
             let manager = &context.session.services.unified_exec_manager;
             let process_id = request.process_id;
             if timeout.is_some_and(|timeout| Instant::now().checked_add(timeout).is_none()) {

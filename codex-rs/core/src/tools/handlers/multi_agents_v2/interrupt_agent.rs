@@ -45,33 +45,26 @@ async fn handle_interrupt_agent(
     let args: InterruptAgentArgs = parse_arguments(&arguments)?;
     let agent_id = resolve_agent_target(&session, &turn, &args.target).await?;
     analytics.set_receiver(agent_id);
-    let snapshot = session
+    let receipt = session
         .services
         .agent_control
-        .interrupt(
+        .interrupt_with_receipt(
             session.thread_id,
             AgentTarget::Id(agent_id),
             MultiAgentVersion::V2,
         )
         .await
         .map_err(|err| collab_v2_agent_error(agent_id, err))?;
-    let agent_path = snapshot.metadata().agent_path.clone().ok_or_else(|| {
-        FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
-    })?;
-    let previous_status = snapshot.status().cloned().unwrap_or(AgentStatus::NotFound);
-    emit_sub_agent_activity(
-        &session,
-        &turn,
-        SubAgentActivityItem {
-            model: None,
-            reasoning_effort: None,
-            id: call_id,
-            agent_thread_id: agent_id,
-            agent_path,
-            kind: SubAgentActivityKind::Interrupted,
-        },
-    )
-    .await;
+    let previous_status = receipt
+        .snapshot
+        .status()
+        .cloned()
+        .unwrap_or(AgentStatus::NotFound);
+    session
+        .services
+        .local_agent_runtime
+        .publish_interrupt_request(session.thread_id, turn.sub_id.clone(), call_id, &receipt)
+        .await;
 
     Ok(InterruptAgentResult { previous_status })
 }

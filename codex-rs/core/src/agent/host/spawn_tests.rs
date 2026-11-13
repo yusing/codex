@@ -194,6 +194,8 @@ async fn same_manager_creation_retains_step_executor_and_shares_exec_policy() ->
                 agent_type: None,
                 model: None,
                 reasoning_effort: None,
+                cwd: None,
+                preload: None,
             },
             HostThreadSpawnReservation {
                 thread_id: child_id,
@@ -250,6 +252,85 @@ async fn same_manager_creation_retains_step_executor_and_shares_exec_policy() ->
         parent.prepare_child(&invocation).await,
         Err(ThreadSpawnError::Preparation(message)) if message == "spawning tool call finished"
     ));
+    child.shutdown_and_wait().await?;
+    parent.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_reserved_child_preloads_under_selected_cwd_before_returning() -> anyhow::Result<()> {
+    use codex_protocol::models::ResponseItem;
+    use codex_protocol::protocol::ReloadSelection;
+
+    let home = tempfile::tempdir()?;
+    let mut config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.path().to_path_buf())
+        .build()
+        .await?;
+    config.cwd = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(home.path())?;
+    config.features.enable(Feature::MultiAgentV2)?;
+    let recipient = home.path().join("recipient");
+    std::fs::create_dir(&recipient)?;
+    std::fs::write(home.path().join("context.txt"), "WRONG_PARENT_BYTES")?;
+    std::fs::write(recipient.join("context.txt"), "FROZEN_HOST_PRELOAD")?;
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        home.path().to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await?
+        .thread;
+    let call = spawn_call(&parent).await?;
+    let reservation = InvocationReservation::default();
+    reservation.reserve(&parent.session, &call.turn, &call.call_id)?;
+    let _guard = reservation.activate(&call);
+    let invocation = parent.tool_invocation(&call.turn.sub_id, &call.call_id)?;
+    let child_id = ThreadId::new();
+    let result = parent
+        .create_child(
+            &invocation,
+            ThreadCreateRequest {
+                task_name: "preloaded".to_string(),
+                fork_mode: None,
+                agent_type: None,
+                model: None,
+                reasoning_effort: None,
+                cwd: Some("recipient".to_string()),
+                preload: Some(ReloadSelection {
+                    sources: vec!["@context.txt".to_string(), "@missing.txt".to_string()],
+                }),
+            },
+            HostThreadSpawnReservation {
+                thread_id: child_id,
+                control: Arc::clone(&parent.session.services.agent_control),
+                turn_admission: None,
+                usage_accounting: None,
+            },
+        )
+        .await?;
+    let child = manager.get_thread(child_id).await?;
+    assert_eq!(result.config.cwd().as_path(), recipient.as_path());
+    assert_eq!(child.session.reload_selection().await, None);
+    let history = child.session.clone_history().await;
+    let preload = history
+        .raw_items()
+        .find_map(|item| match item {
+            ResponseItem::FunctionCallOutput { name, output, .. }
+                if name.as_deref() == Some("reload") =>
+            {
+                output.text_content()
+            }
+            _ => None,
+        })
+        .expect("preload captured before returning a host child");
+    assert!(preload.contains("FROZEN_HOST_PRELOAD"));
+    assert!(preload.contains("CONTENT NOT ATTACHED:"));
+    assert!(!preload.contains("WRONG_PARENT_BYTES"));
+    std::fs::write(recipient.join("context.txt"), "LATER_HOST_EDIT")?;
+    assert!(!preload.contains("LATER_HOST_EDIT"));
     child.shutdown_and_wait().await?;
     parent.shutdown_and_wait().await?;
     Ok(())

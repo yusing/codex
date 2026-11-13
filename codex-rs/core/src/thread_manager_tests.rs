@@ -181,6 +181,117 @@ async fn startup_fixture() -> (tempfile::TempDir, Config, ThreadManager) {
 }
 
 #[tokio::test]
+async fn host_admission_blocks_child_start_and_refusal_leaves_no_runtime() {
+    for refused in [false, true] {
+        let (_home, config, manager) = startup_fixture().await;
+        let parent = manager
+            .start_thread(StartThreadOptions::new(config.clone()))
+            .await
+            .unwrap();
+        let parent_id = parent.thread_id;
+        let child_id = manager.reserve_thread_id();
+        let runtime = &parent.thread.session.services.local_agent_runtime;
+        runtime.register_session_root(parent_id, None);
+        let control = runtime.control(parent.thread.session.session_id());
+        let (requested, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        assert!(
+            parent
+                .thread
+                .install_host_callbacks(crate::AgentHostCallbacks {
+                    host_connection_id: 42,
+                    publish_coordination: Arc::new(|_| Box::pin(async {})),
+                    route_foreign: Arc::new(|_, _| Box::pin(async {
+                        panic!("unexpected foreign routing")
+                    })),
+                    prepare_final_capture: Arc::new(|_, _| Box::pin(async { Ok(None) })),
+                    freeze_progress: Arc::new(|_, _| Box::pin(async {
+                        panic!("unexpected progress freeze")
+                    })),
+                    prepare_progress_output: Arc::new(|_, _| Box::pin(async {
+                        panic!("unexpected progress output")
+                    })),
+                    project_final_capture: Arc::new(|_, _| Box::pin(async {
+                        panic!("unexpected final projection")
+                    })),
+                    admit_child: Arc::new({
+                        let release = Arc::clone(&release);
+                        move |request, _| {
+                            let release = Arc::clone(&release);
+                            requested.send(request).unwrap();
+                            Box::pin(async move {
+                                release.acquire().await.unwrap().forget();
+                                if refused {
+                                    Err(CodexErr::InvalidRequest("host scope refused".into()))
+                                } else {
+                                    Ok(())
+                                }
+                            })
+                        }
+                    }),
+                })
+        );
+        manager.authorize_agent_host(parent_id, 42).await.unwrap();
+        assert!(manager.authorize_agent_host(parent_id, 43).await.is_err());
+        let loaded_before = manager.list_thread_ids().await;
+        assert!(manager.authorize_agent_host(child_id, 42).await.is_err());
+        assert_eq!(
+            manager.list_thread_ids().await,
+            loaded_before,
+            "authorization never restores unknown actors"
+        );
+        let options = StartThreadOptions {
+            reserved_thread_id: Some(child_id),
+            session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            ..StartThreadOptions::new(config.clone())
+        };
+        let inheritance = crate::agent::host::PreparedChildInheritance {
+            runtime_authority: Arc::new(CapturedNativeRuntimeAuthority::capture(
+                &parent.thread.session,
+            )),
+            instructions: parent.thread.session.inherited_instructions().await,
+            exec_policy: None,
+            originator: parent.thread.session.originator().await,
+            attachment_source: None,
+        };
+        let state = Arc::clone(&manager.state);
+        let child = tokio::spawn(async move {
+            state
+                .spawn_host_child_thread(options, control.into(), parent_id, inheritance)
+                .await
+        });
+        let request = requests.recv().await.unwrap();
+        assert_eq!(
+            (request.root_id, request.parent_id, request.thread_id),
+            (parent_id, parent_id, child_id)
+        );
+        assert_eq!(request.local_cwd.as_deref(), Some(config.cwd.as_path()));
+        assert!(manager.get_thread(child_id).await.is_err());
+        release.add_permits(1);
+        let result = child.await.unwrap();
+        if refused {
+            assert!(result.is_err_and(|error| matches!(
+                error.details(),
+                codex_protocol::error::CodexErrorDetails::InvalidRequest(_)
+            )));
+            assert!(manager.get_thread(child_id).await.is_err());
+        } else {
+            assert_eq!(result.unwrap().thread_id, child_id);
+        }
+        let report = manager
+            .shutdown_all_threads_bounded(Duration::from_secs(10))
+            .await;
+        assert_eq!(report.completed.len(), if refused { 1 } else { 2 });
+    }
+}
+
+#[tokio::test]
 #[expect(
     clippy::await_holding_invalid_type,
     reason = "hold startup before registration while the submission loop applies settings"
@@ -191,7 +302,7 @@ async fn shared_service_tier_is_published_by_registered_startup() {
     let thread_id = ThreadId::new();
     let controller = Arc::new(LocalAgentControl::default().with_session_id(
         codex_protocol::SessionId::from(thread_id),
-        /*max_threads*/ usize::MAX,
+        /*max_threads*/ None,
     ));
     let manager = manager.with_agent_control_factory({
         let controller: Arc<dyn AgentControl> = controller.clone();
@@ -972,6 +1083,9 @@ async fn child_session_inherits_resumed_parent_auth(host_child: bool) {
                 control.into(),
                 parent.thread_id,
                 crate::agent::host::PreparedChildInheritance {
+                    runtime_authority: Arc::new(CapturedNativeRuntimeAuthority::capture(
+                        &parent.thread.session,
+                    )),
                     instructions: parent.thread.session.inherited_instructions().await,
                     exec_policy: None,
                     originator: parent.thread.session.originator().await,

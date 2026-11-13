@@ -15,7 +15,7 @@ pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
-const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE_V2: &str = "Spawned agents inherit your current model by default. Do not set the `model` field unless the user explicitly asks for a different model.";
+const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE_V2: &str = "Spawned agents inherit your current model by default. Override model or effort only for a fresh child when requested by the user or applicable instructions.";
 const SPAWN_AGENT_MODEL_CATALOG_GUIDANCE: &str =
     "Pick model overrides from the latest <model_catalog> listing.";
 const SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1: &str = "Agent type override for the new agent. Omit to inherit the parent agent type with a full-history fork; otherwise, `default` is used.";
@@ -133,7 +133,7 @@ pub fn create_spawn_agent_tool_v2(
     properties.insert(
         "task_name".to_string(),
         JsonSchema::string(Some(
-            "Task name for the new agent. Use lowercase letters, digits, and underscores."
+            "Unique task-name segment under the caller: lowercase letters, digits, underscores or hyphens."
                 .to_string(),
         )),
     );
@@ -206,7 +206,7 @@ pub fn create_send_message_tool() -> ToolSpec {
         (
             "target".to_string(),
             JsonSchema::string(Some(
-                "Relative or canonical task name to message (from spawn_agent).".to_string(),
+                "Canonical task path, unambiguous relative name, or exact thread ID. For another active session, use its exact session/thread ID.".to_string(),
             )),
         ),
         (
@@ -220,7 +220,7 @@ pub fn create_send_message_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn."
+        description: "Queue attributed input without starting idle work. Explicit file references are frozen under recipient cwd and permissions."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -253,7 +253,7 @@ pub fn create_followup_task_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "followup_task".to_string(),
-        description: "Send a follow-up task to an existing non-root target agent and trigger a turn if it is idle. If the target is already running, deliver the task promptly at message boundaries while sampling, or after the pending tool call completes."
+        description: "Start or steer a non-root agent, or supersede its pending wait. Source references are frozen under recipient cwd and permissions. The result includes current context metrics; reuse them rather than inspecting again."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -301,35 +301,53 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 }
 
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
+    create_wait_agent_tool_with_description(
+        options,
+        "Wait for selected descendant work or an addressed message. This call stays pending in the current JavaScript execution without model inference; an eligible event returns its result to this same call. Selection snapshots unsettled descendant work and unread outcomes once. Addressed messages wake either mode. Explicit input supersedes a pending wait; queued composer input does not.",
+    )
+}
+
+fn create_wait_agent_tool_with_description(
+    options: WaitAgentTimeoutOptions,
+    description: &str,
+) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline."
-            .to_string(),
+        description: description.to_string(),
         strict: false,
         defer_loading: None,
         parameters: wait_agent_tool_parameters_v2(options),
-        output_schema: Some(wait_output_schema_v2().into()),
+        output_schema: None,
     })
 }
 
 pub fn create_list_agents_tool() -> ToolSpec {
-    let properties = BTreeMap::from([(
-        "path_prefix".to_string(),
-        JsonSchema::string(Some(
-            "Task-path prefix filter without a trailing slash. Omit to list all live agents."
-                .to_string(),
-        )),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "path_prefix".to_string(),
+            JsonSchema::string(Some(
+                "Task-path prefix filter without a trailing slash. Omit to list the admitted tree."
+                    .to_string(),
+            )),
+        ),
+        (
+            "session_id".to_string(),
+            JsonSchema::string(Some(
+                "Exact ID of another active session or thread. Omit for this admitted tree."
+                    .to_string(),
+            )),
+        ),
+    ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: "list_agents".to_string(),
         description:
-            "List live agents in the current root thread tree. Optionally filter by task-path prefix."
+            "List admitted agents and native work/wait state, including idle, completed and retained members. Observation does not start or restore work."
                 .to_string(),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(properties, /*required*/ None, Some(false.into())),
-        output_schema: Some(list_agents_output_schema().into()),
+        output_schema: None,
     })
 }
 
@@ -438,9 +456,13 @@ fn spawn_agent_output_schema_v2(hide_agent_metadata: bool) -> Value {
                 "task_name": {
                     "type": "string",
                     "description": "Canonical task name for the spawned agent."
+                },
+                "thread_id": {
+                    "type": "string",
+                    "description": "Confirmed native thread identity."
                 }
             },
-            "required": ["task_name"],
+            "required": ["task_name", "thread_id"],
             "additionalProperties": false
         });
     }
@@ -452,12 +474,16 @@ fn spawn_agent_output_schema_v2(hide_agent_metadata: bool) -> Value {
                 "type": "string",
                 "description": "Canonical task name for the spawned agent."
             },
+            "thread_id": {
+                "type": "string",
+                "description": "Confirmed native thread identity."
+            },
             "nickname": {
                 "type": ["string", "null"],
                 "description": "User-facing nickname for the spawned agent when available."
             }
         },
-        "required": ["task_name", "nickname"],
+        "required": ["task_name", "thread_id", "nickname"],
         "additionalProperties": false
     })
 }
@@ -472,35 +498,6 @@ fn send_input_output_schema() -> Value {
             }
         },
         "required": ["submission_id"],
-        "additionalProperties": false
-    })
-}
-
-fn list_agents_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "agents": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "agent_name": {
-                            "type": "string",
-                            "description": "Canonical task name for the agent when available, otherwise the agent id."
-                        },
-                        "agent_status": {
-                            "description": "Last known status of the agent.",
-                            "allOf": [agent_status_output_schema()]
-                        }
-                    },
-                    "required": ["agent_name", "agent_status"],
-                    "additionalProperties": false
-                },
-                "description": "Live agents visible in the current root thread tree."
-            }
-        },
-        "required": ["agents"],
         "additionalProperties": false
     })
 }
@@ -531,24 +528,6 @@ fn wait_output_schema_v1() -> Value {
             }
         },
         "required": ["status", "timed_out"],
-        "additionalProperties": false
-    })
-}
-
-fn wait_output_schema_v2() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "message": {
-                "type": "string",
-                "description": "Brief wait summary without the agent's final content, including any timeout adjustment."
-            },
-            "timed_out": {
-                "type": "boolean",
-                "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
-            }
-        },
-        "required": ["message", "timed_out"],
         "additionalProperties": false
     })
 }
@@ -649,22 +628,39 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
 fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<String, JsonSchema> {
     BTreeMap::from([
         (
+            "cwd".to_string(),
+            JsonSchema::string(Some(
+                "Existing authorized child workspace. Relative paths use the caller's cwd; omission inherits it. The caller's cwd is unchanged.".to_string(),
+            )),
+        ),
+        (
+            "preload".to_string(),
+            JsonSchema::object(
+                BTreeMap::from([("sources".to_string(), JsonSchema::array(
+                    JsonSchema::string(None),
+                    Some("Source references acquired under the child's permissions before first inference. Use only with fork_turns=none. Preload full applicable instructions/skills and needed owner evidence, not policy recaps; defer later-phase sources. Relative paths use child cwd; AGENTS.md is host-loaded. Failed reads remain visible.".to_string()),
+                ))]),
+                Some(vec!["sources".to_string()]),
+                Some(false.into()),
+            ),
+        ),
+        (
             "message".to_string(),
             JsonSchema::string(Some(
-                "Initial plain-text task for the new agent.".to_string(),
+                "Initial task, constraints and expected result. Explicit file references are frozen under the child's cwd and permissions before inference.".to_string(),
             ))
             .with_encrypted(),
         ),
         (
             "agent_type".to_string(),
             JsonSchema::string(Some(format!(
-                "Agent type override for the new agent. Omit unless explicitly asked. The selected role applies regardless of how much parent history is inherited.\n{agent_type_description}"
+                "Role from the configured catalog. Omit for the default fresh-child role or inherited full-history role.\n{agent_type_description}"
             ))),
         ),
         (
             "fork_turns".to_string(),
             JsonSchema::string(Some(
-                "Parent history to inherit. Defaults to `all`; use `none` to start without parent history. Only `all` and `none` are supported.".to_string(),
+                "Defaults to all, inheriting the caller's complete authorized history, model and effort. Use none for a fresh child with optional model, effort and preload overrides.".to_string(),
             )),
         ),
         (
@@ -676,7 +672,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         (
             "reasoning_effort".to_string(),
             JsonSchema::string(Some(
-                "Reasoning effort override for the new agent. Omit to inherit the parent effort."
+                "Reasoning effort override for fork_turns=none; otherwise inherited. Set only when requested by the user or applicable instructions."
                     .to_string(),
             )),
         ),
@@ -798,14 +794,9 @@ fn spawn_agent_tool_description_v2(
     } else {
         format!(
             r#"
-{catalog_prefix}        Spawns an agent to work on the specified task. If your current task is `/root/task1` and you spawn_agent with task_name "task_3" the agent will have canonical task name `/root/task1/task_3`.
-You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
-The spawned agent will have the same tools as you and the ability to spawn its own subagents.
+{catalog_prefix}        Spawn an attributed child for a task; return its confirmed thread ID and canonical task path. Children can use tools and delegate. Target agents by canonical path, unambiguous relative name, or exact ID. Final outcomes return to the parent.
 {inherited_model_guidance}{catalog_suffix}
-It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
-The new agent's canonical task name will be provided to it along with the message.
-
-Note that passing `fork_turns="none"` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns="all"` will provide the subagent with all surrounding context."#
+For fork_turns=none, supply the task, constraints, expected result and full required sources before first inference. A full-history child inherits the calling history and rejects model, effort and preload overrides."#
         )
     };
 
@@ -915,13 +906,17 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 }
 
 fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([(
-        "timeout_ms".to_string(),
-        JsonSchema::number(Some(format!(
-            "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
-            options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
-        ))),
-    )]);
+    let properties = BTreeMap::from([
+        ("timeout_ms".to_string(), JsonSchema::number(Some(format!(
+            "Omit for an indefinite completion wait; set only for a real deadline. Values below {} clamp; values above {} reject. The deadline starts at registration.",
+            options.min_timeout_ms, options.max_timeout_ms,
+        )))),
+        ("compact".to_string(), JsonSchema::boolean(Some("Reset context before delivering this wait's outcome, including an already-ready outcome. Use only when checkpoint criteria apply, not merely because you are waiting. Reset failure remains visible with delivery and preserves the wait.".to_string()))),
+        ("reload".to_string(), JsonSchema::object(
+            BTreeMap::from([("sources".to_string(), JsonSchema::array(JsonSchema::string(None), Some("Source references to acquire before post-reset inference. Requires compact:true; omission reuses the retained selection, an empty list clears it.".to_string())))]),
+            Some(vec!["sources".to_string()]), Some(false.into()),
+        )),
+    ]);
 
     JsonSchema::object(properties, /*required*/ None, Some(false.into()))
 }

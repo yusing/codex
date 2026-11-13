@@ -490,6 +490,10 @@ pub enum ThreadItemPayload {
         /// Thread ID of the receiving agent, when applicable. In case of spawn operation,
         /// this corresponds to the newly spawned agent.
         receiver_thread_ids: Vec<String>,
+        /// Effective timeout captured at wait registration, when requested.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        timeout_ms: Option<u64>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
         /// Model requested for the spawned agent, when applicable.
@@ -1080,6 +1084,7 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                     .into_iter()
                     .map(String::from)
                     .collect(),
+                timeout_ms: call.timeout_ms,
                 prompt: call.prompt,
                 model: call.model,
                 reasoning_effort: call.reasoning_effort,
@@ -1582,9 +1587,15 @@ impl ItemCompletedNotification {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct RawResponseItemCompletedNotification {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub source_acquisition: Option<codex_protocol::source_acquisition::SourceAcquisition>,
     pub thread_id: String,
     pub turn_id: String,
     pub item: ResponseItem,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub coordination: Option<codex_protocol::agent_coordination::CoordinationProjection>,
 }
 
 // Item-specific progress notifications

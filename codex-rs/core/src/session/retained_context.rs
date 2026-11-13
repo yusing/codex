@@ -119,7 +119,7 @@ impl Session {
             std::slice::from_mut(&mut item),
             context.model_info().truncation_policy.into(),
         );
-        self.send_raw_response_items(&context, std::slice::from_ref(&item.item))
+        self.send_raw_response_items(&context, &[RolloutItem::ResponseItem(item)])
             .await;
         Ok(())
     }

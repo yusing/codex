@@ -57,6 +57,7 @@ async fn handle_close_agent(
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![agent_id],
                 receiver_agents: Vec::new(),
+                timeout_ms: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -78,6 +79,7 @@ async fn handle_close_agent(
         .emit_turn_item_completed(
             &turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                timeout_ms: None,
                 id: call_id,
                 tool: CollabAgentTool::CloseAgent,
                 status: collab_tool_call_status(&status, Some(agent_id)),

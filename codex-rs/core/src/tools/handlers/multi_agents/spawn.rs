@@ -88,6 +88,7 @@ async fn handle_spawn_agent(
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
+                timeout_ms: None,
                 prompt: Some(prompt.clone()),
                 model: Some(args.model.clone().unwrap_or_default()),
                 reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
@@ -132,6 +133,7 @@ async fn handle_spawn_agent(
                 root_turn_id: turn.turn_metadata_state.root_turn_id(),
                 turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
                 environments: Some(step_context.inherited_environments.clone()),
+                preload: None,
                 disabled_plugin_ids: Some(turn.disabled_plugin_ids.clone()),
                 multi_agent_v2_usage_hints: None,
                 cyber_access_program: turn.cyber_access_program,
@@ -182,6 +184,7 @@ async fn handle_spawn_agent(
         .emit_turn_item_completed(
             turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                timeout_ms: None,
                 id: call_id,
                 tool: CollabAgentTool::SpawnAgent,
                 status: collab_tool_call_status(&status, new_thread_id),

@@ -53,9 +53,95 @@ impl LocalAgentRuntime {
         if let Some(thread_id) = self.registry.agent_id_for_path(&agent_path) {
             return Ok(thread_id);
         }
+        // Local relative paths win; otherwise an unambiguous suffix can name
+        // a retained member elsewhere in this same admitted tree.
+        if !agent_reference.starts_with('/') {
+            let suffix = format!("/{agent_reference}");
+            let mut matching = self
+                .registry
+                .snapshot()
+                .agents
+                .into_iter()
+                .filter_map(|agent| {
+                    agent
+                        .agent_path
+                        .as_ref()
+                        .is_some_and(|path| path.as_str().ends_with(&suffix))
+                        .then_some(agent.agent_id)
+                        .flatten()
+                });
+            if let Some(thread_id) = matching.next() {
+                if matching.next().is_some() {
+                    return Err(CodexErr::UnsupportedOperation(format!(
+                        "ambiguous task `{agent_reference}`"
+                    )));
+                }
+                return Ok(thread_id);
+            }
+        }
         Err(CodexErr::UnsupportedOperation(format!(
-            "live agent path `{}` not found",
+            "admitted agent path `{}` not found",
             agent_path.as_str()
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::types::AgentMetadata;
+
+    #[test]
+    fn relative_paths_precede_unique_suffixes_and_ambiguous_aliases_reject() {
+        let control = LocalAgentControl::default();
+        let register = |path: &str| {
+            let id = ThreadId::new();
+            control
+                .runtime
+                .registry
+                .reserve_spawn_slot(None)
+                .unwrap()
+                .commit(AgentMetadata {
+                    agent_id: Some(id),
+                    agent_path: Some(AgentPath::try_from(path).unwrap()),
+                    ..Default::default()
+                });
+            id
+        };
+        let first = register("/root/one/worker");
+        assert_eq!(
+            control
+                .runtime
+                .resolve_path_reference(&AgentPath::root(), "worker")
+                .unwrap(),
+            first
+        );
+        let second = register("/root/two/worker");
+        assert!(
+            control
+                .runtime
+                .resolve_path_reference(&AgentPath::root(), "worker")
+                .is_err()
+        );
+        assert_eq!(
+            control
+                .runtime
+                .resolve_path_reference(&AgentPath::try_from("/root/one").unwrap(), "worker")
+                .unwrap(),
+            first
+        );
+        assert_eq!(
+            control
+                .runtime
+                .resolve_path_reference(&AgentPath::root(), "two/worker")
+                .unwrap(),
+            second
+        );
+        assert!(
+            control
+                .runtime
+                .resolve_path_reference(&AgentPath::root(), "/root/worker")
+                .is_err()
+        );
     }
 }

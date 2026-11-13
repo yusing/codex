@@ -41,6 +41,10 @@ use std::time::Instant;
 use tracing::warn;
 
 mod backfill;
+mod coordination;
+mod coordination_lifecycle;
+mod coordination_progress;
+mod coordination_wait;
 mod external_agent_config_imports;
 mod goals;
 mod guardian_feedback;

@@ -1,6 +1,8 @@
 //! Loads stored agent context and prepares the history a child inherits when it forks.
 
 use crate::agent::types::SpawnAgentOptions;
+use crate::codex_thread::CodexThread;
+use crate::compact_token_budget::reload;
 use crate::config::Config;
 use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
@@ -33,12 +35,102 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::ReloadSelection;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::ReadThreadParams;
+use futures::future::BoxFuture;
+use tokio_util::sync::CancellationToken;
+
+/// Prepare frozen startup sources before admitting the first assignment. A host-reserved
+/// child has no assignment yet, but uses this same preload path before returning its handle.
+pub(crate) fn prepare_initial_sources<'a>(
+    thread: &'a CodexThread,
+    communication: Option<&'a mut InterAgentCommunication>,
+    preload: Option<&'a ReloadSelection>,
+    cancellation: &'a CancellationToken,
+) -> BoxFuture<'a, CodexResult<()>> {
+    // Keep approval-capable source preparation out of every input caller's future layout.
+    Box::pin(async move {
+        let assignment = communication
+            .as_ref()
+            .filter(|message| message.encrypted_content.is_none())
+            .map(|message| reload::message_selection(&message.content));
+        if assignment
+            .as_ref()
+            .is_none_or(|selection| selection.sources.is_empty())
+            && preload.is_none_or(|selection| selection.sources.is_empty())
+        {
+            return Ok(());
+        }
+        let session = &thread.session;
+        let turn = session.new_default_turn().await;
+        let preparation = session.register_preparation(&turn, cancellation)?;
+        let cancellation = preparation.cancellation();
+        let result = async {
+            let step = session.capture_step_context(turn, cancellation).await?;
+            let assignment_body = match assignment {
+                Some(selection) => {
+                    reload::acquire_selection(
+                        session,
+                        &step,
+                        &selection,
+                        cancellation,
+                        Some(reload::MAX_CAPTURE_BYTES),
+                    )
+                    .await?
+                }
+                None => None,
+            };
+            let remaining = reload::MAX_CAPTURE_BYTES
+                .saturating_sub(assignment_body.as_ref().map_or(0, |sources| sources.body.len()));
+            let preload_body = match preload {
+                Some(selection) => {
+                    reload::acquire_selection(
+                        session,
+                        &step,
+                        selection,
+                        cancellation,
+                        Some(remaining),
+                    )
+                    .await?
+                }
+                None => None,
+            };
+            if cancellation.is_cancelled() {
+                return Err(CodexErr::TurnAborted);
+            }
+            if let Some(body) = preload_body {
+                session
+                    .record_context_updates_and_set_reference_context_item(&step)
+                    .await?;
+                session
+                    .record_annotated_conversation_items(
+                        &step.turn,
+                        &step.settings.model_info,
+                        vec![body.into_reload_item(codex_protocol::source_acquisition::SourceAcquisitionPurpose::Preload)],
+                    )
+                    .await;
+                thread.ensure_rollout_materialized().await;
+                thread.flush_rollout().await?;
+            }
+            if let (Some(message), Some(body)) = (communication, assignment_body) {
+                message
+                    .content
+                    .push_str("\n\nReferenced sources captured when sent:\n");
+                message.content.push_str(&body.body);
+            }
+            Ok(())
+        }
+        .await;
+        preparation.finish().await;
+        result
+    })
+}
 
 fn keep_forked_rollout_item(item: &RolloutItem, preserve_context_baselines: bool) -> bool {
     match item {
@@ -266,10 +358,18 @@ pub(super) async fn prepare_forked_history(
         break;
     }
     let mut replaced_parent_developer_instructions = false;
-    let preserve_fork_prefix = multi_agent_version == MultiAgentVersion::V2
-        && config.multi_agent_v2.preserve_fork_prefix
-        && preserve_context_baselines;
-    if preserve_fork_prefix {
+    let preserve_conversation =
+        multi_agent_version == MultiAgentVersion::V2 && config.multi_agent_v2.preserve_fork_prefix;
+    let preserve_fork_prefix = preserve_conversation && preserve_context_baselines;
+    if preserve_conversation {
+        // Older native rollouts stored delivered messages outside ResponseItem. Convert
+        // those conversation records, not live mailboxes, so the same inheritance marking
+        // applies to their attribution and frozen source bodies.
+        for item in &mut forked_rollout_items {
+            if let RolloutItem::InterAgentCommunication(communication) = item {
+                *item = RolloutItem::ResponseItem(communication.to_model_input_item().into());
+            }
+        }
         let InitialHistory::Forked(items) = fork_history_from_snapshot(
             ForkSnapshot::Interrupted,
             InitialHistory::Forked(forked_rollout_items),
@@ -281,7 +381,7 @@ pub(super) async fn prepare_forked_history(
     }
     let retain_forked_item = |envelope: &mut ResponseItemEnvelope, replaced: &mut bool| {
         if multi_agent_version == MultiAgentVersion::V2
-            && (preserve_fork_prefix
+            && (preserve_conversation
                 || matches!(&envelope.item, ResponseItem::Message { role, .. } if role == "user" || role == "assistant"))
         {
             // Resume must not recapture copied parent messages as local authorization.
@@ -307,7 +407,7 @@ pub(super) async fn prepare_forked_history(
             return preserve_context_baselines;
         }
         if matches!(response_item, ResponseItem::AgentMessage { .. }) {
-            return false;
+            return preserve_conversation;
         }
         if !retain_forked_developer_message(
             response_item,
@@ -365,7 +465,7 @@ pub(super) async fn prepare_forked_history(
         true
     };
     forked_rollout_items.retain_mut(|item| {
-        let keep = (preserve_fork_prefix && matches!(item, RolloutItem::ResponseItem(_)))
+        let keep = (preserve_conversation && matches!(item, RolloutItem::ResponseItem(_)))
             || keep_forked_rollout_item(item, preserve_context_baselines);
         if !keep
             || destination_history_mode == Some(ThreadHistoryMode::Paginated)

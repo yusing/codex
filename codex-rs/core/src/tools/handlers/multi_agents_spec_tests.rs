@@ -35,8 +35,9 @@ fn spawn_agent_tool_v2_requires_task_name() {
         .properties
         .as_ref()
         .expect("spawn_agent should use object params");
-    assert!(description.contains("Spawns an agent to work on the specified task."));
-    assert!(description.contains("The spawned agent will have the same tools as you"));
+    assert!(description.contains("return its confirmed thread ID and canonical task path"));
+    assert!(description.contains("Children can use tools and delegate"));
+    assert!(description.contains("rejects model, effort and preload overrides"));
     assert!(!description.contains("max_concurrent_threads_per_session"));
     assert!(description.contains(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE));
     assert!(properties.contains_key("task_name"));
@@ -48,6 +49,11 @@ fn spawn_agent_tool_v2_requires_task_name() {
         Some(true)
     );
     assert!(properties.contains_key("fork_turns"));
+    assert!(properties.contains_key("cwd"));
+    assert_eq!(
+        properties["preload"].required.as_deref(),
+        Some(["sources".to_string()].as_slice())
+    );
     assert!(!properties.contains_key("items"));
     assert!(!properties.contains_key("fork_context"));
     assert_eq!(
@@ -60,7 +66,9 @@ fn spawn_agent_tool_v2_requires_task_name() {
         properties
             .get("reasoning_effort")
             .and_then(|schema| schema.description.as_deref()),
-        Some("Reasoning effort override for the new agent. Omit to inherit the parent effort.")
+        Some(
+            "Reasoning effort override for fork_turns=none; otherwise inherited. Set only when requested by the user or applicable instructions."
+        )
     );
     assert!(!properties.contains_key("service_tier"));
     assert_eq!(
@@ -69,7 +77,7 @@ fn spawn_agent_tool_v2_requires_task_name() {
     );
     assert_eq!(
         output_schema.expect("spawn_agent output schema").to_value()["required"],
-        json!(["task_name", "nickname"])
+        json!(["task_name", "thread_id", "nickname"])
     );
 }
 
@@ -105,7 +113,7 @@ fn spawn_agent_catalog_description_preserves_generated_context() {
     assert!(
         !configured_tool
             .description
-            .contains("Spawns an agent to work on the specified task.")
+            .contains("Spawn an attributed child for a task")
     );
     configured_tool.description = default_tool.description.clone();
     assert_eq!(configured_tool, default_tool);
@@ -271,7 +279,7 @@ fn send_message_tool_requires_message_and_has_no_output_schema() {
         properties
             .get("target")
             .and_then(|schema| schema.description.as_deref()),
-        Some("Relative or canonical task name to message (from spawn_agent).")
+        Some("Canonical task path, unambiguous relative name, or exact thread ID.")
     );
     assert_eq!(
         parameters.required.as_deref(),
@@ -322,7 +330,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
 }
 
 #[test]
-fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
+fn wait_agent_tool_v2_describes_checkpoint_and_deferred_delivery() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
@@ -346,26 +354,26 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .expect("wait_agent should use object params");
     assert!(!properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
-    assert!(description.contains(
-        "Does not return the content; returns either a summary of which agents have updates (if any)"
-    ));
+    for field in ["compact", "reload"] {
+        assert!(properties.contains_key(field));
+    }
+    assert!(description.contains("stays pending"));
+    assert!(description.contains("same call"));
+    assert!(description.contains("queued composer input does not"));
     assert_eq!(
         properties
             .get("timeout_ms")
             .and_then(|schema| schema.description.as_deref()),
-        Some("Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
-    );
-    assert_eq!(parameters.required.as_ref(), None);
-    assert_eq!(
-        output_schema.expect("wait output schema").to_value()["properties"]["message"]["description"],
-        json!(
-            "Brief wait summary without the agent's final content, including any timeout adjustment."
+        Some(
+            "Omit for an indefinite completion wait; set only for a real deadline. Values below 10000 clamp; values above 3600000 reject. The deadline starts at registration."
         )
     );
+    assert_eq!(parameters.required.as_ref(), None);
+    assert_eq!(output_schema, None);
 }
 
 #[test]
-fn list_agents_tool_includes_path_prefix_and_agent_fields() {
+fn list_agents_tool_includes_path_prefix_for_retained_members() {
     let ToolSpec::Function(ResponsesApiTool {
         parameters,
         output_schema,
@@ -383,35 +391,12 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
         .as_ref()
         .expect("list_agents should use object params");
     assert!(properties.contains_key("path_prefix"));
+    assert!(properties.contains_key("session_id"));
     assert_eq!(
         properties
             .get("path_prefix")
             .and_then(|schema| schema.description.as_deref()),
-        Some("Task-path prefix filter without a trailing slash. Omit to list all live agents.")
+        Some("Task-path prefix filter without a trailing slash. Omit to list the admitted tree.")
     );
-    assert_eq!(
-        output_schema.expect("list_agents output schema").to_value()["properties"]["agents"]["items"]
-            ["required"],
-        json!(["agent_name", "agent_status"])
-    );
-}
-
-#[test]
-fn list_agents_tool_status_schema_includes_interrupted() {
-    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) = create_list_agents_tool()
-    else {
-        panic!("list_agents should be a function tool");
-    };
-
-    assert_eq!(
-        output_schema.expect("list_agents output schema").to_value()["properties"]["agents"]["items"]
-            ["properties"]["agent_status"]["allOf"][0]["oneOf"][0]["enum"],
-        json!([
-            "pending_init",
-            "running",
-            "interrupted",
-            "shutdown",
-            "not_found"
-        ])
-    );
+    assert_eq!(output_schema, None);
 }

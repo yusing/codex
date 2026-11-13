@@ -482,19 +482,6 @@ async fn handle_approved_mcp_tool_call(
     let connector_name = metadata.connector_name.as_deref();
     let server_origin = prepared_call.server_origin().map(str::to_string);
 
-    let compound_cell = if prepared_call.config().mcp_server_catalog
-        .server(prepared_call.server_name())
-        .and_then(|server| server.config().tools.get(&tool_name))
-        .is_some_and(|tool| tool.compound_wait)
-        && arguments_value.as_ref().and_then(|args| args.get("compact")).and_then(JsonValue::as_bool) == Some(true)
-    {
-        match source {
-            crate::tools::context::ToolCallSource::CodeMode { cell_id, .. } =>
-                Some(codex_code_mode::CellId::new(cell_id.clone())),
-            _ => None,
-        }
-    } else { None };
-
     let start = Instant::now();
     let mut tool_input = arguments_value
         .clone()
@@ -534,7 +521,6 @@ async fn handle_approved_mcp_tool_call(
     }
     let mut elicitation_type = None;
     let mut request_error_code = None;
-    let mut compound_registration = None;
     let result = async {
         let result = async {
             let result = prepared_call
@@ -648,7 +634,8 @@ async fn handle_approved_mcp_tool_call(
                         originating_call,
                     );
                     if let crate::tools::context::ToolCallSource::CodeMode { cell_id, .. } = source
-                        && let Some(JsonValue::Object(meta)) = &mut request_meta {
+                        && let Some(JsonValue::Object(meta)) = &mut request_meta
+                    {
                         meta.insert("cellId".into(), JsonValue::String(cell_id.clone()));
                     }
                     let request_meta = augment_mcp_tool_request_meta_with_sandbox_state(
@@ -687,14 +674,6 @@ async fn handle_approved_mcp_tool_call(
                         )
                         .await?;
                     }
-                    if let Some(cell_id) = &compound_cell {
-                        if sess.services.thread_extension_data.get::<crate::compact::AutoCompactionDisabled>().is_some() {
-                            return Err(anyhow::anyhow!("context resets are disabled for this thread"));
-                        }
-                        compound_registration = Some(sess.services.code_mode_service.dispatch_broker
-                            .begin_compound(cell_id, &turn_context.sub_id)
-                            .map_err(anyhow::Error::msg)?);
-                    }
                     Ok((rewritten_arguments, request_meta))
                 })
                 .await
@@ -708,16 +687,6 @@ async fn handle_approved_mcp_tool_call(
                 call_id,
                 &result,
             );
-            if let Some(registration) = compound_registration.take() {
-                let ticket = match &result {
-                    Ok(result) => result.meta.as_ref()
-                        .and_then(|meta| meta.get("mekugiCompoundWait"))
-                        .map(|value| serde_json::from_value(value.clone()).map_err(|err| err.to_string()))
-                        .transpose(),
-                    Err(error) => Err(error.clone()),
-                };
-                registration.finish(ticket);
-            }
             let mut result = result?;
             crate::tools::record_confirmed_code_mode_send(
                 sess,

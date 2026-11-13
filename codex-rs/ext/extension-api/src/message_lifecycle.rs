@@ -11,7 +11,8 @@ pub struct MessageLifecycleInput {
     pub data: ExtensionData,
 }
 
-/// Observes messages from local agent control and the initial task of a host-spawned child.
+/// Observes legacy mailbox messages and the initial task of a host-spawned child.
+/// Managed durable coordination uses its own publication and sampling receipts.
 /// Callbacks are synchronous and must not block. Replaying history or submitting raw
 /// protocol input does not create a publication.
 pub trait MessageLifecycleContributor: Send + Sync {

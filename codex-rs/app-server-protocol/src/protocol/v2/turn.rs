@@ -620,6 +620,18 @@ pub struct TurnCompletedNotification {
     pub turn: Turn,
 }
 
+/// Execution stopped at a native logical checkpoint; the assignment is not complete.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TurnCheckpointedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub work_id: String,
+    pub checkpoint: codex_protocol::protocol::TurnCheckpoint,
+    pub targets: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

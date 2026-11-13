@@ -200,6 +200,11 @@ async fn preserve_initial_input_during<T>(
     Ok(result)
 }
 
+pub(crate) enum TurnRunOutcome {
+    Finished(Option<String>),
+    Checkpoint(crate::agent::control::recovery::WorkCheckpoint),
+}
+
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
 ///
@@ -221,7 +226,7 @@ pub(crate) async fn run_turn(
     mcp_startup_requirements: &mut McpStartupRequirements,
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
-) -> CodexResult<Option<String>> {
+) -> CodexResult<TurnRunOutcome> {
     let model_info = turn_context.capture_current_model_info();
     if !model_info.input_modalities.contains(&InputModality::Audio)
         && input.iter().any(turn_input_has_uploaded_audio_file)
@@ -302,7 +307,7 @@ pub(crate) async fn run_turn(
         )
         .await;
         error!("Failed to run pre-sampling compact");
-        return Ok(None);
+        return Ok(TurnRunOutcome::Finished(None));
     }
 
     let user_input = turn_user_input(&input);
@@ -405,11 +410,11 @@ pub(crate) async fn run_turn(
     )
     .await
     else {
-        return Ok(None);
+        return Ok(TurnRunOutcome::Finished(None));
     };
 
     if run_pending_session_start_hooks(&sess, &turn_context).await {
-        return Ok(None);
+        return Ok(TurnRunOutcome::Finished(None));
     }
     if crate::guardian::is_basic_session_source(&turn_context.session_source)
         && let Err(error) = crate::guardian::finalize_guardian_input(
@@ -465,7 +470,7 @@ pub(crate) async fn run_turn(
     )
     .await?
     {
-        return Ok(None);
+        return Ok(TurnRunOutcome::Finished(None));
     }
 
     // Guardian can replace its submitted prompt with response items during finalization.
@@ -570,17 +575,23 @@ pub(crate) async fn run_turn(
             }
             next_step_context = None;
             if run_pending_session_start_hooks(&sess, &turn_context).await {
-                return Ok(None);
+                return Ok(TurnRunOutcome::Finished(None));
             }
         }
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
         let pending_input = if can_drain_pending_input {
-            sess.input_queue
+            // The durable owner excludes messages reserved by a logical wait.
+            // Acquire them first so a storage error cannot lose native queued input.
+            let coordination_input = sess.take_coordination_messages().await?;
+            let mut pending_input = sess
+                .input_queue
                 .get_pending_input(&sess.active_turn)
                 .await
-                .0
+                .0;
+            pending_input.extend(coordination_input);
+            pending_input
         } else {
             Vec::new()
         };
@@ -670,6 +681,9 @@ pub(crate) async fn run_turn(
             sess.record_reasoning_effort_override(step_context.as_ref())
                 .await;
 
+            sess.wait_for_paused_cells(&step_context, None, &cancellation_token)
+                .await?;
+
             // Construct the input that we will send to the model.
             let sampling_request_input = sess
                 .clone_history()
@@ -689,13 +703,7 @@ pub(crate) async fn run_turn(
         }
         .await;
         match sampling_request_result {
-            Ok((sampling_request_output, notify_messages)) => {
-                if sess
-                    .settle_compound_waits(&step_context, &cancellation_token)
-                    .await?
-                {
-                    return Ok(None);
-                }
+            Ok(SamplingRunOutcome::Response(sampling_request_output, notify_messages)) => {
                 guardian_budget_compacted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
@@ -715,16 +723,17 @@ pub(crate) async fn run_turn(
                 drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ false).await;
                 let (has_pending_input, token_status) = async {
                     let has_pending_input =
-                        sess.input_queue.has_pending_input(&sess.active_turn).await;
+                        sess.input_queue.has_pending_input(&sess.active_turn).await
+                            || sess.has_pending_coordination_messages().await?;
                     let token_status = super::context_window::context_window_token_status(
                         sess.as_ref(),
                         turn_context.as_ref(),
                     )
                     .await;
-                    (has_pending_input, token_status)
+                    Ok::<_, CodexErr>((has_pending_input, token_status))
                 }
                 .instrument(trace_span!("run_turn.collect_post_sampling_state"))
-                .await;
+                .await?;
                 let needs_follow_up = model_needs_follow_up || has_pending_input;
                 let token_limit_reached = token_status.token_limit_reached;
 
@@ -781,11 +790,6 @@ pub(crate) async fn run_turn(
                     None
                 };
                 let should_roll_over = auto_compaction_enabled
-                    && !sess
-                        .services
-                        .code_mode_service
-                        .dispatch_broker
-                        .compound_pending()
                     && needs_follow_up
                     && (sess.has_new_context_window_request().await
                         || token_limit_reached
@@ -818,7 +822,7 @@ pub(crate) async fn run_turn(
                     match compacted {
                         Ok(true) => {
                             if run_pending_session_start_hooks(&sess, &turn_context).await {
-                                return Ok(None);
+                                return Ok(TurnRunOutcome::Finished(None));
                             }
                             // After interrupted sampling, drain pending input even if compaction
                             // leaves the estimated context above the token limit.
@@ -842,7 +846,7 @@ pub(crate) async fn run_turn(
                                 err.details(),
                             )
                             .await;
-                            return Ok(None);
+                            return Ok(TurnRunOutcome::Finished(None));
                         }
                     }
                 }
@@ -906,7 +910,7 @@ pub(crate) async fn run_turn(
                     )
                     .await
                     {
-                        return Ok(None);
+                        return Ok(TurnRunOutcome::Finished(None));
                     }
                     // Token-budget resets do not summarize, so preserve their existing rollover
                     // policy. Keep summarizing compaction in this task to serialize history updates.
@@ -914,6 +918,7 @@ pub(crate) async fn run_turn(
                     if auto_summarization_enabled
                         && config.model_post_turn_compact_threshold_percent > 0
                         && !sess.input_queue.has_pending_input(&sess.active_turn).await
+                        && !sess.has_pending_coordination_messages().await?
                         && !cancellation_token.is_cancelled()
                     {
                         let token_status = super::context_window::context_window_token_status(
@@ -1051,13 +1056,50 @@ pub(crate) async fn run_turn(
                 }
                 let event = EventMsg::Error(error_event);
                 sess.send_event(&turn_context, event).await;
+                let retry_at = sess
+                    .services
+                    .thread_extension_data
+                    .get::<crate::responses_retry::ExhaustedResponseRetry>()
+                    .filter(|advice| advice.turn_id == turn_context.sub_id)
+                    .and_then(|advice| advice.retry_at);
+                if let Some(ticket) = sess
+                    .services
+                    .local_agent_runtime
+                    .recover_exhausted_turn(sess.thread_id, &turn_context.sub_id, &e, retry_at)
+                    .await?
+                {
+                    let ticket = sess
+                        .await_turn_wait(&step_context, &ticket, &cancellation_token)
+                        .await?;
+                    // Explicit input or retained shell output supersedes the
+                    // recovery wait, not the original task. Its pending input
+                    // joins the next sampling attempt without a claimed wake.
+                    if ticket.phase == codex_state::coordination_wait::WaitPhase::Cancelled {
+                        can_drain_pending_input = true;
+                        continue;
+                    }
+                    let input = sess
+                        .services
+                        .local_agent_runtime
+                        .wait_continuation_input(&ticket)
+                        .await?;
+                    run_hooks_and_record_inputs(
+                        &sess,
+                        &turn_context,
+                        &model_info,
+                        &[TurnInput::ResponseItem(input)],
+                        PersistContext::Standard,
+                    )
+                    .await?;
+                    continue;
+                }
                 // let the user continue the conversation
                 break;
             }
         }
     }
 
-    Ok(last_agent_message)
+    Ok(TurnRunOutcome::Finished(last_agent_message))
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -1752,7 +1794,7 @@ async fn run_auto_compact(
         .services
         .code_mode_service
         .dispatch_broker
-        .admit_reset(None)
+        .admit_reset()
     else {
         return Ok(false);
     };
@@ -1965,7 +2007,7 @@ async fn run_sampling_request(
     client_session: &mut ModelClientSession,
     input: crate::context_manager::ContextManager,
     cancellation_token: CancellationToken,
-) -> CodexResult<(SamplingRequestResult, Vec<String>)> {
+) -> CodexResult<SamplingRunOutcome> {
     let turn_context = Arc::clone(&step_context.turn);
     let preempt = step_context.preempt.clone().unwrap_or_default();
     let _input_watch = if let Some(preempt) = &step_context.preempt {
@@ -2014,7 +2056,9 @@ async fn run_sampling_request(
             sampled_through_sequence: Some(history.input_sequence()),
             ..step_context.as_ref().clone()
         });
+        // Retain the shared source envelopes for exact delivery proof after projection.
         let mut prompt_input = history
+            .clone()
             .for_prompt(
                 &step_context.settings.model_info.input_modalities,
                 sess.services.image_store.as_ref(),
@@ -2074,7 +2118,35 @@ async fn run_sampling_request(
             (submitted, pending)
         };
         let mut draining_for_mailbox = false;
-        let err = match try_run_sampling_request(
+        let coordination_evidence = sess
+            .consume_coordination_sampling_input(&history, &prompt.input)
+            .await?;
+
+        let coordination_context = sess.delivery_context_id().await;
+        // Exact-item proof above precedes this owner-authorized final-resource
+        // projection. Progress items are never changed here or acknowledged by
+        // recovery-only text. The retained native item always keeps its full text.
+        sess.project_sampling_final_captures(&history, &mut prompt.input)
+            .await?;
+        if sess.delivery_context_id().await != coordination_context {
+            // The prepared suppression belongs to a discarded context. Reuse
+            // the original complete items, not a live capture-ID reacquisition.
+            for item in &mut prompt.input {
+                if let Some(original) = history
+                    .annotated_items()
+                    .iter()
+                    .find(|original| item.id().is_some() && original.item.id() == item.id())
+                {
+                    if original.metadata.as_ref().is_some_and(|metadata| {
+                        !metadata.coordination_delivery_ids.is_empty()
+                            || metadata.coordination_wait_claim_id.is_some()
+                    }) {
+                        *item = original.item.clone();
+                    }
+                }
+            }
+        }
+        let sampled = try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),
             sampling_step_context,
@@ -2085,13 +2157,37 @@ async fn run_sampling_request(
             prompt,
             pending_audio,
             input_item_count,
+            history.history_version(),
             cancellation_token.child_token(),
             &mut draining_for_mailbox,
+            coordination_evidence,
+            coordination_context,
         )
-        .await
+        .await;
+        if !cancellation_token.is_cancelled()
+            && sampled
+                .as_ref()
+                .map_or(true, |output| output.needs_follow_up)
         {
+            // try_run_sampling_request has joined its complete tool batch. An
+            // exhausted stream is a safe boundary too, not a terminal summary.
+            sess.service_progress_boundary(Arc::clone(&step_context))
+                .await;
+        }
+        if sampled
+            .as_ref()
+            .is_ok_and(|output| !output.mailbox_preempted)
+        {
+            // A successful response that authored a wait is still successful
+            // inference. Reset before its checkpoint returns from this sampler.
+            sess.services
+                .local_agent_runtime
+                .provider_recovered(sess.thread_id, &turn_context.sub_id)
+                .await?;
+        }
+        let err = match sampled {
             Ok(output) => {
-                return Ok((output, notify_messages));
+                return Ok(SamplingRunOutcome::Response(output, notify_messages));
             }
             Err(err) => match err.details() {
                 CodexErrorDetails::ContextWindowExceeded => {
@@ -2145,7 +2241,7 @@ async fn run_sampling_request(
         // Recover typed errors (including filter guidance) before handing queued mail back
         // to the turn loop. Terminal errors and exhausted retries must still propagate.
         if preempt.is_cancelled() || (draining_for_mailbox && matches!(retry, Ok(Ok(())))) {
-            return Ok((
+            return Ok(SamplingRunOutcome::Response(
                 SamplingRequestResult {
                     needs_follow_up: true,
                     mailbox_preempted: draining_for_mailbox,
@@ -2293,6 +2389,10 @@ pub(crate) async fn built_tools(
         tool_suggest_candidates.as_ref(),
         dynamic_tools,
     )?))
+}
+
+enum SamplingRunOutcome {
+    Response(SamplingRequestResult, Vec<String>),
 }
 
 #[derive(Debug)]
@@ -2549,6 +2649,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::TurnStarted(_)
         | EventMsg::ThreadSettingsApplied(_)
         | EventMsg::TurnComplete(_)
+        | EventMsg::TurnCheckpointed(_)
         | EventMsg::TokenCount(_)
         | EventMsg::UserMessage(_)
         | EventMsg::AgentReasoning(_)
@@ -2565,6 +2666,8 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::McpToolCallEnd(_)
         | EventMsg::ElicitationAbandoned(_)
         | EventMsg::NetworkApprovalResolved { .. }
+        | EventMsg::CommandApprovalResolved { .. }
+        | EventMsg::ProvisionalSpawnRejected
         | EventMsg::WebSearchBegin(_)
         | EventMsg::WebSearchEnd(_)
         | EventMsg::ExecCommandBegin(_)
@@ -2577,10 +2680,8 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::ImageGenerationBegin(_)
         | EventMsg::ImageGenerationEnd(_)
         | EventMsg::ViewImageToolCall(_)
-        | EventMsg::CompoundWaitSettlement(_)
-        | EventMsg::FeatureUse(_)
         | EventMsg::ContextReset(_)
-        | EventMsg::CompoundWaitReset(_)
+        | EventMsg::AgentCoordination(_)
         | EventMsg::DynamicToolCallRequest(_)
         | EventMsg::DynamicToolCallResponse(_)
         | EventMsg::GuardianAssessment(_)
@@ -2971,8 +3072,11 @@ async fn try_run_sampling_request(
     prompt: Prompt,
     mut pending_audio: Option<codex_history::AcceptedFileAudio>,
     input_item_count: usize,
+    history_version: u64,
     cancellation_token: CancellationToken,
     draining_for_mailbox: &mut bool,
+    coordination_evidence: crate::agent::control::work_lifecycle::CoordinationSamplingEvidence,
+    coordination_context: uuid::Uuid,
 ) -> CodexResult<SamplingRequestResult> {
     let turn_context = Arc::clone(&step_context.turn);
     feedback_tags!(
@@ -3052,6 +3156,7 @@ async fn try_run_sampling_request(
     let mut answer_moderation: Option<codex_protocol::protocol::TargetedAnswerModeration> = None;
     let mut pending_assessment: Option<codex_api::GuardianAssessment> = None;
     let mut response_completed = false;
+    let mut coordination_confirmed = false;
     let mut request_token_usage: Option<codex_protocol::protocol::TokenUsage> = None;
     let mut includes_reasoning = step_context.settings.model_info.use_responses_lite;
     // Catalog policies can enable adaptive review independently of the legacy scorer flag.
@@ -3244,6 +3349,13 @@ async fn try_run_sampling_request(
             }
         };
 
+        if !coordination_confirmed && super::progress::provider_accepted_coordination_input(&event)
+        {
+            sess.confirm_coordination_sampling_input(&coordination_evidence, coordination_context)
+                .await?;
+
+            coordination_confirmed = true;
+        }
         record_turn_ttft_metric(&turn_context, &event).await;
         let Some(event) = resampling.filter(event, &step_context.tool_router) else {
             continue;
@@ -3653,6 +3765,7 @@ async fn try_run_sampling_request(
                             super::TokenUsageContext::Sampling {
                                 includes_reasoning,
                                 input_item_count,
+                                history_version,
                             }
                         },
                     )

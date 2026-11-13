@@ -8,6 +8,28 @@ use serde_json::Value;
 use serde_json::json;
 
 #[test]
+fn source_acquisition_passthrough_cannot_supply_authority_on_deserialization() -> Result<()> {
+    let receipt = crate::source_acquisition::SourceAcquisition {
+        id: "frozen-acquisition".to_string(),
+        purpose: crate::source_acquisition::SourceAcquisitionPurpose::Reload,
+        sources: Vec::new(),
+    };
+    let item = response_item(InternalChatMessageMetadataPassthrough {
+        turn_id: Some("turn-1".to_string()),
+        source_acquisition: Some(receipt.clone()),
+        ..Default::default()
+    });
+    let serialized = serde_json::to_value(item)?;
+    assert_eq!(serialized["internal_chat_message_metadata_passthrough"]["source_acquisition"], serde_json::to_value(receipt)?);
+    let restored: ResponseItem = serde_json::from_value(serialized)?;
+    assert_eq!(restored, response_item(InternalChatMessageMetadataPassthrough {
+        turn_id: Some("turn-1".to_string()),
+        ..Default::default()
+    }));
+    Ok(())
+}
+
+#[test]
 fn content_kinds_round_trip_without_restricting_future_values() -> Result<()> {
     let item = response_item(InternalChatMessageMetadataPassthrough {
         turn_id: Some("turn-1".to_string()),

@@ -2,12 +2,14 @@ use codex_code_mode_protocol::CodeModeOutputTruncation;
 use codex_code_mode_protocol::CodeModeSessionCellExecutionLimits;
 use codex_code_mode_protocol::CodeModeToolKind;
 use codex_code_mode_protocol::ExecuteRequest;
+use codex_code_mode_protocol::ExecuteToPendingOutcome;
 use codex_code_mode_protocol::FunctionCallOutputContentItem;
 use codex_code_mode_protocol::ImageDetail;
 use codex_code_mode_protocol::MissingCodeModeHostDuration;
 use codex_code_mode_protocol::RuntimeResponse;
 use codex_code_mode_protocol::ToolDefinition;
 use codex_code_mode_protocol::WaitOutcome;
+use codex_code_mode_protocol::WaitToPendingOutcome;
 use codex_code_mode_protocol::grpc as proto;
 use codex_protocol::ToolName;
 use serde_json::Value as JsonValue;
@@ -159,6 +161,50 @@ pub(super) fn wait_response(
         }
     };
     let mut response = Response::new(proto::WaitResponse { state: Some(state) });
+    if let Some(buffered) = buffered {
+        let nanos = u64::try_from(buffered.as_nanos()).unwrap_or(u64::MAX);
+        response
+            .metadata_mut()
+            .insert(proto::RESULT_BUFFERED_FOR_NS_METADATA, nanos.into());
+    }
+    Ok(response)
+}
+
+pub(super) fn wait_to_pending_response(
+    outcome: WaitToPendingOutcome,
+) -> Result<Response<proto::WaitToPendingResponse>, MissingCodeModeHostDuration> {
+    let (state, buffered) = match outcome {
+        WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Pending {
+            cell_id,
+            content_items,
+            pending_tool_call_ids,
+        }) => (
+            proto::wait_to_pending_response::State::Pending(proto::PendingFrontier {
+                cell_id: cell_id.to_string(),
+                content_items: content_items.into_iter().map(content_item).collect(),
+                pending_tool_call_ids,
+            }),
+            None,
+        ),
+        WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Completed(response)) => {
+            let buffered = match &response {
+                RuntimeResponse::Result {
+                    result_buffered_for,
+                    ..
+                } => Some(*result_buffered_for),
+                _ => None,
+            };
+            (
+                proto::wait_to_pending_response::State::Completed(execution_outcome(response)?),
+                buffered,
+            )
+        }
+        WaitToPendingOutcome::MissingCell(response) => (
+            proto::wait_to_pending_response::State::MissingCell(execution_outcome(response)?),
+            None,
+        ),
+    };
+    let mut response = Response::new(proto::WaitToPendingResponse { state: Some(state) });
     if let Some(buffered) = buffered {
         let nanos = u64::try_from(buffered.as_nanos()).unwrap_or(u64::MAX);
         response

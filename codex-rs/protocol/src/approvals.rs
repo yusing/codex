@@ -282,6 +282,11 @@ pub enum ExecApprovalKind {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ExecApprovalRequestEvent {
+    /// Source preparation is independent of the recipient's model-turn transitions.
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub preparation: bool,
     #[serde(skip)]
     #[schemars(skip)]
     #[ts(skip)]

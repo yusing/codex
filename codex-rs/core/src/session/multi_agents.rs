@@ -11,8 +11,6 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 
-const HOSTED_MULTI_AGENT_SKILL_GUIDANCE: &str = "Before calling any multi-agent tool, read the full multi-agent skill using its listed package locator. Skip the read only if the full skill text is already in your current context. If the read fails, make note of the blocker.";
-
 pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRoleInstructions> {
     let turn_context = step_context.turn.as_ref();
     if turn_context.multi_agent_version != MultiAgentVersion::V2 {
@@ -43,7 +41,7 @@ pub(crate) fn resolve_usage_hints(
     multi_agent_messages: ResolvedMultiAgentMessages<'_>,
     omit_update_plan_instructions: bool,
 ) -> ResolvedMultiAgentV2UsageHints {
-    let resolve_role = |configured: Option<&str>, message: ResolvedMessage<'_>| {
+    let resolve_role = |configured: Option<&str>, message: ResolvedMessage<'_>, subagent: bool| {
         // Configured roles take precedence; empty configured or catalog roles suppress fallback.
         if let Some(configured) = configured {
             return (!configured.is_empty())
@@ -56,6 +54,7 @@ pub(crate) fn resolve_usage_hints(
         }
         Some(MultiAgentRoleInstructions::Composed {
             base: base.to_owned(),
+            subagent,
             marked: message.catalog_override().is_some(),
             omit_update_plan_instructions,
             max_concurrency: config.max_concurrent_threads_per_session,
@@ -68,10 +67,12 @@ pub(crate) fn resolve_usage_hints(
         root: resolve_role(
             config.root_agent_usage_hint_text.as_deref(),
             multi_agent_messages.root,
+            false,
         ),
         subagent: resolve_role(
             config.subagent_usage_hint_text.as_deref(),
             multi_agent_messages.subagent,
+            true,
         ),
     }
 }
@@ -110,9 +111,7 @@ pub(crate) fn effective_multi_agent_mode(step_context: &StepContext) -> Option<M
                 let policy = message
                     .text()
                     .replace("collaboration tools", "multi-agent tools");
-                MultiAgentMode::Custom(format!(
-                    "\n{policy}\n\n{HOSTED_MULTI_AGENT_SKILL_GUIDANCE}\n"
-                ))
+                MultiAgentMode::Custom(policy)
             } else {
                 match message {
                     ResolvedMessage::Catalog(text) => MultiAgentMode::Custom(text.to_owned()),

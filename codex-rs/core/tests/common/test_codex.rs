@@ -919,6 +919,10 @@ impl TestCodexBuilder {
                 /*attestation_provider*/ None,
                 /*external_time_provider*/ self.external_time_provider.clone(),
             );
+            let thread_manager = match state_db.as_ref() {
+                Some(state_db) => thread_manager.with_work_state(Arc::clone(state_db)),
+                None => thread_manager,
+            };
             let thread_manager = match self.thread_manager_configurer.take() {
                 Some(configure) => configure(thread_manager),
                 None => thread_manager,

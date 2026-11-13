@@ -43,6 +43,7 @@ impl AgentCommunicationKind {
 pub(crate) struct AgentCommunicationContext {
     kind: AgentCommunicationKind,
     pub(crate) sender_thread_id: ThreadId,
+    pub(crate) sources: bool,
 }
 
 impl AgentCommunicationContext {
@@ -50,7 +51,13 @@ impl AgentCommunicationContext {
         Self {
             kind,
             sender_thread_id,
+            sources: false,
         }
+    }
+
+    pub(crate) fn with_sources(mut self, sources: bool) -> Self {
+        self.sources = sources;
+        self
     }
 }
 
@@ -104,9 +111,13 @@ pub(crate) fn emit_agent_communication_receive(communication_id: &str) {
 /// Pending mail with shared ownership of its captured publication state.
 /// Serialization preserves the protocol shape; restored historical mail is not republished.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(transparent)]
 pub struct PendingAgentMessage {
+    #[serde(flatten)]
     communication: InterAgentCommunication,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    coordination_delivery_ids: Vec<uuid::Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    coordination: Option<codex_protocol::agent_coordination::CoordinationProjection>,
     #[serde(skip)]
     pub(crate) delivery: Option<MessageDelivery>,
 }
@@ -137,8 +148,35 @@ impl PendingAgentMessage {
     ) -> Self {
         Self {
             communication,
+            coordination_delivery_ids: Vec::new(),
+            coordination: None,
             delivery,
         }
+    }
+
+    /// Only the native ledger or frozen wait materializer attaches authenticated IDs.
+    /// Public InterAgentCommunication conversion always starts with no such evidence.
+    pub(crate) fn with_coordination_delivery_ids(mut self, ids: Vec<uuid::Uuid>) -> Self {
+        self.coordination_delivery_ids = ids;
+        self
+    }
+
+    pub(crate) fn coordination_delivery_ids(&self) -> &[uuid::Uuid] {
+        &self.coordination_delivery_ids
+    }
+
+    pub(crate) fn with_coordination(
+        mut self,
+        projection: codex_protocol::agent_coordination::CoordinationProjection,
+    ) -> Self {
+        self.coordination = Some(projection);
+        self
+    }
+
+    pub(crate) fn coordination(
+        &self,
+    ) -> Option<&codex_protocol::agent_coordination::CoordinationProjection> {
+        self.coordination.as_ref()
     }
 }
 

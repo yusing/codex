@@ -274,6 +274,8 @@ mod mcp_runtime;
 mod model_catalog_settings;
 pub(crate) mod multi_agents;
 mod plugin_selection;
+mod preparation;
+mod progress;
 mod realtime_history;
 mod retained_context;
 mod review;
@@ -431,6 +433,8 @@ pub(crate) enum TokenUsageContext {
         includes_reasoning: bool,
         /// Input history length before the response, including requests with no output items.
         input_item_count: usize,
+        /// Only this sampled history generation can own the installed context baseline.
+        history_version: u64,
     },
     SpendingOnly,
 }
@@ -2790,18 +2794,54 @@ impl Session {
         turn_context: &TurnContext,
         msg: &EventMsg,
     ) {
+        if let EventMsg::ItemCompleted(event) = msg
+            && let TurnItem::AgentMessage(message) = &event.item
+            && message.phase != Some(codex_protocol::models::MessagePhase::Commentary)
+            && self.manages_coordination_work()
+        {
+            let result = async {
+                let ledger = self.services.local_agent_runtime.work_ledger()?;
+                if let Some(stamp) = ledger
+                    .work_for_turn(self.thread_id, &turn_context.sub_id)
+                    .await
+                    .map_err(crate::agent::control::work_lifecycle::work_error)?
+                    && ledger
+                        .observe_work(stamp)
+                        .await
+                        .map_err(crate::agent::control::work_lifecycle::work_error)?
+                        .is_some_and(|work| !work.disposition.is_terminal())
+                {
+                    let item_identity = serde_json::to_string(&(&turn_context.sub_id, &message.id))
+                        .map_err(crate::agent::control::work_lifecycle::work_error)?;
+                    ledger
+                        .record_answer(stamp, &item_identity, &agent_message_text(message))
+                        .await
+                        .map_err(crate::agent::control::work_lifecycle::work_error)?;
+                }
+                CodexResult::Ok(())
+            }
+            .await;
+            if let Err(error) = result {
+                turn_context
+                    .terminal_error
+                    .lock()
+                    .await
+                    .replace(error.to_error_event(None));
+            }
+        }
         if !matches!(msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
             return;
         }
 
         let notify_native_parent = turn_context.multi_agent_version == MultiAgentVersion::V2
-            && matches!(
-                &turn_context.session_source,
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    agent_path: Some(_),
-                    ..
-                })
-            );
+            && (self.manages_coordination_work()
+                || matches!(
+                    &turn_context.session_source,
+                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                        agent_path: Some(_),
+                        ..
+                    })
+                ));
         let reporter = self
             .outcome_reporting
             .as_ref()
@@ -3095,6 +3135,8 @@ impl Session {
         content_token_count: Option<u64>,
         user_input_extension_data: Option<&BTreeMap<String, Value>>,
     ) {
+        if matches!(&item, TurnItem::ContextCompaction(_)) {
+        }
         record_turn_ttfm_metric(turn_context, &item).await;
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
@@ -3334,7 +3376,26 @@ impl Session {
         let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
         // Add the tx_approve callback to the map before sending the request.
         let (tx_approve, rx_approve) = oneshot::channel();
-        let (prev_entry, _network_prompt) = {
+        let preparation_cancellation = self.preparation_cancellation(&turn_context.sub_id);
+        let mut preparation_prompt = None;
+        let (prev_entry, _network_prompt) = if preparation_cancellation.is_some() {
+            // Network approvals retain their existing active-turn binding contract.
+            if turn_binding.is_some() {
+                return ReviewDecision::Abort;
+            }
+            let pending = PendingApproval {
+                sender: tx_approve,
+                kind,
+                turn_id: turn_context.sub_id.clone(),
+            };
+            match self.insert_preparation_approval(effective_approval_id.clone(), pending) {
+                Ok((previous, prompt)) => {
+                    preparation_prompt = Some(prompt);
+                    (previous, None)
+                }
+                Err(()) => return ReviewDecision::Abort,
+            }
+        } else {
             let mut active = self.active_turn.lock().await;
             // The proxy reviews with the active turn's settings. A sandbox retry
             // keeps its originating step's settings even after a background cell yields.
@@ -3367,13 +3428,14 @@ impl Session {
                     });
                     (prev, prompt)
                 }
-                None => (None, None),
+                None => return ReviewDecision::Abort,
             }
         };
         if prev_entry.is_some() {
             warn!("Overwriting existing pending approval for call_id: {effective_approval_id}");
         }
 
+        let _preparation_prompt = preparation_prompt;
         let parsed_cmd = parse_command(&command);
         let proposed_network_policy_amendments = network_approval_context.as_ref().map(|context| {
             vec![
@@ -3405,6 +3467,7 @@ impl Session {
             .map(PluginCommandAttribution::serialized_fields)
             .unzip();
         let event = EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
+            preparation: preparation_cancellation.is_some(),
             model_context: Some(model_context),
             kind,
             call_id,
@@ -3426,7 +3489,15 @@ impl Session {
         });
         let _user_wait = self.start_user_wait_timing(turn_context, user_wait_owner.as_deref());
         self.send_event(turn_context, event).await;
-        rx_approve.await.unwrap_or(ReviewDecision::Abort)
+        if let Some(cancellation) = preparation_cancellation {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => ReviewDecision::Abort,
+                decision = rx_approve => decision.unwrap_or(ReviewDecision::Abort),
+            }
+        } else {
+            rx_approve.await.unwrap_or(ReviewDecision::Abort)
+        }
     }
 
     #[expect(
@@ -3880,7 +3951,13 @@ impl Session {
         &self,
         approval_id: &str,
         expected_turn_id: Option<&str>,
-    ) -> Option<(PendingApproval, Option<String>)> {
+    ) -> Option<(PendingApproval, preparation::ApprovalOwner)> {
+        // Preparation responses require the exact originating context, never an ID-only lookup.
+        if let Some(turn_id) = expected_turn_id
+            && self.preparation_cancellation(turn_id).is_some()
+        {
+            return self.take_preparation_approval(approval_id, turn_id);
+        }
         let active = self.active_turn.lock().await;
         let turn = active.as_ref()?;
         // A live Cancel interrupts the turn servicing the prompt, which can differ from its origin.
@@ -3890,7 +3967,8 @@ impl Session {
             .lock()
             .await
             .remove_pending_approval(approval_id, expected_turn_id)?;
-        (!pending.sender.is_closed()).then(|| (pending, turn_id.cloned()))
+        (!pending.sender.is_closed())
+            .then(|| (pending, preparation::ApprovalOwner::Turn(turn_id.cloned())))
     }
 
     pub async fn notify_approval(&self, approval_id: &str, decision: ReviewDecision) {
@@ -4175,7 +4253,7 @@ impl Session {
         {
             mark_thread_memory_mode_polluted_if_external_context(self, turn_context, item).await;
         }
-        self.send_raw_response_items(turn_context, &response_items)
+        self.send_raw_response_items(turn_context, &rollout_items)
             .await;
     }
 
@@ -4258,14 +4336,15 @@ impl Session {
         required_servers: &[String],
         required_plugins: &HashSet<String>,
     ) -> CodexResult<Arc<StepContext>> {
-        let step_context = self
-            .capture_step_context_inner(
+        // Keep the large executor/MCP preparation future behind its owner boundary.
+        let preparation: BoxFuture<'_, CodexResult<Arc<StepContext>>> =
+            Box::pin(self.capture_step_context_inner(
                 turn_context,
                 cancellation_token,
                 required_servers,
                 required_plugins,
-            )
-            .await?;
+            ));
+        let step_context = preparation.await?;
         self.set_last_known_step_context(&step_context).await;
         Ok(step_context)
     }
@@ -4277,13 +4356,16 @@ impl Session {
         turn_context: Arc<TurnContext>,
         cancellation_token: &CancellationToken,
     ) -> CodexResult<Arc<StepContext>> {
-        self.capture_step_context_inner(
-            turn_context,
-            cancellation_token,
-            /*required_servers*/ &[],
-            /*required_plugins*/ &HashSet::new(),
-        )
-        .await
+        let preparation: BoxFuture<'_, CodexResult<Arc<StepContext>>> = Box::pin(async {
+            self.capture_step_context_inner(
+                turn_context,
+                cancellation_token,
+                /*required_servers*/ &[],
+                /*required_plugins*/ &HashSet::new(),
+            )
+            .await
+        });
+        preparation.await
     }
 
     fn inherits_root_service_tier(&self, session_source: &SessionSource) -> bool {
@@ -4625,6 +4707,279 @@ impl Session {
         }))
     }
 
+    fn manages_coordination_work(&self) -> bool {
+        self.multi_agent_version() == Some(MultiAgentVersion::V2)
+            && self.services.local_agent_runtime.work.is_some()
+            && self
+                .services
+                .local_agent_runtime
+                .ensure_agent_known(self.thread_id)
+                .is_ok()
+    }
+
+    pub(crate) async fn admit_coordination_input(
+        &self,
+        input: &mut TurnInput,
+        _submission_id: &str,
+        starts_work: bool,
+    ) -> CodexResult<()> {
+        if self.multi_agent_version() != Some(MultiAgentVersion::V2)
+            || self.services.local_agent_runtime.work.is_none()
+        {
+            return Ok(());
+        }
+        let source = self
+            .state
+            .lock()
+            .await
+            .session_configuration
+            .session_source
+            .clone();
+        match source {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) => {}
+            SessionSource::SubAgent(_) => return Ok(()),
+            _ => self
+                .services
+                .local_agent_runtime
+                .register_session_root(self.thread_id, None),
+        }
+        self.services
+            .local_agent_runtime
+            .prepare_input(self.thread_id, input, starts_work)
+            .await
+    }
+
+    pub(crate) async fn confirm_coordination_input(
+        &self,
+        input: &TurnInput,
+        receipt: &str,
+    ) -> CodexResult<()> {
+        if !self.manages_coordination_work() {
+            return Ok(());
+        }
+        self.services
+            .local_agent_runtime
+            .confirm_input(self.thread_id, input, receipt)
+            .await
+    }
+
+    pub(crate) async fn accept_coordination_message(
+        self: &Arc<Self>,
+        communication: crate::PendingAgentMessage,
+        start_options: codex_protocol::turn_input::TurnStartOptions,
+        sources: bool,
+    ) -> CodexResult<String> {
+        let runtime = &self.services.local_agent_runtime;
+        let sender = runtime.coordination_sender(&communication.author)?;
+        if !communication.trigger_turn {
+            return runtime
+                .publish_message(self.thread_id, sender, (*communication).clone(), sources)
+                .await;
+        }
+        let active = self.active_turn.lock().await;
+        let starts_work = active.as_ref().is_none_or(|turn| turn.task.is_none());
+        let _admission = if starts_work {
+            Some(
+                self.services
+                    .extensions
+                    .admit_turn_start()
+                    .ok_or_else(|| CodexErr::InvalidRequest("server is draining".to_owned()))?,
+            )
+        } else {
+            None
+        };
+        let submission = uuid::Uuid::now_v7().to_string();
+        let mut input = TurnInput::InterAgentCommunication(communication);
+        self.admit_coordination_input(&mut input, &submission, starts_work)
+            .await?;
+        let TurnInput::InterAgentCommunication(message) = &input else {
+            unreachable!("agent input remains attributed");
+        };
+        self.input_queue
+            .enqueue_mailbox_communication(message.clone(), start_options)
+            .await;
+        // Queue ownership is established while the native active-turn reservation
+        // is still held. Failure after this point remains an uncertain acceptance.
+        self.confirm_coordination_input(&input, &submission).await?;
+        drop(active);
+        self.maybe_start_turn_for_pending_work_with_sub_id(submission.clone())
+            .await;
+        Ok(submission)
+    }
+
+    pub(crate) async fn has_pending_coordination_messages(&self) -> CodexResult<bool> {
+        if !self.manages_coordination_work() {
+            return Ok(false);
+        }
+        self.services
+            .local_agent_runtime
+            .work_ledger()?
+            .has_pending_messages(self.thread_id)
+            .await
+            .map_err(crate::agent::control::work_lifecycle::work_error)
+    }
+
+    pub(crate) async fn take_coordination_messages(&self) -> CodexResult<Vec<TurnInput>> {
+        use crate::agent::control::work_lifecycle::delivery_input;
+        use crate::agent::control::work_lifecycle::work_error;
+        if !self.manages_coordination_work() {
+            return Ok(Vec::new());
+        }
+        let runtime = &self.services.local_agent_runtime;
+        let recipient = runtime
+            .ensure_agent_known(self.thread_id)?
+            .agent_path
+            .ok_or_else(|| work_error("recipient has no logical path"))?;
+        let deliveries = runtime
+            .work_ledger()?
+            .take_messages(self.thread_id)
+            .await
+            .map_err(work_error)?;
+        deliveries
+            .iter()
+            .map(|delivery| {
+                let author = delivery
+                    .publication
+                    .sender_id
+                    .and_then(|id| runtime.ensure_agent_known(id).ok())
+                    .and_then(|metadata| metadata.agent_path);
+                delivery_input(delivery, author, recipient.clone())
+            })
+            .collect()
+    }
+
+    pub(crate) async fn consume_coordination_sampling_input(
+        &self,
+        history: &crate::context_manager::ContextManager,
+        input: &[ResponseItem],
+    ) -> CodexResult<crate::agent::control::work_lifecycle::CoordinationSamplingEvidence> {
+        if !self.manages_coordination_work() {
+            return Ok(Default::default());
+        }
+        let (mut evidence, ordinary) = crate::agent::control::work_lifecycle::sampling_projection(
+            history.annotated_items(),
+            input,
+        );
+        evidence.delivery_ids.extend(ordinary.iter().copied());
+        evidence.ordinary_delivery_ids = ordinary;
+        // Nested JavaScript can discard, transform, or truncate a callback result.
+        // Only the complete frozen result in actual model input proves delivery.
+        let runtime = &self.services.local_agent_runtime;
+        if let Some(ticket) = runtime
+            .work_ledger()?
+            .current_wait(self.thread_id)
+            .await
+            .map_err(crate::agent::control::work_lifecycle::work_error)?
+            && ticket.dispatch_id.is_none()
+            && let Some(claim) = &ticket.claim
+        {
+            let text = runtime.wait_tool_result(&ticket).await?;
+            let encoded = serde_json::to_string(&text)
+                .map_err(crate::agent::control::work_lifecycle::work_error)?;
+            let escaped = &encoded[1..encoded.len() - 1];
+            if input.iter().any(|item| {
+                let output = match item {
+                    ResponseItem::FunctionCallOutput { output, .. }
+                    | ResponseItem::CustomToolCallOutput { output, .. } => output.body.to_text(),
+                    // Provider recovery has no authored tool invocation.
+                    ResponseItem::Message { content, .. } if ticket.origin.reason().is_some() => {
+                        Some(
+                            content
+                                .iter()
+                                .filter_map(|part| match part {
+                                    codex_protocol::models::ContentItem::InputText { text } => {
+                                        Some(text.as_str())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )
+                    }
+                    _ => None,
+                };
+                output.is_some_and(|output| output.contains(&text) || output.contains(escaped))
+            }) {
+                evidence.wait_claim_ids.insert(claim.id);
+                evidence
+                    .delivery_ids
+                    .extend(claim.delivery_ids.iter().copied());
+            } else if ticket.origin.cell().is_some_and(|cell| {
+                self.services
+                    .code_mode_service
+                    .cell_originating_call(&codex_code_mode::CellId::new(cell.cell_id.clone()))
+                    .is_none()
+            }) {
+                // The original JavaScript ended without projecting the frozen
+                // result. Release its claim, not the still-unread events, so a
+                // later cell can await them instead of inheriting a dead call.
+                runtime.cancel_native_wait(&ticket).await?;
+            }
+        }
+        Ok(evidence)
+    }
+
+    /// Inclusion is not delivery. Only the concrete provider attempt's created,
+    /// output, or completion event can acknowledge the exact projected input.
+    pub(crate) async fn confirm_coordination_sampling_input(
+        &self,
+        evidence: &crate::agent::control::work_lifecycle::CoordinationSamplingEvidence,
+        context: uuid::Uuid,
+    ) -> CodexResult<()> {
+        use crate::agent::control::work_lifecycle::CoordinationPayload;
+        use crate::agent::control::work_lifecycle::work_error;
+        if !self.manages_coordination_work() {
+            return Ok(());
+        }
+        let runtime = &self.services.local_agent_runtime;
+        if let Some(ticket) = runtime
+            .work_ledger()?
+            .current_wait(self.thread_id)
+            .await
+            .map_err(work_error)?
+            && ticket.dispatch_id.is_none()
+            && let Some(claim) = &ticket.claim
+            && evidence.wait_claim_ids.contains(&claim.id)
+            && claim
+                .delivery_ids
+                .iter()
+                .all(|id| evidence.delivery_ids.contains(id))
+        {
+            runtime.finish_awaited_wait(&ticket, context).await?;
+        }
+        let deliveries = runtime
+            .work_ledger()?
+            .consume_sampling(
+                self.thread_id,
+                &evidence
+                    .ordinary_delivery_ids
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .map_err(work_error)?;
+        for delivery in deliveries {
+            if !delivery.consumed
+                && delivery.publication.kind == crate::agent::control::work::DeliveryKind::Terminal
+            {
+                let payload =
+                    serde_json::from_str::<CoordinationPayload>(&delivery.publication.payload);
+                if let (
+                    Some(actor),
+                    Ok(CoordinationPayload::Terminal {
+                        status: AgentStatus::Completed(_),
+                        capture,
+                        ..
+                    }),
+                ) = (delivery.publication.sender_id, payload)
+                {
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn record_inter_agent_communication(
         &self,
         turn_context: &TurnContext,
@@ -4665,6 +5020,12 @@ impl Session {
             )
             .await;
         let mut response_item = ResponseItemEnvelope::new(items[0].clone());
+        response_item
+            .metadata
+            .get_or_insert_default()
+            .coordination_delivery_ids = communication.coordination_delivery_ids().to_vec();
+        response_item.metadata.get_or_insert_default().coordination =
+            communication.coordination().cloned();
         // A send confirmed after the pending snapshot must not reach the rollout
         // before this boundary; older readers assign deliveries by physical order.
         let boundary = self
@@ -4700,15 +5061,16 @@ impl Session {
         if let Some(delivery) = &communication.delivery {
             delivery.consumed(self.thread_id);
         }
-        self.persist_rollout_items(&[
+        let rollout_items = [
             RolloutItem::InterAgentCommunicationMetadata {
                 trigger_turn: communication.trigger_turn,
             },
             RolloutItem::ResponseItem(response_item),
-        ])
-        .await;
+        ];
+        self.persist_rollout_items(&rollout_items).await;
         drop(boundary);
-        self.send_raw_response_items(turn_context, &items).await;
+        self.send_raw_response_items(turn_context, &rollout_items)
+            .await;
     }
 
     async fn maybe_warn_on_server_model_mismatch(
@@ -5040,11 +5402,21 @@ impl Session {
     }
 
     #[tracing::instrument(level = "trace", skip_all, fields(item_count = items.len()))]
-    async fn send_raw_response_items(&self, turn_context: &TurnContext, items: &[ResponseItem]) {
-        for item in items {
+    async fn send_raw_response_items(&self, turn_context: &TurnContext, items: &[RolloutItem]) {
+        for record in items {
+            let RolloutItem::ResponseItem(envelope) = record else {
+                continue;
+            };
             self.send_event(
                 turn_context,
-                EventMsg::RawResponseItem(RawResponseItemEvent { item: item.clone() }),
+                EventMsg::RawResponseItem(RawResponseItemEvent {
+                    item: envelope.item.clone(),
+                    source_acquisition: envelope.metadata.as_ref().and_then(|metadata| metadata.source_acquisition.clone()),
+                    coordination: envelope
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.coordination.clone()),
+                }),
             )
             .await;
         }
@@ -5303,6 +5675,10 @@ impl Session {
         state.clone_history()
     }
 
+    pub(crate) async fn delivery_context_id(&self) -> uuid::Uuid {
+        self.state.lock().await.delivery_context_id
+    }
+
     /// Captures the history lifetime without exposing mutable session state.
     pub(crate) async fn history_reset(&self) -> (u64, CancellationToken) {
         let state = self.state.lock().await;
@@ -5376,11 +5752,26 @@ impl Session {
         &self,
         step_context: &StepContext,
         world_state: Arc<WorldState>,
-        reload: Option<String>,
+        mut reload: Option<ResponseItemEnvelope>,
     ) {
         let turn_context = step_context.turn.as_ref();
         let history = self.clone_history().await;
         let input_goal_ids = crate::context::UserGoalUpdate::message_ids(history.raw_items());
+        let pending_calls = self
+            .services
+            .code_mode_service
+            .dispatch_broker
+            .paused_call_ids();
+        let pending_items = history
+            .annotated_items()
+            .iter()
+            .filter(|item| {
+                item.item
+                    .id()
+                    .is_some_and(|id| pending_calls.contains(id.as_str()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let retained_client_items =
             crate::compact_remote_v2::truncate_retained_messages_for_remote_compaction(
                 history
@@ -5404,22 +5795,16 @@ impl Session {
         let (window_number, window_ids) = self.state.lock().await.start_new_context_window();
         let (context_updates, world_state_snapshot) =
             self.assemble_initial_context(step_context, rendered).await;
-        let reload_items = reload.map(|text| {
-            ResponseItemEnvelope::new(ResponseItem::FunctionCallOutput {
-                id: None,
-                call_id: None,
-                name: Some("reload".to_string()),
-                namespace: Some("context".to_string()),
-                output: codex_protocol::models::FunctionCallOutputPayload::from_text(text),
-                internal_chat_message_metadata_passthrough: None,
-            })
-        });
+        if let Some(reload) = reload.as_mut() {
+            self.assign_missing_response_item_id(&mut reload.item);
+        }
         let context_items =
             crate::context_manager::updates::merge_world_state_updates(context_updates)
                 .into_iter()
                 .map(ResponseItemEnvelope::new)
                 .chain(retained_client_items)
-                .chain(reload_items)
+                .chain(reload.clone())
+                .chain(pending_items)
                 .collect();
         let turn_context_item = step_context.to_turn_context_item();
         self.replace_compacted_history(
@@ -5438,6 +5823,9 @@ impl Session {
             },
         )
         .await;
+        if let Some(reload) = reload {
+            self.send_raw_response_items(turn_context, &[RolloutItem::ResponseItem(reload)]).await;
+        }
         self.recompute_token_usage(turn_context).await;
     }
 
@@ -5592,6 +5980,7 @@ impl Session {
         token_usage: Option<&TokenUsage>,
         includes_reasoning: bool,
     ) -> CodexResult<()> {
+        let history_version = self.state.lock().await.history.history_version();
         let result = self
             .record_token_usage_info(
                 turn_context,
@@ -5600,6 +5989,7 @@ impl Session {
                 TokenUsageContext::Sampling {
                     includes_reasoning,
                     input_item_count: 0,
+                    history_version,
                 },
             )
             .await;
@@ -5661,10 +6051,21 @@ impl Session {
         if let Some(token_usage) = token_usage {
             let token_info = {
                 let mut state = self.state.lock().await;
+                let context = match context {
+                    TokenUsageContext::Sampling {
+                        history_version, ..
+                    } if state.history.history_version() != history_version => {
+                        // An inline reset can commit while the original response is in flight.
+                        // Its eventual usage still counts as spending, not as the new context.
+                        TokenUsageContext::SpendingOnly
+                    }
+                    context => context,
+                };
                 match context {
                     TokenUsageContext::Sampling {
                         includes_reasoning,
                         input_item_count,
+                        ..
                     } => {
                         state.update_token_info_from_usage(
                             token_usage,
@@ -5881,8 +6282,11 @@ impl Session {
                 model_info,
                 vec![ResponseItemEnvelope {
                     item: response_item,
-                    metadata: metadata.acceptance_order.map(|order| CodexHarnessMetadata {
-                        user_input_order: Some(order),
+                    metadata: (metadata.acceptance_order.is_some()
+                        || !metadata.coordination_delivery_ids.is_empty())
+                    .then(|| CodexHarnessMetadata {
+                        user_input_order: metadata.acceptance_order,
+                        coordination_delivery_ids: metadata.coordination_delivery_ids,
                         ..Default::default()
                     }),
                 }],
@@ -5944,24 +6348,79 @@ impl Session {
     }
 
     pub async fn interrupt_task(self: &Arc<Self>) {
+        if let Err(error) = self.interrupt_task_with_receipt().await {
+            self.send_event_raw(Event {
+                id: String::new(),
+                msg: EventMsg::Error(error.to_error_event(None)),
+            })
+            .await;
+        }
+    }
+
+    pub(crate) async fn interrupt_task_with_receipt(
+        self: &Arc<Self>,
+    ) -> CodexResult<Option<codex_state::coordination::WorkStamp>> {
         info!("interrupt received: abort current task, if any");
         let generation = self.state.lock().await.manual_resets.cancel_pending();
         if generation != 0 {
             self.send_event_raw(Event {
                 id: String::new(),
                 msg: EventMsg::ContextReset(codex_protocol::context_reset::ContextReset {
-                    thread_id: self.thread_id.to_string(), turn_id: String::new(),
-                    request_id: None, generation, reset_id: None,
+                    thread_id: self.thread_id.to_string(),
+                    turn_id: String::new(),
+                    request_id: None,
+                    generation,
+                    reset_id: None,
                     status: codex_protocol::context_reset::ContextResetStatus::Canceled,
-                    inline: true, diagnostic: None,
+                    inline: true,
+                    diagnostic: None,
                 }),
-            }).await;
+            })
+            .await;
         }
-        let had_active_turn = self.active_turn.lock().await.is_some();
-        self.abort_all_tasks(TurnAbortReason::Interrupted).await;
+        // Select work and remove the physical task under the same admission
+        // lock. A later assignment must never become this request's receipt.
+        let (active_turn, logical_work) = {
+            let mut active = self.active_turn.lock().await;
+            let logical_work = if self.manages_coordination_work() {
+                self.services
+                    .local_agent_runtime
+                    .work_ledger()?
+                    .observe_current(self.thread_id)
+                    .await
+                    .map_err(crate::agent::control::work_lifecycle::work_error)?
+                    .filter(|work| !work.disposition.is_terminal())
+                    .map(|work| work.stamp)
+            } else {
+                None
+            };
+            if logical_work.is_some()
+                || active.as_ref().is_some_and(|turn| {
+                    turn.task.is_some()
+                        || (self.enabled(Feature::WakeOnAgentMessages) && turn.finishing.is_none())
+                })
+            {
+                self.mark_interrupted();
+            }
+            (active.take(), logical_work)
+        };
+        let had_active_turn = active_turn.is_some();
+        if let Some(active_turn) = active_turn {
+            if active_turn.task.is_some() {
+                self.finish_turn_abort(active_turn, TurnAbortReason::Interrupted, None)
+                    .await;
+            }
+        }
+        if let Some(stamp) = logical_work {
+            self.services
+                .local_agent_runtime
+                .interrupt_idle_work(stamp)
+                .await?;
+        }
         if !had_active_turn {
             self.cancel_mcp_startup();
         }
+        Ok(logical_work)
     }
 
     pub(crate) fn hooks(&self) -> Arc<Hooks> {

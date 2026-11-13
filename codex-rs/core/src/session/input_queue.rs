@@ -22,6 +22,10 @@ use tokio_util::task::AbortOnDropHandle;
 /// Host capture metadata belonging to one input, including steers within another turn.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserInputMetadata {
+    /// Populated only by native accepted-input admission, never public input metadata.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) coordination_delivery_ids: Vec<uuid::Uuid>,
+
     /// Private extension data carried with this queued input through completion.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extension_data: BTreeMap<String, serde_json::Value>,

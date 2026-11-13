@@ -29,6 +29,25 @@ impl LocalAgentControl {
         outcome: AgentTurnOutcome,
         trace: &ThreadTraceContext,
     ) {
+        if self.runtime.work.is_some() {
+            if let Err(error) = self.runtime.settle_terminal(&outcome).await {
+                tracing::warn!(thread_id = %outcome.thread_id, "native terminal publication remains pending: {error}");
+                if let Ok(manager) = self.runtime.upgrade()
+                    && let Ok(thread) = manager.get_thread(outcome.thread_id).await
+                {
+                    thread
+                        .session
+                        .send_event_raw(codex_protocol::protocol::Event {
+                            id: outcome.turn_id.clone(),
+                            msg: codex_protocol::protocol::EventMsg::Error(
+                                error.to_error_event(None),
+                            ),
+                        })
+                        .await;
+                }
+            }
+            return;
+        }
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             agent_path: Some(child_agent_path),

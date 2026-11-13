@@ -77,8 +77,6 @@ impl ToolExecutor<ToolInvocation> for NewContextWindowHandler {
                     })
                     .await;
             }
-            invocation.session.request_new_context_window().await;
-
             Ok(boxed_tool_output(FunctionToolOutput::from_text(
                 NEW_CONTEXT_WINDOW_MESSAGE.to_string(),
                 Some(true),
@@ -98,6 +96,13 @@ impl CoreToolRuntime for NewContextWindowHandler {
                 .session
                 .accept_self_reset(&invocation.turn, &invocation.call_id)
                 .await;
+            invocation.session.request_new_context_window().await;
+            invocation
+                .session
+                .services
+                .code_mode_service
+                .dispatch_broker
+                .wake_paused_waits();
         })
     }
 }

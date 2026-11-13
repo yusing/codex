@@ -8,13 +8,14 @@ use codex_code_mode_protocol::StartedCell;
 use codex_code_mode_protocol::TerminateRequest;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
+use codex_code_mode_protocol::WaitToPendingOutcome;
+use codex_code_mode_protocol::WaitToPendingRequest;
 use codex_code_mode_protocol::host::DelegateRequestId;
 use codex_code_mode_protocol::host::DelegateResponse;
 use codex_code_mode_protocol::host::HostToClient;
 use codex_code_mode_protocol::host::RequestId;
 use codex_code_mode_protocol::host::SessionId;
 use codex_code_mode_protocol::host::WireCellId;
-use codex_code_mode_protocol::host::WireWaitRequest;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -50,6 +51,12 @@ pub(in crate::remote_session::connection) enum DriverCommand {
         caller_cancellation: CancellationToken,
         yield_signal: Option<CancellationToken>,
         response_tx: oneshot::Sender<Result<WaitOutcome, String>>,
+    },
+    WaitToPending {
+        session: RemoteSession,
+        request: WaitToPendingRequest,
+        caller_cancellation: CancellationToken,
+        response_tx: oneshot::Sender<Result<WaitToPendingOutcome, String>>,
     },
     Terminate {
         session: RemoteSession,
@@ -186,6 +193,12 @@ pub(super) enum PendingRequest {
         yield_observation: ObservationYield,
         response_tx: oneshot::Sender<Result<WaitOutcome, String>>,
     },
+    WaitToPending {
+        session: RemoteSession,
+        cell_id: WireCellId,
+        cancellation: CancellableRequest,
+        response_tx: oneshot::Sender<Result<WaitToPendingOutcome, String>>,
+    },
     Terminate {
         session: RemoteSession,
         cell_id: WireCellId,
@@ -199,11 +212,9 @@ pub(super) enum PendingRequest {
 
 pub(super) struct DeferredWait {
     pub(super) session: RemoteSession,
-    pub(super) request: WireWaitRequest,
-    pub(super) max_output_tokens: Option<usize>,
-    pub(super) caller_cancellation: CancellationToken,
-    pub(super) yield_signal: Option<CancellationToken>,
-    pub(super) response_tx: oneshot::Sender<Result<WaitOutcome, String>>,
+    pub(super) cell_id: WireCellId,
+    pub(super) request: codex_code_mode_protocol::host::HostRequest,
+    pub(super) pending: PendingRequest,
 }
 
 impl PendingRequest {
@@ -211,7 +222,8 @@ impl PendingRequest {
         match self {
             Self::OpenSession { cancellation, .. }
             | Self::Execute { cancellation, .. }
-            | Self::Wait { cancellation, .. } => Some(cancellation),
+            | Self::Wait { cancellation, .. }
+            | Self::WaitToPending { cancellation, .. } => Some(cancellation),
             Self::Terminate { .. } | Self::ShutdownSession { .. } => None,
         }
     }
@@ -234,6 +246,9 @@ impl PendingRequest {
                 let _ = response_tx.send(Err(reason));
             }
             Self::Execute { response_tx, .. } => {
+                let _ = response_tx.send(Err(reason));
+            }
+            Self::WaitToPending { response_tx, .. } => {
                 let _ = response_tx.send(Err(reason));
             }
             Self::Wait { response_tx, .. } | Self::Terminate { response_tx, .. } => {

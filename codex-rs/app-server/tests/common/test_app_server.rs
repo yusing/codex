@@ -1664,11 +1664,32 @@ impl TestAppServer {
     }
 
     async fn read_jsonrpc_message(&mut self) -> anyhow::Result<JSONRPCMessage> {
-        let mut line = String::new();
-        self.stdout.read_line(&mut line).await?;
-        let message = serde_json::from_str::<JSONRPCMessage>(&line)?;
-        eprintln!("read message from stdout: {message:?}");
-        Ok(message)
+        loop {
+            let mut line = String::new();
+            self.stdout.read_line(&mut line).await?;
+            let message = serde_json::from_str::<JSONRPCMessage>(&line)?;
+            eprintln!("read message from stdout: {message:?}");
+            if let JSONRPCMessage::Request(request) = &message
+                && request.method == "agent/hostAdmission/prepare"
+            {
+                let params: codex_app_server_protocol::AgentPrepareHostAdmissionParams =
+                    serde_json::from_value(
+                        request
+                            .params
+                            .clone()
+                            .context("missing host admission params")?,
+                    )?;
+                // This fixture owns no external resource store. Native startup still
+                // waits for its explicit host acknowledgement before proceeding.
+                self.send_response(
+                    request.id.clone(),
+                    serde_json::json!({"threadId": params.thread_id}),
+                )
+                .await?;
+                continue;
+            }
+            return Ok(message);
+        }
     }
 
     pub async fn read_stream_until_request_message(&mut self) -> anyhow::Result<ServerRequest> {

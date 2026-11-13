@@ -103,7 +103,7 @@ extends = "startup"
             .features
             .enable(Feature::Sqlite)
             .expect("enable SQLite");
-        config.multi_agent_v2.max_concurrent_threads_per_session = 3;
+        config.multi_agent_v2.max_concurrent_threads_per_session = Some(3);
     };
     let mut builder = test_codex()
         .with_extensions(Arc::new(extensions.build()))

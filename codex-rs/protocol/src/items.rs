@@ -382,6 +382,10 @@ pub struct CollabAgentToolCallItem {
     pub receiver_thread_ids: Vec<ThreadId>,
     #[serde(default)]
     pub receiver_agents: Vec<CollabAgentRef>,
+    /// Effective duration selected when this wait was registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub prompt: Option<String>,

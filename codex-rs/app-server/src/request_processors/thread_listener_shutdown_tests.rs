@@ -11,7 +11,7 @@ use crate::outgoing_message::OutgoingEnvelope;
 use crate::outgoing_message::OutgoingMessage;
 use crate::thread_sample::SampleResponseRegistry;
 use crate::thread_state::ConnectionCapabilities;
-use crate::thread_state::PendingNetworkApproval;
+use crate::thread_state::PendingCommandApproval;
 use crate::thread_state::resolve_server_request_on_thread_listener;
 use anyhow::Context;
 use anyhow::Result;
@@ -109,9 +109,92 @@ async fn listener_shutdown_releases_runtime_and_preserves_other_subscribers(
     }
     let network_request_id = RequestId::Integer(4);
     if attach_before_shutdown {
+        // Loaded inventory alone is not an attachment request.
+        processor
+            .resync_created_thread_listeners(connection_ids.clone())
+            .await;
+        assert!(!thread_state_manager.has_subscribers(thread_id).await);
+
+        // Lose real native creation broadcasts, then exercise the same recovery consumer
+        // used by both app-server transports. The existing native channel holds 1,024 IDs.
+        let mut created = processor.thread_created_receiver();
+        for _ in 0..2_048 {
+            codex_core::test_support::notify_thread_created(&test.thread_manager, &thread);
+        }
+        assert!(matches!(
+            created.recv().await,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+        ));
+        assert!(thread.has_pending_created_notification());
+        processor
+            .resync_created_thread_listeners(connection_ids.clone())
+            .await;
+        assert!(!thread.has_pending_created_notification());
+        assert_eq!(
+            thread_state_manager
+                .subscribed_connection_ids(thread_id)
+                .await
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            connection_ids.iter().copied().collect::<HashSet<_>>(),
+        );
+        let Some(ClientResponsePayload::ThreadUnsubscribe(unsubscribe)) = processor
+            .thread_unsubscribe(
+                &ConnectionRequestId {
+                    connection_id,
+                    request_id: RequestId::Integer(10),
+                },
+                ThreadUnsubscribeParams {
+                    thread_id: thread_id.to_string(),
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("unsubscribe failed: {error:?}"))?
+        else {
+            panic!("unsubscribe response missing")
+        };
+        assert_eq!(unsubscribe.status, ThreadUnsubscribeStatus::Unsubscribed);
+
+        // Neither a second lag nor a queued duplicate may reverse explicit unsubscribe.
+        for _ in 0..2_048 {
+            codex_core::test_support::notify_thread_created(&test.thread_manager, &thread);
+        }
+        assert!(matches!(
+            created.recv().await,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+        ));
+        processor
+            .resync_created_thread_listeners(connection_ids.clone())
+            .await;
         processor
             .try_attach_thread_listener(thread_id, Arc::clone(&thread), connection_ids.clone())
             .await;
+        assert_eq!(
+            thread_state_manager
+                .subscribed_connection_ids(thread_id)
+                .await
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            HashSet::from([disconnecting_connection_id, remaining_connection_id]),
+        );
+        // Explicit resume still subscribes normally; restore this test's shutdown fixture.
+        processor
+            .thread_resume(
+                ThreadResumeTarget::Client(ConnectionRequestId {
+                    connection_id,
+                    request_id: RequestId::Integer(11),
+                }),
+                ThreadResumeParams {
+                    thread_id: thread_id.to_string(),
+                    exclude_turns: true,
+                    ..Default::default()
+                },
+                None,
+                None,
+                Default::default(),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("explicit resume failed: {error:?}"))?;
         // Leave the prompt outstanding so shutdown runs before the proxy waiter resolves it.
         let permission_guard = thread_watch_manager
             .note_permission_requested(&thread_id.to_string())
@@ -121,10 +204,10 @@ async fn listener_shutdown_releases_runtime_and_preserves_other_subscribers(
             .await
             .lock()
             .await
-            .network_approvals
+            .command_approvals
             .insert(
-                "network-approval".to_string(),
-                PendingNetworkApproval {
+                ("network-turn".to_string(), "network-approval".to_string()),
+                PendingCommandApproval {
                     request_id: network_request_id.clone(),
                     permission_guard,
                 },

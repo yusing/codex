@@ -285,6 +285,12 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
+    /// Completed ContextCompaction identities at a complete current projection
+    /// boundary. Unsupported stores and incomplete evidence remain unavailable.
+    fn completed_compactions(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, Option<u64>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Checks whether a previously loaded model context still represents the stored history.
     ///
     /// Stores that cannot validate the opaque revision must return false. A false result or an

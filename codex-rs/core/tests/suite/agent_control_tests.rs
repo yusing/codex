@@ -1,5 +1,131 @@
 //! Verifies host controller selection and routing through existing runtime entry points.
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn source_bearing_native_agent_input_can_receive_approval_before_serialized_admission()
+-> anyhow::Result<()> {
+    use codex_config::test_support::CloudConfigBundleFixture;
+    use codex_core::config::Constrained;
+    use codex_protocol::approvals::ExecApprovalKind;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::protocol::AskForApproval;
+    use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::ReviewDecision;
+    use codex_utils_absolute_path::test_support::PathExt;
+
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let work_home = tempfile::TempDir::new()?;
+    let work_state = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(work_home.path().abs()),
+        "test-provider".to_owned(),
+    )
+    .await?;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
+    let test = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .with_agent_graph_store(Arc::new(
+            codex_agent_graph_store::LocalAgentGraphStore::new(Arc::clone(&work_state)),
+        ))
+        .with_thread_manager(move |manager| manager.with_work_state(work_state))
+        .with_cloud_config_bundle(
+            CloudConfigBundleFixture::loader_with_enterprise_requirement(
+                r#"
+[[rules.prefix_rules]]
+pattern = [{ token = "mchanges" }]
+decision = "prompt-user"
+justification = "A person must approve source acquisition."
+"#,
+            ),
+        )
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("collaboration");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("native collaboration");
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::Disabled)
+                .expect("permissions");
+            std::fs::write(config.codex_home.join("source.md"), "mchanges:source1\n")
+                .expect("source fixture");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("first"),
+                responses::ev_assistant_message("first-answer", "ready"),
+                responses::ev_completed("first"),
+            ]),
+            responses::sse(vec![
+                responses::ev_response_created("second"),
+                responses::ev_assistant_message("second-answer", "received"),
+                responses::ev_completed("second"),
+            ]),
+        ],
+    )
+    .await;
+    test.submit_text_turn("Establish the native root assignment.")
+        .await?;
+    ThreadIdle::wait(&test.codex).await;
+    let message = InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::root(),
+        Vec::new(),
+        format!(
+            "Read @{}",
+            test.codex_home_path().join("source.md").display()
+        ),
+        true,
+    );
+    let thread = Arc::clone(&test.codex);
+    let submission = tokio::spawn(async move {
+        thread
+            .start_or_steer_turn(TurnInputRequest::new(TurnInput::InterAgentCommunication(
+                message,
+            )))
+            .await
+    });
+    let approval = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ExecApprovalRequest(request) => Some(request.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(approval.kind, ExecApprovalKind::HumanCommand);
+    assert!(!submission.is_finished());
+    assert_eq!(
+        mock.requests().len(),
+        1,
+        "source preparation must precede inference"
+    );
+    // Denial avoids executing an ambient capture command; individual source failure
+    // remains frozen evidence. The response must traverse the normal session loop.
+    test.codex
+        .submit(Op::ExecApproval {
+            id: approval.approval_id.unwrap_or(approval.call_id),
+            turn_id: Some(approval.turn_id),
+            decision: ReviewDecision::denied("fixture denies source command"),
+        })
+        .await?;
+    let accepted = tokio::time::timeout(Duration::from_secs(10), submission).await???;
+    assert!(matches!(accepted, TurnInputSubmission::Accepted));
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(mock.requests().len(), 2);
+    test.codex.shutdown_and_wait().await?;
+    Ok(())
+}
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -193,6 +319,18 @@ impl AgentControl for TestAgentControl {
     fn send(&self, request: SendRequest) -> BoxFuture<'_, CodexResult<DeliveryReceipt>> {
         assert_eq!(request.caller, self.thread_id);
         Box::pin(async { Err(CodexErr::InvalidRequest("host send rejection".to_string())) })
+    }
+
+    fn side_question(
+        &self,
+        request: codex_core::SideQuestionRequest,
+    ) -> BoxFuture<'_, CodexResult<codex_core::SideQuestionAnswer>> {
+        assert_eq!(request.caller, self.thread_id);
+        Box::pin(async {
+            Err(CodexErr::InvalidRequest(
+                "host side-question rejection".to_string(),
+            ))
+        })
     }
 
     fn take_mailbox(&self, _agent: ThreadId) -> Vec<PendingAgentMessage> {

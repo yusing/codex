@@ -19,6 +19,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::openai_models::ReasoningEffort;
+use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -30,8 +31,8 @@ use toml::Value as TomlValue;
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
-#[derive(Default, Serialize)]
-struct AgentRoleOverrides {
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct RoleOverrides {
     developer_instructions: Option<String>,
     model: Option<String>,
     model_reasoning_effort: Option<ReasoningEffort>,
@@ -49,6 +50,20 @@ pub(crate) async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
 ) -> Result<(), String> {
+    apply_role_to_config_with_model_selection(config, role_name)
+        .await
+        .map(|_| ())
+}
+
+#[derive(Default)]
+pub(crate) struct AppliedRoleSelection {
+    pub(crate) effort: bool,
+}
+
+pub(crate) async fn apply_role_to_config_with_model_selection(
+    config: &mut Config,
+    role_name: Option<&str>,
+) -> Result<AppliedRoleSelection, String> {
     let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
 
     let role = resolve_role_config(config, role_name)
@@ -67,14 +82,14 @@ async fn apply_role_to_config_inner(
     config: &mut Config,
     role_name: &str,
     role: &AgentRoleConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<AppliedRoleSelection> {
     let is_built_in = !config.agent_roles.contains_key(role_name);
     let Some(config_file) = role.config_file.as_ref() else {
-        return Ok(());
+        return Ok(AppliedRoleSelection::default());
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
     let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
-    let mut overrides = AgentRoleOverrides {
+    let mut overrides = RoleOverrides {
         developer_instructions: role_config.developer_instructions,
         model: role_config.model,
         model_reasoning_effort: role_config.model_reasoning_effort,
@@ -118,10 +133,13 @@ async fn apply_role_to_config_inner(
         .as_table()
         .is_some_and(toml::map::Map::is_empty)
     {
-        return Ok(());
+        return Ok(AppliedRoleSelection::default());
     }
+    let selection = AppliedRoleSelection {
+        effort: overrides.model_reasoning_effort.is_some(),
+    };
     *config = role_overrides::build_next_config(config, role_layer_toml, &overrides)?;
-    Ok(())
+    Ok(selection)
 }
 
 async fn load_role_layer_toml(
@@ -174,7 +192,7 @@ mod role_overrides {
     pub(super) fn build_next_config(
         config: &Config,
         role_layer_toml: TomlValue,
-        overrides: &AgentRoleOverrides,
+        overrides: &RoleOverrides,
     ) -> anyhow::Result<Config> {
         let mut next_config = config.clone();
         next_config.config_layer_stack = next_config

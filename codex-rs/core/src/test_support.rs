@@ -194,6 +194,11 @@ pub fn thread_manager_with_models_provider(
     ThreadManager::with_models_provider_for_tests(auth, provider)
 }
 
+/// Emit through the native creation producer, including its retained lag-recovery fact.
+pub fn notify_thread_created(manager: &ThreadManager, thread: &Arc<crate::CodexThread>) {
+    manager.notify_thread_created_for_tests(thread);
+}
+
 pub fn thread_manager_with_models_provider_and_home(
     auth: CodexAuth,
     provider: ModelProviderInfo,

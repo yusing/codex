@@ -39,7 +39,7 @@ pub(crate) struct CodeModeDispatchBroker {
     dispatch_rx: async_channel::Receiver<DispatchMessage>,
     pub(super) dispatch_gates: Arc<Mutex<HashMap<CellId, CellDispatchGate>>>,
     pub(super) reset_admitted: std::sync::atomic::AtomicBool,
-    pub(super) compound_changed: tokio::sync::Notify,
+    pub(super) paused_changed: tokio::sync::Notify,
     executed_tool_calls: ExecutedToolCalls,
 }
 
@@ -55,7 +55,8 @@ pub(super) struct CellDispatchGate {
     // no origin is attached; Some retains the original item and window across
     // waits, even if the best-effort item lookup found no ID.
     pub(super) originating_call: Option<ToolCallOrigin>,
-    pub(super) compound: Option<super::compound::CompoundCell>,
+    pub(super) paused_waits: usize,
+    pub(super) active_callbacks: usize,
     pub(super) closed: bool,
 }
 
@@ -68,7 +69,7 @@ impl CodeModeDispatchBroker {
             dispatch_rx,
             dispatch_gates: Arc::new(Mutex::new(HashMap::new())),
             reset_admitted: std::sync::atomic::AtomicBool::new(false),
-            compound_changed: tokio::sync::Notify::new(),
+            paused_changed: tokio::sync::Notify::new(),
             executed_tool_calls,
         }
     }
@@ -88,7 +89,8 @@ impl CodeModeDispatchBroker {
                 .or_insert_with(|| CellDispatchGate {
                     ready: watch::channel(false).0,
                     originating_call: None,
-                    compound: None,
+                    paused_waits: 0,
+                    active_callbacks: 0,
                     closed: false,
                 });
             gate.originating_call = originating_call;
@@ -112,10 +114,12 @@ impl CodeModeDispatchBroker {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(gate) = dispatch_gates.get_mut(cell_id) {
             gate.closed = true;
-            if gate.compound.is_none() {
+            if gate.paused_waits == 0 {
                 dispatch_gates.remove(cell_id);
             }
         }
+        drop(dispatch_gates);
+        self.paused_changed.notify_waiters();
         self.executed_tool_calls.finish_cell_recording(cell_id);
     }
 
@@ -262,7 +266,7 @@ impl CodeModeDispatchBroker {
     }
 }
 
-fn dispatch_gate(
+pub(super) fn dispatch_gate(
     dispatch_gates: &Mutex<HashMap<CellId, CellDispatchGate>>,
     cell_id: &CellId,
 ) -> watch::Sender<bool> {
@@ -275,7 +279,8 @@ fn dispatch_gate(
         .or_insert_with(|| CellDispatchGate {
             ready: watch::channel(false).0,
             originating_call: None,
-            compound: None,
+            paused_waits: 0,
+            active_callbacks: 0,
             closed: false,
         })
         .ready
@@ -291,9 +296,9 @@ fn remove_dispatch_gate(
         Err(poisoned) => poisoned.into_inner(),
     };
     // A canceled callback owns only an unattached placeholder, not the cell or
-    // another invocation's compound registration.
+    // another invocation's paused callback.
     if dispatch_gates.get(cell_id).is_some_and(|gate| {
-        gate.originating_call.is_none() && !*gate.ready.borrow() && gate.compound.is_none()
+        gate.originating_call.is_none() && !*gate.ready.borrow() && gate.paused_waits == 0
     }) {
         dispatch_gates.remove(cell_id);
     }
@@ -358,6 +363,7 @@ impl CodeModeSessionDelegate for CodeModeCellDelegate {
                 dispatch_trace.interruption = Some(DispatchInterruption::Cancelled);
                 return Err("code mode nested tool call cancelled".to_string());
             }
+            let _callback = self.broker.begin_callback(&invocation.cell_id);
             let (response_tx, response_rx) = oneshot::channel();
             // Only the worker can tell whether dispatch beats cancellation once the call is queued.
             self.broker

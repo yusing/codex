@@ -168,6 +168,7 @@ impl CompactionTurnMetadata {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CodexResponsesRequestKind {
     Turn,
+    Progress,
     Prewarm,
     Compaction(CompactionTurnMetadata),
     Memory,
@@ -177,6 +178,7 @@ impl CodexResponsesRequestKind {
     fn metadata(self) -> (&'static str, Option<CompactionTurnMetadata>) {
         match self {
             CodexResponsesRequestKind::Turn => ("turn", None),
+            CodexResponsesRequestKind::Progress => ("progress", None),
             CodexResponsesRequestKind::Prewarm => ("prewarm", None),
             CodexResponsesRequestKind::Compaction(metadata) => ("compaction", Some(metadata)),
             CodexResponsesRequestKind::Memory => ("memory", None),

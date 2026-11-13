@@ -23,6 +23,8 @@ use codex_code_mode_protocol::StartedCell;
 use codex_code_mode_protocol::TerminateRequest;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
+use codex_code_mode_protocol::WaitToPendingOutcome;
+use codex_code_mode_protocol::WaitToPendingRequest;
 use codex_code_mode_protocol::grpc;
 use codex_code_mode_protocol::grpc::code_mode_host_client::CodeModeHostClient;
 use codex_http_client::HttpClientFactory;
@@ -382,6 +384,13 @@ impl CodeModeSession for GrpcCodeModeSession {
         preempt: Option<CancellationToken>,
     ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
         Box::pin(self.inner.wait(request, preempt))
+    }
+
+    fn wait_to_pending<'a>(
+        &'a self,
+        request: WaitToPendingRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitToPendingOutcome> {
+        Box::pin(self.inner.wait_to_pending(request))
     }
 
     fn terminate<'a>(

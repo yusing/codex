@@ -43,6 +43,299 @@ use tokio_util::sync::CancellationToken;
 
 struct PendingTask;
 
+struct AuxiliaryResetTask(Arc<tokio::sync::Notify>);
+
+impl SessionTask for AuxiliaryResetTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Compact
+    }
+    fn span_name(&self) -> &'static str {
+        "session_task.auxiliary_reset"
+    }
+    async fn run(
+        self: Arc<Self>,
+        _session: Arc<Session>,
+        _context: Arc<TurnContext>,
+        _input: Vec<TurnInput>,
+        _cancellation: CancellationToken,
+    ) -> SessionTaskResult {
+        self.0.notified().await;
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn auxiliary_reset_preserves_pending_final_without_sampling() -> anyhow::Result<()> {
+    use crate::agent::control::LocalAgentControl;
+    use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
+    use codex_state::coordination::DeliveryKind;
+    use codex_state::coordination::PublishDelivery;
+    use codex_state::coordination::WorkStamp;
+    use codex_utils_absolute_path::test_support::PathExt;
+    let directory = tempfile::tempdir()?;
+    let state = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(directory.path().abs()),
+        "test-provider".into(),
+    )
+    .await?;
+    let (mut session, context, receiver) = make_session_and_context_with_auth_and_config_and_rx(
+        codex_login::CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config
+                .features
+                .enable(codex_features::Feature::MultiAgentV2)
+                .unwrap();
+        },
+    )
+    .await;
+    let control = LocalAgentControl::new(
+        std::sync::Weak::default(),
+        crate::thread_manager::default_thread_id_generator(),
+        None,
+        Some(state),
+    );
+    control
+        .runtime
+        .register_session_root(session.thread_id, None);
+    let runtime = control.runtime.for_actor_start(session.thread_id, None)?;
+    Arc::get_mut(&mut session)
+        .unwrap()
+        .services
+        .local_agent_runtime = runtime;
+    let ledger = control.runtime.work_ledger()?;
+    let work = WorkStamp {
+        root_id: session.thread_id,
+        actor_id: session.thread_id,
+        work_id: uuid::Uuid::now_v7(),
+    };
+    ledger
+        .admit_work(
+            work,
+            None,
+            &PublishDelivery {
+                id: work.work_id,
+                root_id: work.root_id,
+                sender_id: None,
+                recipient_id: work.actor_id,
+                work: Some(work),
+                kind: DeliveryKind::Message,
+                payload: "input".into(),
+            },
+        )
+        .await?;
+    ledger.bind_turn(work, "original-request").await?;
+    // Selected capture remains unavailable, so reset must not fabricate final readiness.
+    control
+        .runtime
+        .prepare_successful_completion(work.actor_id, "original-request", Some("mchanges:amber1"))
+        .await?;
+    let original = control
+        .runtime
+        .current_work_checkpoint(work.actor_id)
+        .await?;
+    assert!(original.is_some());
+    let finish = Arc::new(tokio::sync::Notify::new());
+    session
+        .spawn_task(
+            Arc::clone(&context),
+            Vec::new(),
+            AuxiliaryResetTask(Arc::clone(&finish)),
+        )
+        .await;
+    let done = {
+        let active = session.active_turn.lock().await;
+        Arc::clone(&active.as_ref().unwrap().task.as_ref().unwrap().done)
+    };
+    let finished = done.notified();
+    tokio::pin!(finished);
+    finished.as_mut().enable();
+    finish.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), finished).await?;
+    assert!(session.active_turn.lock().await.is_none());
+    assert_eq!(
+        control
+            .runtime
+            .current_work_checkpoint(work.actor_id)
+            .await?,
+        original
+    );
+    let mut checkpoints = 0;
+    while let Ok(event) = receiver.try_recv() {
+        match event.msg {
+            EventMsg::TurnCheckpointed(event) => {
+                checkpoints += 1;
+                assert!(matches!(
+                    event.checkpoint,
+                    codex_protocol::protocol::TurnCheckpoint::CompletionPending { .. }
+                ));
+            }
+            EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_) => {
+                panic!("reset fabricated a logical terminal")
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(checkpoints, 1);
+    control.runtime.request_shutdown().wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_task_retains_turn_without_checkpoint_or_terminal() {
+    let (session, context, receiver) = make_session_and_context_with_rx().await;
+    session
+        .spawn_task(Arc::clone(&context), Vec::new(), PendingTask)
+        .await;
+    {
+        let active = session.active_turn.lock().await;
+        let task = active.as_ref().unwrap().task.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&task.turn_context, &context));
+        assert!(!task.handle.is_finished());
+    }
+    while let Ok(event) = receiver.try_recv() {
+        assert!(!matches!(
+            event.msg,
+            EventMsg::TurnCheckpointed(_) | EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+        ));
+    }
+    session
+        .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Interrupted)
+        .await;
+}
+
+#[tokio::test]
+async fn final_input_check_keeps_active_work_for_durable_mail_without_legacy_payload()
+-> anyhow::Result<()> {
+    use crate::agent::control::LocalAgentControl;
+    use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
+    use codex_state::coordination::DeliveryKind;
+    use codex_state::coordination::PublishDelivery;
+    use codex_state::coordination::WorkDisposition;
+    use codex_state::coordination::WorkStamp;
+    use codex_utils_absolute_path::test_support::PathExt;
+
+    let directory = tempfile::tempdir()?;
+    let state = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(directory.path().abs()),
+        "test-provider".to_owned(),
+    )
+    .await?;
+    let (mut session, context, receiver) = make_session_and_context_with_auth_and_config_and_rx(
+        codex_login::CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config
+                .features
+                .enable(codex_features::Feature::MultiAgentV2)
+                .expect("enable managed coordination");
+            config
+                .features
+                .disable(codex_features::Feature::WakeOnAgentMessages)
+                .expect("idle mail stays idle");
+        },
+    )
+    .await;
+    let control = LocalAgentControl::new(
+        std::sync::Weak::default(),
+        crate::thread_manager::default_thread_id_generator(),
+        None,
+        Some(state),
+    );
+    control
+        .runtime
+        .register_session_root(session.thread_id, None);
+    let runtime = control.runtime.for_actor_start(session.thread_id, None)?;
+    Arc::get_mut(&mut session)
+        .expect("unique fixture session")
+        .services
+        .local_agent_runtime = runtime;
+    let ledger = session.services.local_agent_runtime.work_ledger()?;
+    let caller = WorkStamp {
+        root_id: session.thread_id,
+        actor_id: session.thread_id,
+        work_id: uuid::Uuid::now_v7(),
+    };
+    let initial = PublishDelivery {
+        id: caller.work_id,
+        root_id: caller.root_id,
+        sender_id: None,
+        recipient_id: caller.actor_id,
+        work: Some(caller),
+        kind: DeliveryKind::Message,
+        payload: "accepted input".to_owned(),
+    };
+    let admitted = ledger.admit_work(caller, None, &initial).await?;
+    ledger
+        .transition_work(caller, admitted.revision, WorkDisposition::Running)
+        .await?;
+    session
+        .spawn_task(Arc::clone(&context), Vec::new(), PendingTask)
+        .await;
+    session
+        .input_queue
+        .accept_mailbox_delivery_for_current_turn(&session.active_turn, &context.sub_id)
+        .await;
+    assert!(
+        !session
+            .input_queue
+            .has_pending_input(&session.active_turn)
+            .await
+    );
+
+    ledger
+        .publish_delivery(&PublishDelivery {
+            id: uuid::Uuid::now_v7(),
+            payload: serde_json::to_string(
+                &crate::agent::control::work_lifecycle::CoordinationPayload::UserInput {
+                    content: vec![UserInput::Text {
+                        text: "new addressed input".to_owned(),
+                        text_elements: Vec::new(),
+                    }],
+                },
+            )?,
+            ..initial
+        })
+        .await?;
+    assert!(session.has_pending_coordination_messages().await?);
+
+    let resume = session
+        .on_task_finished(
+            Arc::clone(&context),
+            Ok(Some(super::regular::RegularTaskOutput {
+                outcome: crate::session::turn::TurnRunOutcome::Finished(Some(
+                    "candidate final".to_owned(),
+                )),
+                mcp_startup_requirements: Default::default(),
+            })),
+        )
+        .await;
+    assert!(
+        resume.is_some(),
+        "active work continues even when idle mail wakes are disabled"
+    );
+    assert!(
+        session
+            .active_turn
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .task
+            .is_some()
+    );
+    while let Ok(event) = receiver.try_recv() {
+        assert!(!matches!(
+            event.msg,
+            EventMsg::TurnComplete(_) | EventMsg::TurnCheckpointed(_)
+        ));
+    }
+    session
+        .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Replaced)
+        .await;
+    Ok(())
+}
+
 impl SessionTask for PendingTask {
     fn kind(&self) -> TaskKind {
         TaskKind::Regular
@@ -324,6 +617,7 @@ async fn turn_completion_metrics_follow_model_switch(scenario: UsageScenario) {
                     crate::session::TokenUsageContext::Sampling {
                         includes_reasoning: false,
                         input_item_count: 0,
+                        history_version: 0,
                     },
                 )
                 .await
@@ -803,4 +1097,111 @@ async fn turn_critical_path_metrics_count_each_capture_once() {
             assert_eq!((point.count(), point.sum()), (1, expected[component]));
         }
     }
+}
+
+#[tokio::test]
+async fn settled_completion_reservation_publishes_original_without_starting_a_task()
+-> anyhow::Result<()> {
+    use crate::agent::control::LocalAgentControl;
+    use crate::agent::control::recovery::WorkCheckpoint;
+    use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
+    use codex_state::coordination::DeliveryKind;
+    use codex_state::coordination::PublishDelivery;
+    use codex_state::coordination::WorkStamp;
+    use codex_utils_absolute_path::test_support::PathExt;
+    let directory = tempfile::tempdir()?;
+    let state = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(directory.path().abs()),
+        "test-provider".into(),
+    )
+    .await?;
+    let (mut session, context, _) = make_session_and_context_with_auth_and_config_and_rx(
+        codex_login::CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config
+                .features
+                .enable(codex_features::Feature::MultiAgentV2)
+                .unwrap();
+        },
+    )
+    .await;
+    let control = LocalAgentControl::new(
+        std::sync::Weak::default(),
+        crate::thread_manager::default_thread_id_generator(),
+        None,
+        Some(state),
+    );
+    control
+        .runtime
+        .register_session_root(session.thread_id, None);
+    Arc::get_mut(&mut session)
+        .unwrap()
+        .services
+        .local_agent_runtime = control.runtime.clone();
+    let ledger = control.runtime.work_ledger()?;
+    let work = WorkStamp {
+        root_id: session.thread_id,
+        actor_id: session.thread_id,
+        work_id: uuid::Uuid::now_v7(),
+    };
+    ledger
+        .admit_work(
+            work,
+            None,
+            &PublishDelivery {
+                id: work.work_id,
+                root_id: work.root_id,
+                sender_id: None,
+                recipient_id: work.actor_id,
+                work: Some(work),
+                kind: DeliveryKind::Message,
+                payload: "input".into(),
+            },
+        )
+        .await?;
+    ledger.bind_turn(work, "original-request").await?;
+    let checkpoint = control
+        .runtime
+        .prepare_successful_completion(work.actor_id, "original-request", Some("original final"))
+        .await?
+        .unwrap();
+    control
+        .runtime
+        .prepare_completion_capture(&checkpoint)
+        .await?;
+    ledger
+        .completion_settlement(work, checkpoint.delivery_id, true)
+        .await?;
+    let (reservation, _, selected) = session
+        .reserve_pending_work_turn()
+        .await
+        .expect("completion reservation");
+    assert_eq!(
+        selected,
+        Some(WorkCheckpoint::Completion(checkpoint.clone()))
+    );
+    assert!(
+        !session
+            .start_task_with_reservation(
+                context,
+                Vec::new(),
+                PendingTask,
+                Some((reservation, selected))
+            )
+            .await,
+        "no pending blocker means no carrier or provider turn"
+    );
+    assert!(session.active_turn.lock().await.is_none());
+    assert_eq!(
+        ledger
+            .terminal_delivery(work)
+            .await?
+            .unwrap()
+            .publication
+            .id,
+        checkpoint.delivery_id
+    );
+    control.runtime.request_shutdown().wait().await?;
+    Ok(())
 }

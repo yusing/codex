@@ -272,7 +272,12 @@ async fn root_service_tier_change_updates_existing_subagent(
         ]),
     )
     .await;
-    child.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
+    child
+        .submit(Op::Compact {
+            reload: None,
+            context_reset_request_id: None,
+        })
+        .await?;
     wait_for_turn_complete(&child).await;
     assert_request_service_tier(&child_compaction_request, updated_request_service_tier);
 
@@ -328,7 +333,7 @@ async fn evicted_role_subagent_uses_owned_service_tier_after_reload(
                 AgentRuntimeOwnership::Controller => "priority".to_string(),
                 AgentRuntimeOwnership::Host => SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string(),
             });
-            config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+            config.multi_agent_v2.max_concurrent_threads_per_session = Some(2);
             configure_priority_role(config);
         });
     let test = builder.build_with_auto_env(&server).await?;

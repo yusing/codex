@@ -5,11 +5,13 @@ use codex_code_mode_protocol::CodeModeNestedToolCall;
 use codex_code_mode_protocol::CodeModeOutputTruncation;
 use codex_code_mode_protocol::CodeModeToolKind;
 use codex_code_mode_protocol::ExecuteRequest;
+use codex_code_mode_protocol::ExecuteToPendingOutcome;
 use codex_code_mode_protocol::FunctionCallOutputContentItem;
 use codex_code_mode_protocol::ImageDetail;
 use codex_code_mode_protocol::RuntimeResponse;
 use codex_code_mode_protocol::ToolDefinition;
 use codex_code_mode_protocol::WaitOutcome;
+use codex_code_mode_protocol::WaitToPendingOutcome;
 use codex_code_mode_protocol::grpc;
 use codex_protocol::ToolName;
 
@@ -167,6 +169,51 @@ pub(super) fn wait_outcome(
         }
     };
     Ok(outcome)
+}
+
+pub(super) fn wait_to_pending_outcome(
+    response: tonic::Response<grpc::WaitToPendingResponse>,
+) -> Result<WaitToPendingOutcome, String> {
+    let (metadata, response, _) = response.into_parts();
+    Ok(
+        match response.state.ok_or_else(|| {
+            "code-mode pending-frontier observation omitted its outcome".to_string()
+        })? {
+            grpc::wait_to_pending_response::State::Pending(pending) => {
+                super::validate_identifier(&pending.cell_id, "cell ID")?;
+                for id in &pending.pending_tool_call_ids {
+                    super::validate_identifier(id, "pending tool call ID")?;
+                }
+                WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Pending {
+                    cell_id: CellId::new(pending.cell_id),
+                    content_items: pending
+                        .content_items
+                        .into_iter()
+                        .map(content_item)
+                        .collect::<Result<_, _>>()?,
+                    pending_tool_call_ids: pending.pending_tool_call_ids,
+                })
+            }
+            grpc::wait_to_pending_response::State::Completed(response) => {
+                let mut response = runtime_response(response)?;
+                if let RuntimeResponse::Result {
+                    result_buffered_for,
+                    ..
+                } = &mut response
+                {
+                    *result_buffered_for = metadata
+                        .get(grpc::RESULT_BUFFERED_FOR_NS_METADATA)
+                        .and_then(|value| value.to_str().ok()?.parse().ok())
+                        .map(Duration::from_nanos)
+                        .unwrap_or_default();
+                }
+                WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Completed(response))
+            }
+            grpc::wait_to_pending_response::State::MissingCell(response) => {
+                WaitToPendingOutcome::MissingCell(runtime_response(response)?)
+            }
+        },
+    )
 }
 
 fn content_item(item: grpc::ContentItem) -> Result<FunctionCallOutputContentItem, String> {

@@ -10,6 +10,48 @@ use codex_protocol::protocol::ThreadHistoryMode;
 
 use super::persisted_event_msg;
 
+#[test]
+fn reset_outcomes_survive_both_history_modes_without_replaying_live_admission() {
+    use codex_protocol::context_reset::ContextReset;
+    use codex_protocol::context_reset::ContextResetStatus;
+    for mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        for generation in [0, 4] {
+            for status in [
+                ContextResetStatus::Accepted,
+                ContextResetStatus::Started,
+                ContextResetStatus::Completed,
+                ContextResetStatus::Failed,
+                ContextResetStatus::Canceled,
+            ] {
+                let receipt = ContextReset {
+                    thread_id: "thread".into(),
+                    turn_id: "turn".into(),
+                    request_id: None,
+                    generation,
+                    reset_id: Some("reset".into()),
+                    status,
+                    inline: true,
+                    diagnostic: Some("native diagnostic".into()),
+                };
+                let event = EventMsg::ContextReset(receipt.clone());
+                let retained = persisted_event_msg(&event, mode);
+                if matches!(
+                    status,
+                    ContextResetStatus::Accepted | ContextResetStatus::Started
+                ) {
+                    assert!(retained.is_none());
+                } else {
+                    let retained = retained.unwrap();
+                    let EventMsg::ContextReset(actual) = retained.as_ref() else {
+                        panic!("reset outcome changed kind");
+                    };
+                    assert_eq!(actual, &receipt);
+                }
+            }
+        }
+    }
+}
+
 fn image_item(image: GeneratedImageRef) -> ImageGenerationItem {
     ImageGenerationItem {
         id: "image-1".to_string(),

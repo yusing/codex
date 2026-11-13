@@ -22,7 +22,17 @@ pub(crate) fn format_inter_agent_completion_message(
     sender: AgentPath,
     status: &AgentStatus,
 ) -> Option<String> {
-    let payload = match status {
+    let payload = inter_agent_completion_payload(status)?;
+    Some(
+        InterAgentCompletionMessage::new(task_name, sender, payload)
+            .render()
+            .into_text()
+            .unwrap_or_default(),
+    )
+}
+
+pub(crate) fn inter_agent_completion_payload(status: &AgentStatus) -> Option<String> {
+    Some(match status {
         AgentStatus::Completed(Some(message)) => message.clone(),
         AgentStatus::Completed(None) => String::new(),
         AgentStatus::Errored(error) => {
@@ -32,13 +42,7 @@ pub(crate) fn format_inter_agent_completion_message(
         AgentStatus::Shutdown => "Agent shut down.".to_string(),
         AgentStatus::NotFound => "Agent was not found.".to_string(),
         AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Interrupted => return None,
-    };
-    Some(
-        InterAgentCompletionMessage::new(task_name, sender, payload)
-            .render()
-            .into_text()
-            .unwrap_or_default(),
-    )
+    })
 }
 
 pub(crate) fn format_guardian_interruption_message(

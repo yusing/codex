@@ -19,8 +19,9 @@ fn role_segment_filters_base_and_appends_bundled_guidance() {
             base: "Role.\n## Plan tool\nOmit role checklist guidance.\n## Work\nContinue."
                 .to_string(),
             marked,
+            subagent: false,
             omit_update_plan_instructions: true,
-            max_concurrency: 2,
+            max_concurrency: Some(2),
             wait_agent_enabled: true,
             expose_model_overrides: true,
         };
@@ -41,4 +42,25 @@ fn role_segment_filters_base_and_appends_bundled_guidance() {
             ),
         );
     }
+}
+
+#[test]
+fn unbounded_role_has_no_invented_concurrency_limit() {
+    let instructions = MultiAgentRoleInstructions::Composed {
+        base: "Role.".to_owned(),
+        subagent: true,
+        marked: false,
+        omit_update_plan_instructions: false,
+        max_concurrency: None,
+        wait_agent_enabled: true,
+        expose_model_overrides: false,
+    };
+    let ContentItem::InputText { text } = instructions.body() else {
+        panic!("role text");
+    };
+    assert!(!text.contains("concurrency slots"));
+    assert!(text.contains("inside functions.exec"));
+    assert!(text.contains("each has its own working directory"));
+    assert!(text.contains("mchanges source references"));
+    assert!(text.contains("authenticated parent assignment carries the parent's authority"));
 }

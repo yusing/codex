@@ -34,6 +34,22 @@ pub(super) struct ProjectedRolloutLine {
     pub fallback_created_at_ms: Option<i64>,
     pub changes: ThreadHistoryChangeSet,
     pub realtime_item: Option<RealtimeItem>,
+    pub compaction_actor: Option<ThreadId>,
+}
+
+pub(super) fn compaction_actor(item: &codex_rollout::RolloutItem) -> Option<ThreadId> {
+    match item {
+        codex_rollout::RolloutItem::EventMsg(
+            codex_protocol::protocol::EventMsg::ItemCompleted(event),
+        ) if matches!(
+            event.item,
+            codex_protocol::items::TurnItem::ContextCompaction(_)
+        ) =>
+        {
+            Some(event.thread_id)
+        }
+        _ => None,
+    }
 }
 
 /// One ordered update to apply while advancing a rollout projection checkpoint.
@@ -42,6 +58,9 @@ pub(super) struct ProjectedRolloutLine {
 /// prefix even when a complete rollout line cannot be projected.
 pub(super) enum RolloutProjectionStep {
     Line(Box<ProjectedRolloutLine>),
+    IncompleteCompactionEvidence {
+        end_byte_offset: u64,
+    },
     SkippedOrdinalRange {
         start_ordinal: u64,
         end_ordinal_exclusive: u64,
@@ -141,8 +160,22 @@ WHERE thread_id = ?
         });
     }
 
+    // Install the checkpoint before item projection so identity-based completion
+    // triggers update the same transaction. A suffix cannot establish a total.
+    sqlx::query("INSERT INTO thread_history_projection_state (thread_id, next_rollout_byte_offset, next_rollout_ordinal, completed_compactions) VALUES (?, ?, ?, ?) ON CONFLICT(thread_id) DO NOTHING")
+        .bind(thread_id.as_str())
+        .bind(start_offset)
+        .bind(next_ordinal)
+        .bind((initial_ordinal == 0).then_some(0_i64))
+        .execute(&mut *transaction).await.map_err(thread_history_error)?;
+
     for projection in projections {
         match projection {
+            RolloutProjectionStep::IncompleteCompactionEvidence { end_byte_offset } => {
+                sqlx::query("UPDATE thread_history_projection_state SET completed_compactions = NULL, compaction_revision = NULL WHERE thread_id = ? AND (compaction_byte_offset IS NULL OR compaction_byte_offset < ?)")
+                    .bind(thread_id.as_str()).bind(sqlite_integer(end_byte_offset, "compaction byte offset")?)
+                    .execute(&mut *transaction).await.map_err(thread_history_error)?;
+            }
             RolloutProjectionStep::Line(projection) => {
                 let ordinal = sqlite_integer(projection.ordinal, "rollout ordinal")?;
                 if ordinal != next_ordinal {
@@ -159,6 +192,7 @@ WHERE thread_id = ?
                     sqlite_integer(projection.start_byte_offset, "rollout byte offset")?,
                     sqlite_integer(projection.end_byte_offset, "rollout byte offset")?,
                     projection.fallback_created_at_ms,
+                    projection.compaction_actor,
                     projection.changes,
                 )
                 .await?;
@@ -202,6 +236,9 @@ ON CONFLICT(thread_id, item_id) DO NOTHING
                 start_ordinal,
                 end_ordinal_exclusive,
             } => {
+                sqlx::query("UPDATE thread_history_projection_state SET completed_compactions = NULL, compaction_revision = NULL WHERE thread_id = ? AND (compaction_next_ordinal IS NULL OR compaction_next_ordinal < ?)")
+                    .bind(thread_id.as_str()).bind(sqlite_integer(end_ordinal_exclusive, "compaction ordinal")?)
+                    .execute(&mut *transaction).await.map_err(thread_history_error)?;
                 let start_ordinal = sqlite_integer(start_ordinal, "rollout ordinal")?;
                 if start_ordinal != next_ordinal {
                     return Err(ThreadStoreError::Internal {
@@ -242,7 +279,22 @@ ON CONFLICT(thread_id) DO UPDATE SET
     .execute(&mut *transaction)
     .await
     .map_err(thread_history_error)?;
+    sqlx::query("UPDATE thread_history_projection_state SET compaction_byte_offset = ?, compaction_next_ordinal = ?, compaction_revision = NULL WHERE thread_id = ? AND compaction_byte_offset >= ? AND compaction_byte_offset <= ?")
+        .bind(sqlite_integer(next_offset, "compaction byte offset")?)
+        .bind(next_ordinal)
+        .bind(thread_id.as_str())
+        .bind(start_offset)
+        .bind(sqlite_integer(next_offset, "compaction byte offset")?)
+        .execute(&mut *transaction).await.map_err(thread_history_error)?;
     transaction.commit().await.map_err(thread_history_error)
+}
+
+/// The same projection owner supplies retained and current decoded-boundary counts.
+pub(super) async fn completed_compactions(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+) -> ThreadStoreResult<Option<u64>> {
+    super::compaction_metrics::read(store, thread_id).await
 }
 
 pub(super) async fn delete_thread(
@@ -301,6 +353,7 @@ async fn apply_change_set(
     rollout_byte_offset: i64,
     rollout_end_byte_offset: i64,
     fallback_created_at_ms: Option<i64>,
+    compaction_actor: Option<ThreadId>,
     changes: ThreadHistoryChangeSet,
 ) -> ThreadStoreResult<()> {
     for turn in changes.changed_turns {
@@ -465,13 +518,15 @@ INSERT INTO thread_items (
     created_at_ms,
     started_at_ms,
     completed_at_ms,
+    compaction_actor_id,
     item_type,
     item_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, json_extract(?, '$.type'), ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, json_extract(?, '$.type'), ?)
 ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET
     updated_at_ordinal = excluded.updated_at_ordinal,
     started_at_ms = COALESCE(thread_items.started_at_ms, excluded.started_at_ms),
     completed_at_ms = COALESCE(thread_items.completed_at_ms, excluded.completed_at_ms),
+    compaction_actor_id = COALESCE(thread_items.compaction_actor_id, excluded.compaction_actor_id),
     item_type = excluded.item_type,
     item_json = excluded.item_json
             "#,
@@ -484,6 +539,7 @@ ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET
         .bind(created_at_ms)
         .bind(item.started_at_ms)
         .bind(item.completed_at_ms)
+        .bind(compaction_actor.map(|id| id.to_string()))
         .bind(item_json.as_str())
         .bind(item_json)
         .execute(&mut **transaction)

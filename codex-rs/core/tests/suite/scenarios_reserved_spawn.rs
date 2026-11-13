@@ -161,6 +161,8 @@ fn create_request(name: &str, fork_history: bool) -> ThreadCreateRequest {
         agent_type: None,
         model: None,
         reasoning_effort: None,
+        cwd: None,
+        preload: None,
     }
 }
 

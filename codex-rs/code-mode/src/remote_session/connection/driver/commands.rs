@@ -7,6 +7,8 @@ use codex_code_mode_protocol::ExecuteRequest;
 use codex_code_mode_protocol::TerminateRequest;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
+use codex_code_mode_protocol::WaitToPendingOutcome;
+use codex_code_mode_protocol::WaitToPendingRequest;
 use codex_code_mode_protocol::host::ClientToHost;
 use codex_code_mode_protocol::host::EncodedFrame;
 use codex_code_mode_protocol::host::HostRequest;
@@ -65,6 +67,12 @@ impl ConnectionDriver {
                 yield_signal,
                 response_tx,
             ),
+            DriverCommand::WaitToPending {
+                session,
+                request,
+                caller_cancellation,
+                response_tx,
+            } => self.wait_to_pending(session, request, caller_cancellation, response_tx),
             DriverCommand::Terminate {
                 session,
                 request,
@@ -224,17 +232,6 @@ impl ConnectionDriver {
                 return true;
             }
         };
-        if self.requests.has_cancelled_wait(&session, &request.cell_id) {
-            self.requests.push_deferred_wait(DeferredWait {
-                session,
-                request,
-                max_output_tokens,
-                caller_cancellation,
-                yield_signal,
-                response_tx,
-            });
-            return true;
-        }
         self.start_wait(
             session,
             request,
@@ -255,7 +252,9 @@ impl ConnectionDriver {
         response_tx: oneshot::Sender<Result<WaitOutcome, String>>,
     ) -> bool {
         let cell_id = request.cell_id.clone();
-        self.send_request(
+        self.queue_wait(
+            session.clone(),
+            cell_id.clone(),
             HostRequest::Wait {
                 session_id: session.id.clone(),
                 request,
@@ -269,6 +268,60 @@ impl ConnectionDriver {
                 response_tx,
             },
         )
+    }
+
+    fn wait_to_pending(
+        &mut self,
+        session: RemoteSession,
+        mut request: WaitToPendingRequest,
+        caller_cancellation: CancellationToken,
+        response_tx: oneshot::Sender<Result<WaitToPendingOutcome, String>>,
+    ) -> bool {
+        if let Err(error) = self.sessions.require_ready(&session) {
+            let _ = response_tx.send(Err(error));
+            return true;
+        }
+        let cell_id = match remote_cell_id(&session, &request.cell_id) {
+            Ok(cell_id) => cell_id,
+            Err(error) => {
+                let _ = response_tx.send(Err(error));
+                return true;
+            }
+        };
+        request.cell_id = codex_code_mode_protocol::CellId::new(cell_id.as_str().to_owned());
+        self.queue_wait(
+            session.clone(),
+            cell_id.clone(),
+            HostRequest::WaitToPending {
+                session_id: session.id.clone(),
+                request,
+            },
+            PendingRequest::WaitToPending {
+                session,
+                cell_id,
+                cancellation: CancellableRequest::new(caller_cancellation),
+                response_tx,
+            },
+        )
+    }
+
+    fn queue_wait(
+        &mut self,
+        session: RemoteSession,
+        cell_id: codex_code_mode_protocol::host::WireCellId,
+        request: HostRequest,
+        pending: PendingRequest,
+    ) -> bool {
+        if self.requests.has_cancelled_wait(&session, &cell_id) {
+            self.requests.push_deferred_wait(DeferredWait {
+                session,
+                cell_id,
+                request,
+                pending,
+            });
+            return true;
+        }
+        self.send_request(request, pending)
     }
 
     fn terminate(

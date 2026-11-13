@@ -7,6 +7,7 @@ use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::turn_input::CyberAccessProgram;
+use futures::future::BoxFuture;
 
 /// Registry identity shared by loaded and unloaded agents.
 /// Registered agents have an `agent_id`; a reserved spawn can still be awaiting its ID.
@@ -34,6 +35,8 @@ pub struct SpawnAgentOptions {
     pub root_turn_id: Option<String>,
     /// Inheritable bindings captured by the step that requested the child.
     pub environments: Option<TurnEnvironmentSnapshot>,
+    /// Explicit sources for a fresh child; never its retained reset selection.
+    pub preload: Option<codex_protocol::protocol::ReloadSelection>,
     /// Plugin choices from the turn requesting the child. Omission inherits the parent's
     /// current choices; an explicit list, including an empty one, overrides them and history.
     pub disabled_plugin_ids: Option<Vec<String>>,
@@ -69,20 +72,52 @@ pub enum AgentMessage {
     Encrypted(String),
 }
 
-/// Holds a backend-owned reservation until the turn ends or is cancelled.
+/// Holds a backend-owned reservation until the turn ends, is cancelled, or pauses.
 ///
 /// The permit's destructor releases capacity or arranges backend cleanup. Remote backends
 /// must also recover reservations after worker loss, when no Rust destructor can run.
-#[must_use = "hold the execution guard for the lifetime of the admitted turn"]
+#[must_use = "hold the execution guard while the admitted turn is executing"]
 pub struct AgentExecutionGuard {
     _permit: Box<dyn Send + Sync>,
+    resume: Option<ExecutionResume>,
 }
+
+type ExecutionResume = Box<
+    dyn FnOnce() -> BoxFuture<'static, codex_protocol::error::Result<AgentExecutionGuard>>
+        + Send
+        + Sync,
+>;
 
 impl AgentExecutionGuard {
     pub fn new(permit: impl Send + Sync + 'static) -> Self {
         Self {
             _permit: Box::new(permit),
+            resume: None,
         }
+    }
+
+    pub(crate) fn resumable(
+        permit: impl Send + Sync + 'static,
+        resume: impl FnOnce() -> BoxFuture<'static, codex_protocol::error::Result<Self>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            _permit: Box::new(permit),
+            resume: Some(Box::new(resume)),
+        }
+    }
+
+    /// Release only reservations whose owner provides an exact reacquisition path.
+    pub(crate) fn suspend(
+        mut self,
+    ) -> std::result::Result<BoxFuture<'static, codex_protocol::error::Result<Self>>, Self> {
+        let Some(resume) = self.resume.take() else {
+            return Err(self);
+        };
+        drop(self);
+        Ok(resume())
     }
 }
 

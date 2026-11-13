@@ -528,6 +528,22 @@ impl HostState {
                 };
                 self.respond(request_id, result);
             }
+            HostRequest::WaitToPending {
+                session_id,
+                request,
+            } => {
+                let result = match self.session(&session_id) {
+                    Ok(session) => tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => Err("code-mode request cancelled".to_string()),
+                        outcome = session.wait_to_pending(request) => outcome.map(|outcome| HostResponse::WaitToPendingCompleted {
+                            outcome: outcome.with_code_mode_host_duration(received_at.elapsed()),
+                        }),
+                    },
+                    Err(error) => Err(error),
+                };
+                self.respond(request_id, result);
+            }
             HostRequest::Terminate {
                 session_id,
                 cell_id,
@@ -680,7 +696,7 @@ impl RequestKind {
         match request {
             HostRequest::OpenSession { .. } => Self::OpenSession,
             HostRequest::Execute { .. } => Self::Execute,
-            HostRequest::Wait { .. } => Self::Wait,
+            HostRequest::Wait { .. } | HostRequest::WaitToPending { .. } => Self::Wait,
             HostRequest::Terminate { .. } => Self::Terminate,
             HostRequest::ShutdownSession { .. } => Self::ShutdownSession,
         }

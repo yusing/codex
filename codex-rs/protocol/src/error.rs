@@ -79,6 +79,15 @@ pub struct CodexErr {
     details: CodexErrorDetails,
     retry_after: Option<RetryAfter>,
     agent_context: Option<AgentErrorContext>,
+    provider_wait: Option<ProviderWaitKind>,
+}
+
+/// A structured provider rejection, not a generic host failure with similar
+/// display text. Native logical recovery consumes this after transport retries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderWaitKind {
+    Capacity,
+    UsageLimit,
 }
 
 /// A terminal response that stopped before the model finished, with any reported usage.
@@ -294,6 +303,7 @@ impl From<CodexErrorDetails> for CodexErr {
             details,
             retry_after: None,
             agent_context: None,
+            provider_wait: None,
         }
     }
 }
@@ -359,6 +369,7 @@ macro_rules! codex_err_unit_constructors {
                 details: CodexErrorDetails::$variant,
                 retry_after: None,
                 agent_context: None,
+                provider_wait: None,
             };
         )*
     };
@@ -524,6 +535,15 @@ impl CodexErr {
     /// Retains an already captured server deadline without restarting it.
     pub fn with_retry_after(mut self, retry_after: RetryAfter) -> Self {
         self.retry_after = Some(retry_after);
+        self
+    }
+
+    pub fn provider_wait_kind(&self) -> Option<ProviderWaitKind> {
+        self.provider_wait
+    }
+
+    pub fn with_provider_wait_kind(mut self, kind: ProviderWaitKind) -> Self {
+        self.provider_wait = Some(kind);
         self
     }
 

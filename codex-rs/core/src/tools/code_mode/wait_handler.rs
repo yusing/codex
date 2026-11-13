@@ -13,6 +13,7 @@ use codex_code_mode::RuntimeResponse;
 use codex_extension_api::CodeModeCellTiming;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
+use tokio_util::sync::CancellationToken;
 
 use super::DEFAULT_WAIT_YIELD_TIME_MS;
 use super::ExecContext;
@@ -103,6 +104,7 @@ impl CodeModeWaitHandler {
             call_id,
             tool_name,
             payload,
+            cancellation_token,
             ..
         } = invocation;
 
@@ -136,27 +138,45 @@ impl CodeModeWaitHandler {
                         })
                         .await
                 } else {
-                    exec.session
-                        .services
-                        .code_mode_service
-                        .wait(
-                            codex_code_mode::WaitRequest {
-                                cell_id: cell_id.clone(),
-                                yield_time_ms: args.yield_time_ms,
-                                max_output_tokens: args.max_tokens,
-                            },
-                            step_context.preempt.clone(),
+                    let preempt = step_context
+                        .preempt
+                        .as_ref()
+                        .map(CancellationToken::child_token)
+                        .unwrap_or_default();
+                    let service = &exec.session.services.code_mode_service;
+                    service
+                        .observe_until_paused(
+                            &cell_id,
+                            &preempt,
+                            exec.session.services.code_mode_service.wait(
+                                codex_code_mode::WaitRequest {
+                                    cell_id: cell_id.clone(),
+                                    yield_time_ms: args.yield_time_ms,
+                                    max_output_tokens: args.max_tokens,
+                                },
+                                Some(preempt.clone()),
+                            ),
                         )
                         .await
                 }
                 .map_err(|error| {
-                    exec.session.services.code_mode_service.dispatch_broker.compound_uncertain(&cell_id);
                     telemetry.finish(/*success*/ false);
                     FunctionCallError::RespondToModel(error)
                 })?;
+                let wait_response = exec
+                    .session
+                    .services
+                    .code_mode_service
+                    .observe_paused_wait(
+                        &exec.session,
+                        &step_context,
+                        wait_response,
+                        args.max_tokens,
+                        &cancellation_token,
+                    )
+                    .await
+                    .map_err(FunctionCallError::RespondToModel)?;
                 if let codex_code_mode::WaitOutcome::LiveCell(response) = &wait_response {
-                    exec.session.services.code_mode_service.dispatch_broker
-                        .record_compound_evidence(&cell_id, response);
                     let runtime_cell_id = match response {
                         RuntimeResponse::Yielded { cell_id, .. }
                         | RuntimeResponse::Terminated { cell_id, .. }
@@ -201,7 +221,6 @@ impl CodeModeWaitHandler {
                             );
                     }
                 } else {
-                    exec.session.services.code_mode_service.dispatch_broker.compound_uncertain(&cell_id);
                     telemetry.record_cell_timing(&cell_id, CodeModeCellTiming::CellUnavailable);
                 }
                 if let Some(code_mode_host_duration) = wait_response.code_mode_host_duration() {

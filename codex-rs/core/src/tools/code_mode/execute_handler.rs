@@ -42,6 +42,7 @@ impl CodeModeExecuteHandler {
         call_id: String,
         originating_call: Option<crate::tools::context::ToolCallOrigin>,
         code: String,
+        cancellation: &tokio_util::sync::CancellationToken,
         telemetry: &mut CodeModeToolCallGuard,
     ) -> Result<CodeModeToolOutput, FunctionCallError> {
         let args =
@@ -77,6 +78,11 @@ impl CodeModeExecuteHandler {
         .map_err(|error| FunctionCallError::Fatal(error.to_string()))?
         .apply_code_mode(&mut enabled_tools);
         let started_at = std::time::Instant::now();
+        let preempt = step_context
+            .preempt
+            .as_ref()
+            .map(tokio_util::sync::CancellationToken::child_token)
+            .unwrap_or_default();
         let started_cell = exec
             .session
             .services
@@ -90,6 +96,7 @@ impl CodeModeExecuteHandler {
                     max_output_tokens: args.max_output_tokens,
                 },
                 Arc::clone(&step_context),
+                Some(preempt.clone()),
             )
             .await
             .map_err(FunctionCallError::RespondToModel)?;
@@ -124,13 +131,26 @@ impl CodeModeExecuteHandler {
             .services
             .code_mode_service
             .mark_cell_ready_for_dispatch(&cell_id, originating_call);
-        let response = started_cell
-            .initial_response()
+        let response = exec
+            .session
+            .services
+            .code_mode_service
+            .observe_until_paused(&cell_id, &preempt, started_cell.initial_response())
             .await
-            .map_err(|error| {
-                exec.session.services.code_mode_service.dispatch_broker.compound_uncertain(&cell_id);
-                FunctionCallError::RespondToModel(error)
-            })?;
+            .map_err(FunctionCallError::RespondToModel)?;
+        let response = exec
+            .session
+            .services
+            .code_mode_service
+            .observe_paused(
+                &exec.session,
+                &step_context,
+                response,
+                args.max_output_tokens,
+                cancellation,
+            )
+            .await
+            .map_err(FunctionCallError::RespondToModel)?;
         if let Some(code_mode_host_duration) = response.code_mode_host_duration() {
             telemetry.record_code_mode_host_duration(code_mode_host_duration);
         }
@@ -138,8 +158,6 @@ impl CodeModeExecuteHandler {
         // is produced by `handle_runtime_response` and later linked through
         // `CodeCell.output_item_ids` in the reduced trace.
         code_cell_trace.record_initial_response(&response);
-        exec.session.services.code_mode_service.dispatch_broker
-            .record_compound_evidence(&cell_id, &response);
         // Yielded cells keep running, so terminal lifecycle is only emitted
         // here when the first response also ended the runtime.
         if matches!(response, codex_code_mode::RuntimeResponse::Yielded { .. }) {
@@ -222,6 +240,7 @@ impl CodeModeExecuteHandler {
             call_id,
             tool_name,
             payload,
+            cancellation_token,
             ..
         } = invocation;
 
@@ -241,6 +260,7 @@ impl CodeModeExecuteHandler {
                     call_id,
                     originating_call,
                     input,
+                    &cancellation_token,
                     &mut telemetry,
                 )
                 .await

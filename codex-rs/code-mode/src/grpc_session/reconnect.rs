@@ -14,6 +14,8 @@ use codex_code_mode_protocol::StartedCell;
 use codex_code_mode_protocol::TerminateRequest;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
+use codex_code_mode_protocol::WaitToPendingOutcome;
+use codex_code_mode_protocol::WaitToPendingRequest;
 use tokio::sync::Semaphore;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -115,6 +117,25 @@ impl CodeModeSession for ReconnectableSession {
             };
             let outcome = binding.session.wait(request, preempt).await?;
             Ok(generation::public_wait_outcome(binding.generation, outcome))
+        })
+    }
+
+    fn wait_to_pending<'a>(
+        &'a self,
+        request: WaitToPendingRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitToPendingOutcome> {
+        let generation = self.inner.binding().map(|binding| binding.generation);
+        Box::pin(async move {
+            let binding = self.inner.binding_for_request(generation).await?;
+            let cell_id = generation::remote_cell_id(binding.generation, &request.cell_id)?;
+            let outcome = binding
+                .session
+                .wait_to_pending(WaitToPendingRequest { cell_id, ..request })
+                .await?;
+            Ok(generation::public_wait_to_pending_outcome(
+                binding.generation,
+                outcome,
+            ))
         })
     }
 

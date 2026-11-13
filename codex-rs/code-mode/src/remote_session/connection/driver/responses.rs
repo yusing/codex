@@ -1,4 +1,6 @@
+use codex_code_mode_protocol::ExecuteToPendingOutcome;
 use codex_code_mode_protocol::StartedCell;
+use codex_code_mode_protocol::WaitToPendingOutcome;
 use codex_code_mode_protocol::host::ClientToHost;
 use codex_code_mode_protocol::host::EncodedFrame;
 use codex_code_mode_protocol::host::HostRequest;
@@ -24,32 +26,26 @@ use super::types::UnclaimedExecute;
 impl ConnectionDriver {
     pub(super) fn flush_deferred_waits(&mut self) -> bool {
         let mut deferred = self.requests.take_deferred_waits();
-        while let Some(wait) = deferred.pop_front() {
-            if wait.caller_cancellation.is_cancelled() {
-                let _ = wait
-                    .response_tx
-                    .send(Err("code-mode request cancelled".to_string()));
+        while let Some(mut wait) = deferred.pop_front() {
+            if wait
+                .pending
+                .cancellation_mut()
+                .is_some_and(|cancellation| cancellation.is_cancelled())
+            {
+                wait.pending.fail("code-mode request cancelled".to_string());
                 continue;
             }
             if self
                 .requests
-                .has_cancelled_wait(&wait.session, &wait.request.cell_id)
+                .has_cancelled_wait(&wait.session, &wait.cell_id)
             {
                 self.requests.push_deferred_wait(wait);
                 continue;
             }
-            if !self.start_wait(
-                wait.session,
-                wait.request,
-                wait.max_output_tokens,
-                wait.caller_cancellation,
-                wait.yield_signal,
-                wait.response_tx,
-            ) {
+            if !self.send_request(wait.request, wait.pending) {
                 for wait in deferred {
-                    let _ = wait
-                        .response_tx
-                        .send(Err("code-mode host connection closed".to_string()));
+                    wait.pending
+                        .fail("code-mode host connection closed".to_string());
                 }
                 return false;
             }
@@ -275,6 +271,62 @@ impl ConnectionDriver {
                         return false;
                     }
                     Err(err) => Err(err),
+                };
+                let _ = response_tx.send(result);
+            }
+            PendingRequest::WaitToPending {
+                session,
+                cell_id,
+                response_tx,
+                ..
+            } => {
+                let result = match result {
+                    Ok(HostResponse::WaitToPendingCompleted { outcome }) => {
+                        if outcome.cell_id().as_str() != cell_id.as_str() {
+                            let reason = "code-mode host returned an invalid pending-frontier cell"
+                                .to_string();
+                            let _ = response_tx.send(Err(reason.clone()));
+                            self.fail(reason);
+                            return false;
+                        }
+                        Ok(match outcome {
+                            WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Pending {
+                                cell_id,
+                                content_items,
+                                pending_tool_call_ids,
+                            }) => {
+                                WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Pending {
+                                    cell_id: super::cell_ids::public_cell_id_from_protocol(
+                                        session.generation,
+                                        &cell_id,
+                                    ),
+                                    content_items,
+                                    pending_tool_call_ids,
+                                })
+                            }
+                            WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Completed(
+                                response,
+                            )) => {
+                                WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Completed(
+                                    public_runtime_response(session.generation, response),
+                                ))
+                            }
+                            WaitToPendingOutcome::MissingCell(response) => {
+                                WaitToPendingOutcome::MissingCell(public_runtime_response(
+                                    session.generation,
+                                    response,
+                                ))
+                            }
+                        })
+                    }
+                    Ok(_) => {
+                        let reason = "code-mode host returned an invalid pending-frontier response"
+                            .to_string();
+                        let _ = response_tx.send(Err(reason.clone()));
+                        self.fail(reason);
+                        return false;
+                    }
+                    Err(error) => Err(error),
                 };
                 let _ = response_tx.send(result);
             }

@@ -1,4 +1,5 @@
 use super::thread_input::ensure_direct_input_allowed;
+use super::thread_input::ensure_human_input_allowed;
 use super::*;
 use codex_app_server_protocol::ImageReference as V2ImageReference;
 use codex_app_server_protocol::ThreadGuardianAssessment;
@@ -255,8 +256,11 @@ impl TurnRequestProcessor {
         params: TurnSettingsUpdateParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+        self.ensure_human_input_allowed(request_id, thread.as_ref())
             .await?;
+        if params.environments.is_some() || params.approvals_reviewer.is_some() {
+            ensure_direct_input_allowed(thread.as_ref()).await?;
+        }
         let environments =
             resolve_turn_environment_requests(self.thread_manager.as_ref(), params.environments)?;
         let (reply, outcome) = oneshot::channel();
@@ -448,6 +452,18 @@ impl TurnRequestProcessor {
             })
     }
 
+    async fn ensure_human_input_allowed(
+        &self,
+        request_id: &ConnectionRequestId,
+        thread: &CodexThread,
+    ) -> Result<(), JSONRPCErrorError> {
+        ensure_human_input_allowed(thread)
+            .await
+            .inspect_err(|error| {
+                self.track_error_response(request_id, error, /*error_type*/ None);
+            })
+    }
+
     fn normalize_collaboration_mode(
         &self,
         mut collaboration_mode: CollaborationMode,
@@ -555,13 +571,14 @@ impl TurnRequestProcessor {
                 .inspect_err(|error| {
                     self.track_error_response(&request_id, error, /*error_type*/ None);
                 })?;
-        self.ensure_direct_input_allowed(&request_id, thread.as_ref())
+        self.ensure_human_input_allowed(&request_id, thread.as_ref())
             .await?;
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
             .map_err(|error| config_load_error(&error))?;
         if let Some(tool_output) = &params.tool_output {
+            ensure_direct_input_allowed(thread.as_ref()).await?;
             if !params.input.is_empty() {
                 return Err(invalid_request(
                     "`toolOutput` cannot be combined with nonempty `input`",
@@ -854,6 +871,18 @@ impl TurnRequestProcessor {
             personality,
         } = params;
 
+        // Human model/effort updates retain parent-granted execution authority. Public
+        // permission/environment overrides must not rebuild a child's inherited boundary.
+        if environment_requests.is_some()
+            || runtime_workspace_roots.is_some()
+            || approval_policy.is_some()
+            || approvals_reviewer.is_some()
+            || sandbox_policy.is_some()
+            || permissions.is_some()
+        {
+            ensure_direct_input_allowed(thread).await?;
+        }
+
         if sandbox_policy.is_some() && permissions.is_some() {
             return Err(invalid_request(
                 "`permissions` cannot be combined with `sandboxPolicy`",
@@ -978,7 +1007,7 @@ impl TurnRequestProcessor {
         params: ThreadSettingsUpdateParams,
     ) -> Result<ThreadSettingsUpdateResponse, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+        self.ensure_human_input_allowed(request_id, thread.as_ref())
             .await?;
         let cwd = resolve_request_cwd(params.cwd)?;
         let environments =
@@ -1089,7 +1118,7 @@ impl TurnRequestProcessor {
             .inspect_err(|error| {
                 self.track_error_response(request_id, error, /*error_type*/ None);
             })?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+        self.ensure_human_input_allowed(request_id, thread.as_ref())
             .await?;
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())

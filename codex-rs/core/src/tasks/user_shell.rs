@@ -42,6 +42,9 @@ use codex_thread_store::PersistContext;
 use super::SessionTask;
 use super::SessionTaskResult;
 use crate::session::session::Session;
+use crate::state::ActiveTurn;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::PermissionProfile;
 
 const USER_SHELL_TIMEOUT_MS: u64 = 60 * 60 * 1000; // 1 hour
@@ -88,15 +91,89 @@ impl SessionTask for UserShellCommandTask {
         cancellation_token: CancellationToken,
     ) -> SessionTaskResult {
         execute_user_shell_command(
-            session,
-            turn_context,
+            Arc::clone(&session),
+            Arc::clone(&turn_context),
             self.command.clone(),
             self.timeout_ms,
-            cancellation_token,
+            cancellation_token.clone(),
             UserShellCommandMode::StandaloneTurn,
         )
         .await;
         Ok(None)
+    }
+}
+
+impl Session {
+    /// Native admission, shared by the submission dispatcher and app-server's
+    /// acknowledged human shell endpoint. Pending model admission rejects rather
+    /// than replacing its reservation or silently losing a shell command.
+    pub(crate) async fn start_user_shell_command(
+        self: &Arc<Self>,
+        sub_id: String,
+        command: String,
+        timeout_ms: Option<u64>,
+    ) -> CodexResult<()> {
+        let runtime = self.services.local_agent_runtime.clone();
+        let membership = runtime.admit_start()?;
+        let mut active = self.active_turn.lock().await;
+        if let Some(turn) = active.as_ref() {
+            let task = turn.task.as_ref().ok_or_else(|| CodexErr::InvalidRequest(
+                "a turn is being admitted or finalized; retry the shell command after it settles".to_owned(),
+            ))?;
+            let context = Arc::clone(&task.turn_context);
+            let cancellation = task.cancellation_token.child_token();
+            let auxiliary = turn.auxiliary_tasks.token();
+            let teardown =
+                membership.into_teardown_guard("user_shell_auxiliary", Some(self.thread_id));
+            let session = Arc::clone(self);
+            tokio::spawn(async move {
+                let _auxiliary = auxiliary;
+                let execution = execute_user_shell_command(
+                    session,
+                    context,
+                    command,
+                    timeout_ms,
+                    cancellation.clone(),
+                    UserShellCommandMode::ActiveTurnAuxiliary,
+                );
+                tokio::pin!(execution);
+                tokio::select! {
+                    biased;
+                    _ = runtime.shutdown.cancelled() => { cancellation.cancel(); execution.await; }
+                    _ = &mut execution => {}
+                }
+                teardown.complete();
+            });
+            return Ok(());
+        }
+        let admission = self
+            .services
+            .extensions
+            .admit_turn_start()
+            .ok_or_else(|| CodexErr::InvalidRequest("server is draining".to_owned()))?;
+        let turn = active.get_or_insert_with(ActiveTurn::default);
+        let reservation = Arc::clone(&turn.turn_state);
+        drop(active);
+        // The native lifetime owns accepted admission even if its RPC consumer
+        // disconnects. Shutdown cancels setup and clears only this reservation.
+        let session = Arc::clone(self);
+        tokio::spawn(async move {
+            let _admission = admission;
+            let teardown = membership.into_teardown_guard("user_shell_admission", Some(session.thread_id));
+            let admitted = tokio::select! {
+                biased;
+                _ = runtime.shutdown.cancelled() => false,
+                admitted = async {
+                    let context = session.new_turn_with_default_settings(sub_id, Default::default()).await;
+                    let task = UserShellCommandTask::new(command, timeout_ms);
+                    session.start_task_with_reservation(context, Vec::new(), task,
+                        Some((Arc::clone(&reservation), None))).await
+                } => admitted,
+            };
+            if !admitted { session.clear_reserved_idle_turn(&reservation).await; }
+            teardown.complete();
+            if admitted { Ok(()) } else { Err(CodexErr::TurnAborted) }
+        }).await?
     }
 }
 
@@ -107,7 +184,7 @@ pub(crate) async fn execute_user_shell_command(
     timeout_ms: Option<u64>,
     cancellation_token: CancellationToken,
     mode: UserShellCommandMode,
-) {
+) -> bool {
     session
         .services
         .session_telemetry
@@ -137,7 +214,7 @@ pub(crate) async fn execute_user_shell_command(
             "shell is unavailable in this session",
         )
         .await;
-        return;
+        return false;
     };
 
     // Execute the user's script under the environment's shell; this
@@ -154,7 +231,7 @@ pub(crate) async fn execute_user_shell_command(
             "shell working directory is not native to the Codex host",
         )
         .await;
-        return;
+        return false;
     };
     let shell_snapshot = turn_environment
         .shell_snapshot(
@@ -285,6 +362,7 @@ pub(crate) async fn execute_user_shell_command(
                     }),
                 )
                 .await;
+            false
         }
         Ok(Ok(output)) => {
             session
@@ -316,6 +394,7 @@ pub(crate) async fn execute_user_shell_command(
 
             persist_user_shell_output(&session, turn_context.as_ref(), &raw_command, &output, mode)
                 .await;
+            true
         }
         Ok(Err(err)) => {
             error!("user shell command failed: {err:?}");
@@ -358,6 +437,7 @@ pub(crate) async fn execute_user_shell_command(
                 mode,
             )
             .await;
+            true
         }
     }
 }
@@ -466,6 +546,35 @@ async fn persist_user_shell_output(
     session
         .inject_no_new_turn(vec![output_item], Some(turn_context))
         .await;
+    // Output is retained before waking the original pending invocation. A child
+    // outcome already claimed by that invocation keeps its own delivery fence.
+    if session.multi_agent_version() == Some(codex_protocol::protocol::MultiAgentVersion::V2) {
+        let runtime = &session.services.local_agent_runtime;
+        let result = async {
+            if let Some(wait) = runtime
+                .work_ledger()?
+                .current_wait(session.thread_id)
+                .await
+                .map_err(crate::agent::control::work_lifecycle::work_error)?
+                && wait.origin.turn_id() == turn_context.sub_id
+                && wait.phase == codex_state::coordination_wait::WaitPhase::Registered
+            {
+                runtime
+                    .cancel_native_wait_with_cause(
+                        &wait,
+                        codex_state::coordination_wait::WaitCancellation::ShellOutput {
+                            turn_id: turn_context.sub_id.clone(),
+                        },
+                    )
+                    .await?;
+            }
+            CodexResult::Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(%error, "shell output could not settle the pending wait");
+        }
+    }
 }
 
 #[cfg(all(test, unix))]

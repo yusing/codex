@@ -736,6 +736,24 @@ impl ContextManager {
         )
         .await;
         self.project_file_audio_for_prompt();
+        // Retained envelope metadata is authoritative, including after restore/fork.
+        // Project the receipt only for the host's named source-acquisition boundary.
+        for envelope in Arc::make_mut(&mut self.items) {
+            let Some(source) = envelope.metadata.as_ref()
+                .and_then(|metadata| metadata.source_acquisition.as_ref()) else {
+                continue;
+            };
+            if let ResponseItem::FunctionCallOutput {
+                namespace, name, internal_chat_message_metadata_passthrough, ..
+            } = &mut envelope.item
+                && namespace.as_deref() == Some("context")
+                && name.as_deref() == Some("reload")
+            {
+                internal_chat_message_metadata_passthrough
+                    .get_or_insert_with(Default::default)
+                    .source_acquisition = Some(source.clone());
+            }
+        }
         Arc::unwrap_or_clone(self.items)
     }
 

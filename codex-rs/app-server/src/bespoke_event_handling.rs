@@ -3,7 +3,7 @@ use crate::outgoing_message::ClientRequestResult;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
 use crate::request_processors::thread_settings_from_config_snapshot;
 use crate::server_request_error::is_turn_transition_server_request_error;
-use crate::thread_state::PendingNetworkApproval;
+use crate::thread_state::PendingCommandApproval;
 use crate::thread_state::ThreadState;
 use crate::thread_state::TurnSummary;
 use crate::thread_state::resolve_server_request_on_thread_listener;
@@ -187,6 +187,23 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_server_notification(ServerNotification::TurnStarted(notification))
+                .await;
+        }
+        EventMsg::TurnCheckpointed(checkpoint) => {
+            outgoing
+                .send_server_notification(ServerNotification::TurnCheckpointed(
+                    codex_app_server_protocol::TurnCheckpointedNotification {
+                        thread_id: conversation_id.to_string(),
+                        turn_id: checkpoint.turn_id,
+                        work_id: checkpoint.work_id,
+                        checkpoint: checkpoint.checkpoint,
+                        targets: checkpoint
+                            .targets
+                            .into_iter()
+                            .map(|id| id.to_string())
+                            .collect(),
+                    },
+                ))
                 .await;
         }
         EventMsg::TurnComplete(turn_complete_event) => {
@@ -679,6 +696,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .map(CommandExecutionApprovalDecision::from)
                 .collect::<Vec<_>>();
             let ExecApprovalRequestEvent {
+                preparation,
                 model_context,
                 kind,
                 call_id,
@@ -800,23 +818,22 @@ pub(crate) async fn apply_bespoke_event_handling(
                 proposed_network_policy_amendments: proposed_network_policy_amendments_v2,
                 available_decisions: Some(available_decisions),
             };
-            let (pending_request_id, rx) = outgoing
-                .send_request(ServerRequestPayload::CommandExecutionRequestApproval(
-                    params,
-                ))
-                .await;
-            let permission_guard = if is_network_approval {
-                thread_state.lock().await.network_approvals.insert(
-                    approval_id.as_ref().unwrap_or(&call_id).clone(),
-                    PendingNetworkApproval {
-                        request_id: pending_request_id.clone(),
-                        permission_guard,
-                    },
-                );
-                None
+            let (pending_request_id, rx) = if preparation {
+                outgoing.send_preparation_command_approval(params).await
             } else {
-                Some(permission_guard)
+                outgoing
+                    .send_request(ServerRequestPayload::CommandExecutionRequestApproval(
+                        params,
+                    ))
+                    .await
             };
+            thread_state.lock().await.command_approvals.insert(
+                (turn_id, approval_id.as_ref().unwrap_or(&call_id).clone()),
+                PendingCommandApproval {
+                    request_id: pending_request_id.clone(),
+                    permission_guard,
+                },
+            );
             tokio::spawn(async move {
                 on_command_execution_request_approval_response(
                     event_turn_id,
@@ -829,17 +846,18 @@ pub(crate) async fn apply_bespoke_event_handling(
                     conversation,
                     outgoing,
                     thread_state,
-                    permission_guard,
+                    is_network_approval,
                 )
                 .await;
             });
         }
-        EventMsg::NetworkApprovalResolved { approval_id } => {
+        EventMsg::NetworkApprovalResolved { approval_id }
+        | EventMsg::CommandApprovalResolved { approval_id } => {
             let pending = thread_state
                 .lock()
                 .await
-                .network_approvals
-                .remove(&approval_id);
+                .command_approvals
+                .remove(&(event_turn_id.clone(), approval_id));
             if let Some(pending) = pending {
                 outgoing.resolve_server_request(pending.request_id).await;
                 drop(pending.permission_guard);
@@ -892,65 +910,10 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
             });
         }
-        EventMsg::CompoundWaitSettlement(request) => {
-            let cell_id = request.cell_id.clone();
-            let ticket = request.ticket.clone();
-            let (request_id, rx) = outgoing.send_request(
-                ServerRequestPayload::CompoundWaitSettle(request),
-            ).await;
-            tokio::spawn(async move {
-                let result = match rx.await {
-                    Ok(Ok(value)) => serde_json::from_value(value).map_err(|err| err.to_string()),
-                    Ok(Err(err)) => Err(format!("{err:?}")),
-                    Err(err) => Err(err.to_string()),
-                };
-                resolve_server_request_on_thread_listener(&thread_state, request_id).await;
-                let response = result.and_then(|response: codex_protocol::compound_wait::CompoundWaitDisposition| {
-                    if response.ticket == ticket { Ok(response) } else { Err("compound wait response ticket mismatch".into()) }
-                }).unwrap_or_else(|diagnostic| codex_protocol::compound_wait::CompoundWaitDisposition {
-                    action: codex_protocol::compound_wait::CompoundWaitAction::Uncertain,
-                    ticket, reload: None, diagnostic: Some(diagnostic),
-                });
-                if let Err(err) = conversation.submit(Op::CompoundWaitResponse { cell_id, response }).await {
-                    error!("failed to settle compound wait: {err}");
-                }
-            });
-        }
-        EventMsg::CompoundWaitReset(receipt) => {
-            use codex_protocol::compound_wait::CompoundResetOutcome;
-            use codex_protocol::feature_use::FeatureUseEvent;
-            use codex_protocol::feature_use::FeatureUseFact;
-            let event = match receipt.reset {
-                CompoundResetOutcome::Completed => Some(FeatureUseEvent::SelfResetCompleted),
-                CompoundResetOutcome::Failed | CompoundResetOutcome::Canceled => {
-                    Some(FeatureUseEvent::SelfResetFailed)
-                }
-                CompoundResetOutcome::Uncertain => None,
-            };
-            if let Some(event) = event {
-                outgoing
-                    .send_server_notification(ServerNotification::FeatureUseObserved(
-                        FeatureUseFact {
-                            thread_id: receipt.thread_id.clone(),
-                            operation: receipt
-                                .ticket
-                                .as_ref()
-                                .map(|ticket| ticket.wait_id.clone())
-                                .unwrap_or_else(|| receipt.cell_id.clone()),
-                            event,
-                        },
-                    ))
-                    .await;
-            }
-            outgoing.send_server_notification(ServerNotification::CompoundWaitReset(receipt)).await;
-        }
-        EventMsg::FeatureUse(fact) => {
-            outgoing
-                .send_server_notification(ServerNotification::FeatureUseObserved(fact))
-                .await;
-        }
         EventMsg::ContextReset(receipt) => {
-            outgoing.send_server_notification(ServerNotification::ContextReset(receipt)).await;
+            outgoing
+                .send_server_notification(ServerNotification::ContextReset(receipt))
+                .await;
         }
         EventMsg::ElicitationRequest(request) => {
             let mcp_tool_approval = matches!(
@@ -1203,20 +1166,6 @@ pub(crate) async fn apply_bespoke_event_handling(
             }
         }
         EventMsg::ItemCompleted(mut event) => {
-            if matches!(
-                &event.item,
-                codex_protocol::items::TurnItem::ContextCompaction(_)
-            ) {
-                outgoing
-                    .send_server_notification(ServerNotification::FeatureUseObserved(
-                        codex_protocol::feature_use::FeatureUseFact {
-                            thread_id: conversation_id.to_string(),
-                            operation: event.item.id(),
-                            event: codex_protocol::feature_use::FeatureUseEvent::ResetCompleted,
-                        },
-                    ))
-                    .await;
-            }
             apply_canonical_item_completed_side_effects(
                 &thread_manager,
                 &thread_watch_manager,
@@ -1270,6 +1219,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                         thread_id: private.thread_id.to_string(),
                         turn_id: event_turn_id,
                         item: recorded.item,
+                        coordination: recorded.coordination,
+                    source_acquisition: recorded.source_acquisition,
                     },
                 );
                 if conversation.enabled(Feature::OmitAppServerNotificationMedia) {
@@ -1309,6 +1260,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                     thread_id: conversation_id.to_string(),
                     turn_id: event_turn_id,
                     item: raw_response_item_event.item,
+                    coordination: raw_response_item_event.coordination,
+                    source_acquisition: raw_response_item_event.source_acquisition,
                 },
             );
             if conversation.enabled(Feature::OmitAppServerNotificationMedia) {
@@ -1326,6 +1279,11 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_server_notification(ServerNotification::RawResponseCompleted(notification))
+                .await;
+        }
+        EventMsg::AgentCoordination(event) => {
+            outgoing
+                .send_server_notification(ServerNotification::AgentCoordination(event))
                 .await;
         }
         EventMsg::PatchApplyBegin(_) | EventMsg::PatchApplyEnd(_) => {
@@ -1406,7 +1364,7 @@ pub(crate) async fn apply_bespoke_event_handling(
         }
         EventMsg::ShutdownComplete => {
             // The proxy waiter may send its resolution after this last core event.
-            let approvals = std::mem::take(&mut thread_state.lock().await.network_approvals);
+            let approvals = std::mem::take(&mut thread_state.lock().await.command_approvals);
             for pending in approvals.into_values() {
                 outgoing.resolve_server_request(pending.request_id).await;
                 drop(pending.permission_guard);
@@ -2145,21 +2103,32 @@ async fn on_command_execution_request_approval_response(
     conversation: Arc<CodexThread>,
     outgoing: ThreadScopedOutgoingMessageSender,
     thread_state: Arc<Mutex<ThreadState>>,
-    permission_guard: Option<ThreadWatchActiveGuard>,
+    is_network_approval: bool,
 ) {
     let response = receiver.await;
-    // Core resolves network prompts in event order, including when the execution disappears.
-    if let Some(permission_guard) = permission_guard {
-        resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
-        drop(permission_guard);
-    } else if response.is_err()
-        && !thread_state
-            .lock()
-            .await
-            .network_approvals
-            .contains_key(approval_id.as_ref().unwrap_or(&item_id))
-    {
-        return;
+    let key = (
+        event_turn_id.clone(),
+        approval_id.as_ref().unwrap_or(&item_id).clone(),
+    );
+    let pending = {
+        let mut state = thread_state.lock().await;
+        // A canceled prompt or an old callback cannot retire a replacement request.
+        if !state
+            .command_approvals
+            .get(&key)
+            .is_some_and(|pending| pending.request_id == pending_request_id)
+        {
+            return;
+        }
+        if is_network_approval {
+            None
+        } else {
+            state.command_approvals.remove(&key)
+        }
+    };
+    if let Some(pending) = pending {
+        resolve_server_request_on_thread_listener(&thread_state, pending.request_id).await;
+        drop(pending.permission_guard);
     }
     let (decision, completion_status) = match response {
         Ok(Ok(value)) => {
@@ -3234,7 +3203,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn turn_started_omits_active_snapshot_items() -> Result<()> {
+    async fn preparation_resolution_retires_only_the_exact_context_request() -> Result<()> {
+        let codex_home = TempDir::new()?;
+        let config = load_default_config_for_test(&codex_home).await;
+        let thread_manager = Arc::new(
+            codex_core::test_support::thread_manager_with_models_provider_and_home(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+                config.model_provider.clone(),
+                config.codex_home.to_path_buf(),
+                Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            ),
+        );
+        let codex_core::NewThread {
+            thread_id, thread, ..
+        } = thread_manager
+            .start_thread(codex_core::StartThreadOptions::new(config))
+            .await?;
+        let state = new_thread_state();
+        let watch = ThreadWatchManager::new();
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = ThreadScopedOutgoingMessageSender::new(
+            Arc::new(OutgoingMessageSender::new(
+                tx,
+                codex_analytics::AnalyticsEventsClient::disabled(),
+            )),
+            vec![ConnectionId(1)],
+            thread_id,
+        );
+        for (turn, id) in [("old-preparation", 10), ("new-preparation", 11)] {
+            let permission_guard = watch
+                .note_permission_requested(&thread_id.to_string())
+                .await;
+            state.lock().await.command_approvals.insert(
+                (turn.into(), "source-reader".into()),
+                PendingCommandApproval {
+                    request_id: RequestId::Integer(id),
+                    permission_guard,
+                },
+            );
+        }
+        for _ in 0..2 {
+            apply_bespoke_event_handling(
+                Event {
+                    id: "old-preparation".into(),
+                    msg: EventMsg::CommandApprovalResolved {
+                        approval_id: "source-reader".into(),
+                    },
+                },
+                thread_id,
+                Arc::clone(&thread),
+                Arc::clone(&thread_manager),
+                outgoing.clone(),
+                Arc::clone(&state),
+                watch.clone(),
+            )
+            .await;
+        }
+        let state = state.lock().await;
+        assert_eq!(state.command_approvals.len(), 1);
+        assert!(
+            state
+                .command_approvals
+                .contains_key(&("new-preparation".into(), "source-reader".into()))
+        );
+        drop(state);
+        assert!(matches!(
+            recv_broadcast_notification(&mut rx).await?,
+            ServerNotification::ServerRequestResolved(resolved) if resolved.request_id == RequestId::Integer(10)
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "late duplicate must not retire the next prompt"
+        );
+        thread.shutdown_and_wait().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn turn_started_omits_items_and_checkpoint_is_not_completion() -> Result<()> {
         let codex_home = TempDir::new()?;
         let config = load_default_config_for_test(&codex_home).await;
         let thread_manager = Arc::new(
@@ -3322,6 +3368,46 @@ mod tests {
             }
             other => bail!("unexpected message: {other:?}"),
         }
+
+        apply_bespoke_event_handling(
+            Event {
+                id: "turn-1".to_owned(),
+                msg: EventMsg::TurnCheckpointed(codex_protocol::protocol::TurnCheckpointedEvent {
+                    turn_id: "turn-1".to_owned(),
+                    work_id: "work-1".to_owned(),
+                    checkpoint: codex_protocol::protocol::TurnCheckpoint::Wait {
+                        wait_id: "wait-1".to_owned(),
+                        reason: codex_protocol::protocol::WaitCheckpointReason::Explicit,
+                        deadline_unix_ms: None,
+                    },
+                    targets: vec![conversation_id],
+                }),
+            },
+            conversation_id,
+            Arc::clone(&conversation),
+            Arc::clone(&thread_manager),
+            outgoing.clone(),
+            Arc::clone(&thread_state),
+            thread_watch_manager.clone(),
+        )
+        .await;
+        match recv_broadcast_notification(&mut rx).await? {
+            ServerNotification::TurnCheckpointed(checkpoint) => {
+                assert_eq!(checkpoint.thread_id, conversation_id.to_string());
+                assert_eq!(checkpoint.turn_id, "turn-1");
+                assert_eq!(checkpoint.work_id, "work-1");
+                assert!(
+                    matches!(checkpoint.checkpoint, codex_protocol::protocol::TurnCheckpoint::Wait { wait_id, .. }
+                    if wait_id == "wait-1")
+                );
+                assert_eq!(checkpoint.targets, vec![conversation_id.to_string()]);
+            }
+            other => bail!("checkpoint emitted unexpected notification: {other:?}"),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "checkpoint must not emit turn completion"
+        );
 
         for (phase, method, event) in [
             (

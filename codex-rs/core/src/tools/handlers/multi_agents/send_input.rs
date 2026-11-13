@@ -87,6 +87,7 @@ impl Handler {
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: vec![receiver_thread_id],
                     receiver_agents: Vec::new(),
+                    timeout_ms: None,
                     prompt: Some(prompt.clone()),
                     model: None,
                     reasoning_effort: None,
@@ -114,6 +115,7 @@ impl Handler {
             .emit_turn_item_completed(
                 &turn,
                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                    timeout_ms: None,
                     id: call_id,
                     tool: CollabAgentTool::SendInput,
                     status: collab_tool_call_status(&status, Some(receiver_thread_id)),

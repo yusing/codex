@@ -1,5 +1,5 @@
-mod compound;
-pub(crate) use compound::ResetAdmission;
+mod paused;
+pub(crate) use paused::ResetAdmission;
 mod delegate;
 mod execute_handler;
 pub(crate) mod execute_spec;
@@ -140,11 +140,11 @@ impl CodeModeService {
         &self,
         mut request: codex_code_mode::ExecuteRequest,
         step_context: Arc<StepContext>,
+        preempt: Option<CancellationToken>,
     ) -> Result<codex_code_mode::StartedCell, String> {
         request
             .yield_time_ms
             .get_or_insert(self.default_exec_yield_time_ms);
-        let preempt = step_context.preempt.clone();
         let delegate = Arc::new(CodeModeCellDelegate {
             broker: Arc::clone(&self.dispatch_broker),
             step_context,

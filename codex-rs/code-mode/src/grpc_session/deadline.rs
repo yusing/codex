@@ -105,6 +105,32 @@ pub(super) async fn session_request<T>(
     .await
 }
 
+pub(super) async fn unbounded_session_request<T>(
+    session: &SessionInner,
+    operation: &str,
+    rpc: impl Future<Output = Result<T, tonic::Status>>,
+) -> Result<T, String> {
+    let result = tokio::select! {
+        biased;
+        _ = session.stopped.cancelled() => return Err("gRPC code-mode session closed".to_string()),
+        result = rpc => result,
+    };
+    result.map_err(|error| {
+        let reason = failure(operation, &error);
+        if error.code() == tonic::Code::NotFound
+            || (session.route.is_some()
+                && error.code() == tonic::Code::Unavailable
+                && error
+                    .metadata()
+                    .get("x-code-mode-route-lost")
+                    .is_some_and(|value| value == "true"))
+        {
+            session.fail(reason.clone());
+        }
+        reason
+    })
+}
+
 pub(super) fn failure(operation: &str, error: impl Display) -> String {
     let mut message = format!("gRPC code-mode {operation} failed: {error}");
     if message.len() > MAX_ERROR_BYTES {

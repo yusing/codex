@@ -27,6 +27,8 @@ use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
 
+use crate::agent::control::recovery::CompletionSettlement;
+use crate::agent::control::recovery::WorkCheckpoint;
 use crate::codex_thread::BackgroundTerminalInfo;
 use crate::config::Config;
 use crate::context::ContextualUserFragment;
@@ -34,6 +36,7 @@ use crate::hook_runtime::run_turn_interrupt_hooks;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn::McpStartupRequirements;
+use crate::session::turn::TurnRunOutcome;
 use crate::session::turn::run_hooks_and_record_inputs;
 use crate::session::turn_context::NewTurnContextOptions;
 use crate::session::turn_context::TurnContext;
@@ -69,8 +72,9 @@ use codex_protocol::error::Result as CodexResult;
 pub(crate) use compact::CompactTask;
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
+#[cfg(test)]
 pub(crate) use user_shell::UserShellCommandMode;
-pub(crate) use user_shell::UserShellCommandTask;
+#[cfg(test)]
 pub(crate) use user_shell::execute_user_shell_command;
 
 pub(crate) const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
@@ -78,6 +82,8 @@ const TASK_COMPACT_METRIC: &str = "codex.task.compact";
 static ACTIVE_TURNS: Gauge = Gauge::new("core.turns.active");
 
 pub(crate) type SessionTaskResult = CodexResult<Option<regular::RegularTaskOutput>>;
+
+struct AuxiliaryWorkCheckpoint(WorkCheckpoint);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InterruptedTurnHistoryMarker {
@@ -285,16 +291,61 @@ impl Session {
         self.start_task(turn_context, input, task).await;
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "record the started turn atomically with task registration"
-    )]
     pub(crate) async fn start_task<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
     ) {
+        self.start_task_with_reservation(turn_context, input, task, None)
+            .await;
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "exact reserved continuation admission and task registration share the active-turn lock"
+    )]
+    async fn start_task_with_reservation<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        mut input: Vec<TurnInput>,
+        task: T,
+        reservation: Option<(Arc<Mutex<TurnState>>, Option<WorkCheckpoint>)>,
+    ) -> bool {
+        if task.kind() == TaskKind::Compact
+            && self
+                .services
+                .local_agent_runtime
+                .ensure_agent_known(self.thread_id)
+                .is_ok()
+            && self.services.local_agent_runtime.work.is_some()
+        {
+            match self
+                .services
+                .local_agent_runtime
+                .current_work_checkpoint(self.thread_id)
+                .await
+            {
+                Ok(Some(checkpoint)) => {
+                    turn_context
+                        .extension_data
+                        .insert(AuxiliaryWorkCheckpoint(checkpoint));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.send_event(
+                        &turn_context,
+                        EventMsg::Warning(WarningEvent {
+                            message: format!(
+                                "Cannot preserve native wait for auxiliary reset: {error}"
+                            ),
+                        }),
+                    )
+                    .await;
+                    return false;
+                }
+            }
+        }
         // Replace the cache; in-flight acquisitions retain their previous Arc.
         self.services
             .thread_extension_data
@@ -334,11 +385,23 @@ impl Session {
         let cancellation_token = CancellationToken::new();
         let done = Arc::new(Notify::new());
 
-        let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
+        let pending_items = if reservation.is_some() {
+            // Only the owner-confirmed claim belongs to this continuation.
+            Vec::new()
+        } else {
+            self.input_queue.drain_mailbox_input_items().await.0
+        };
         let turn_state = {
             let mut active = self.active_turn.lock().await;
             if self.outcome_handoffs_closed() {
-                return;
+                return false;
+            }
+            if let Some((expected, _)) = &reservation
+                && active.as_ref().is_none_or(|turn| {
+                    turn.task.is_some() || !Arc::ptr_eq(&turn.turn_state, expected)
+                })
+            {
+                return false;
             }
             let turn = active.get_or_insert_with(ActiveTurn::default);
             debug_assert!(turn.task.is_none());
@@ -357,10 +420,17 @@ impl Session {
         .await;
 
         let mut active = self.active_turn.lock().await;
+        if let Some((expected, _)) = &reservation
+            && active
+                .as_ref()
+                .is_none_or(|turn| turn.task.is_some() || !Arc::ptr_eq(&turn.turn_state, expected))
+        {
+            return false;
+        }
         // Shutdown closes registration before taking this same lock to abort active work.
         let outcome_handoff = if let Some(reporting) = &self.outcome_reporting {
             if reporting.handoffs.is_closed() {
-                return;
+                return false;
             }
             Some(reporting.handoffs.token())
         } else {
@@ -368,7 +438,46 @@ impl Session {
         };
         let turn = active.get_or_insert_with(ActiveTurn::default);
         debug_assert!(turn.task.is_none());
-        // Record lineage only when the task starts: settings changes can invalidate a reservation.
+        if let Some((_, Some(checkpoint))) = &reservation {
+            let admitted = match checkpoint {
+                WorkCheckpoint::Completion(completion) => {
+                    match self
+                        .services
+                        .local_agent_runtime
+                        .begin_completion_continuation(completion, Some(&turn_context.sub_id))
+                        .await
+                    {
+                        Ok(Some(feedback)) => {
+                            input = vec![feedback];
+                            Ok(())
+                        }
+                        Ok(None) => {
+                            *active = None;
+                            return false;
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+            };
+            if let Err(error) = admitted {
+                *active = None;
+                drop(active);
+                self.send_event(
+                    &turn_context,
+                    EventMsg::Warning(WarningEvent {
+                        message: format!("Native continuation was not started: {error}"),
+                    }),
+                )
+                .await;
+                self.maybe_start_turn_for_pending_work().await;
+                return false;
+            }
+            // Accepted input is retained even if pre-turn setup later fails.
+            self.input_queue
+                .extend_pending_input_for_turn_state(&turn.turn_state, std::mem::take(&mut input))
+                .await;
+        }
+        // A settled completion can cancel this reservation without a new turn.
         self.record_started_turn(
             &turn_context.sub_id,
             (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
@@ -493,8 +602,11 @@ impl Session {
             _timer: timer,
         };
         turn.task = Some(running_task);
+        true
     }
 
+    /// The caller holds the active-turn admission lock. Both ordinary wake and
+    /// shell-to-model continuation use this exact delivery/receipt fence.
     /// Returns whether an extension has marked this thread as durably asleep.
     pub(crate) fn has_outstanding_durable_sleep(&self) -> bool {
         self.services
@@ -528,15 +640,12 @@ impl Session {
         sub_id: String,
     ) {
         let manual_reset = self.has_pending_manual_reset().await;
-        if !manual_reset && !self.input_queue.has_pending_mailbox_items().await {
-            return;
-        }
         let reset_admission = if manual_reset {
             let Some(admission) = self
                 .services
                 .code_mode_service
                 .dispatch_broker
-                .admit_reset(None)
+                .admit_reset()
             else {
                 return;
             };
@@ -545,7 +654,9 @@ impl Session {
             None
         };
 
-        let Some((turn_state, previous_options)) = self.reserve_pending_work_turn().await else {
+        let Some((turn_state, previous_options, checkpoint)) =
+            self.reserve_pending_work_turn().await
+        else {
             return;
         };
 
@@ -573,12 +684,17 @@ impl Session {
                 manual.finish();
                 return;
             }
-            self.start_task(
-                turn_context,
-                Vec::new(),
-                CompactTask::new(admission, Some(manual)),
-            )
-            .await;
+            if !self
+                .start_task_with_reservation(
+                    turn_context,
+                    Vec::new(),
+                    CompactTask::new(admission, Some(manual)),
+                    None,
+                )
+                .await
+            {
+                self.clear_reserved_idle_turn(&turn_state).await;
+            }
             return;
         }
 
@@ -586,27 +702,34 @@ impl Session {
             .models_manager
             .refresh_after_auth_change(self.get_config().await.http_client_factory())
             .await;
-        let session_configuration = if self.enabled(Feature::WakeOnAgentMessages) {
-            let Some(configuration) = self.pending_work_turn_configuration(&turn_state).await
-            else {
-                return;
+        let session_configuration =
+            if checkpoint.is_some() || self.enabled(Feature::WakeOnAgentMessages) {
+                let Some(configuration) = self
+                    .pending_work_turn_configuration(&turn_state, checkpoint.as_ref())
+                    .await
+                else {
+                    return;
+                };
+                Some(configuration)
+            } else {
+                if self
+                    .active_turn
+                    .lock()
+                    .await
+                    .as_ref()
+                    .is_none_or(|turn| !Arc::ptr_eq(&turn.turn_state, &turn_state))
+                {
+                    return;
+                }
+                None
             };
-            Some(configuration)
-        } else {
-            if self
-                .active_turn
-                .lock()
-                .await
-                .as_ref()
-                .is_none_or(|turn| !Arc::ptr_eq(&turn.turn_state, &turn_state))
-            {
-                return;
-            }
-            None
-        };
         let (input, mut start_options) =
-            self.input_queue.get_pending_input(&self.active_turn).await;
-        if !input.iter().any(
+            if matches!(&checkpoint, Some(WorkCheckpoint::Completion(_))) {
+                (Vec::new(), previous_options.clone())
+            } else {
+                self.input_queue.get_pending_input(&self.active_turn).await
+            };
+        if checkpoint.is_some() || !input.iter().any(
             |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
         ) {
             // Queue-only wakes retain the previous turn context without selecting a new task.
@@ -656,6 +779,20 @@ impl Session {
         }
         self.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
             .await;
+        if let Some(checkpoint) = checkpoint {
+            if !self
+                .start_task_with_reservation(
+                    turn_context,
+                    input,
+                    RegularTask::new(),
+                    Some((Arc::clone(&turn_state), Some(checkpoint))),
+                )
+                .await
+            {
+                self.clear_reserved_idle_turn(&turn_state).await;
+            }
+            return;
+        }
         // Task completion must still save this mail if pre-turn compaction fails.
         self.input_queue
             .extend_pending_input_for_turn_state(turn_state.as_ref(), input)
@@ -767,7 +904,7 @@ impl Session {
         turn_context: Arc<TurnContext>,
         task_result: SessionTaskResult,
     ) -> Option<McpStartupRequirements> {
-        let (regular_output, abort_reason, task_error) = match task_result {
+        let (mut regular_output, abort_reason, mut task_error) = match task_result {
             Ok(output) => (output, None, None),
             Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
                 (None, Some(TurnAbortReason::Interrupted), None)
@@ -777,22 +914,145 @@ impl Session {
                 (None, None, Some(err))
             }
         };
-        let can_continue =
-            regular_output.is_some() && turn_context.terminal_error.lock().await.is_none();
+        // Stage a managed successful final while admission is serialized, before
+        // any parent-visible terminal event. Capture preparation owns I/O only
+        // after dropping this lock; its durable execution fence prevents child
+        // callbacks from publishing the final before native task settlement.
+        if abort_reason.is_none()
+            && task_error.is_none()
+            && turn_context.terminal_error.lock().await.is_none()
+            && self.services.local_agent_runtime.work.is_some()
+            && let Some(output) = regular_output.as_mut()
+            && let TurnRunOutcome::Finished(last_answer) = &output.outcome
+        {
+            let staged = 'stage: {
+                let active = self.active_turn.lock().await;
+                let active_turn = active.as_ref()?;
+                if !Arc::ptr_eq(&active_turn.task.as_ref()?.turn_context, &turn_context) {
+                    return None;
+                }
+                let (accepts_mail, pending_native) = {
+                    let state = active_turn.turn_state.lock().await;
+                    (
+                        state.accepts_mailbox_delivery_for_current_turn(),
+                        !state.pending_input.is_empty(),
+                    )
+                };
+                let pending_coordination = if accepts_mail && !pending_native {
+                    match self.has_pending_coordination_messages().await {
+                        Ok(pending) => pending,
+                        Err(error) => break 'stage Err(error),
+                    }
+                } else {
+                    false
+                };
+                if accepts_mail && (pending_native || pending_coordination) {
+                    return Some(std::mem::take(&mut output.mcp_startup_requirements));
+                }
+                self.services
+                    .local_agent_runtime
+                    .prepare_successful_completion(
+                        self.thread_id,
+                        &turn_context.sub_id,
+                        last_answer.as_deref(),
+                    )
+                    .await
+            };
+            match staged {
+                Ok(Some(checkpoint)) => {
+                    if let Err(error) = self
+                        .services
+                        .local_agent_runtime
+                        .prepare_completion_capture(&checkpoint)
+                        .await
+                    {
+                        self.send_event(
+                            &turn_context,
+                            EventMsg::Warning(WarningEvent {
+                                message: format!("Final capture remains pending: {error}"),
+                            }),
+                        )
+                        .await;
+                    }
+                    output.outcome =
+                        TurnRunOutcome::Checkpoint(WorkCheckpoint::Completion(checkpoint));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    task_error = Some(error);
+                }
+            }
+        }
+        let mut can_continue = regular_output
+            .as_ref()
+            .is_some_and(|output| matches!(&output.outcome, TurnRunOutcome::Finished(_)))
+            && task_error.is_none()
+            && turn_context.terminal_error.lock().await.is_none();
         let finishing = CancellationToken::new();
         let finish_recording = finishing.clone().drop_guard();
-        let (turn_state, unadmitted_task, mut pending_input, outcome_handoff) = {
+        let (turn_state, unadmitted_task, mut pending_input, outcome_handoff, execution_guard) = {
             let mut active = self.active_turn.lock().await;
             let active_turn = active.as_mut()?;
             if !Arc::ptr_eq(&active_turn.task.as_ref()?.turn_context, &turn_context) {
                 return None;
             }
-            if can_continue {
-                let state = active_turn.turn_state.lock().await;
-                if state.accepts_mailbox_delivery_for_current_turn()
-                    && !state.pending_input.is_empty()
+            if active_turn.task.as_ref()?.kind == TaskKind::Compact
+                && abort_reason.is_none()
+                && regular_output.is_none()
+                && let Some(checkpoint) =
+                    turn_context.extension_data.get::<AuxiliaryWorkCheckpoint>()
+            {
+                // The execution admission captured the same native wait before
+                // reset. Even reset failure cannot make this a logical final.
+                regular_output = Some(regular::RegularTaskOutput {
+                    outcome: TurnRunOutcome::Checkpoint(checkpoint.0.clone()),
+                    mcp_startup_requirements: Default::default(),
+                });
+            }
+
+            if let Some(output) = regular_output.as_mut()
+                && let TurnRunOutcome::Checkpoint(WorkCheckpoint::Completion(checkpoint)) =
+                    &output.outcome
+            {
+                match self
+                    .services
+                    .local_agent_runtime
+                    .current_work_checkpoint(self.thread_id)
+                    .await
                 {
-                    return regular_output.map(|output| output.mcp_startup_requirements);
+                    Ok(Some(WorkCheckpoint::Completion(current))) if current == *checkpoint => {}
+                    Ok(_) => {
+                        output.outcome = TurnRunOutcome::Finished(None);
+                        can_continue = turn_context.terminal_error.lock().await.is_none();
+                    }
+                    Err(error) => {
+                        warn!(%error, "cannot revalidate native completion checkpoint");
+                    }
+                }
+            }
+            if can_continue {
+                let (accepts_mail, pending_native) = {
+                    let state = active_turn.turn_state.lock().await;
+                    (
+                        state.accepts_mailbox_delivery_for_current_turn(),
+                        !state.pending_input.is_empty(),
+                    )
+                };
+                if accepts_mail {
+                    let pending_coordination = if pending_native {
+                        false
+                    } else {
+                        match self.has_pending_coordination_messages().await {
+                            Ok(pending) => pending,
+                            Err(error) => {
+                                task_error = Some(error);
+                                false
+                            }
+                        }
+                    };
+                    if pending_native || pending_coordination {
+                        return regular_output.map(|output| output.mcp_startup_requirements);
+                    }
                 }
             }
             let task = active_turn.task.take()?;
@@ -804,12 +1064,18 @@ impl Session {
                     .then_some(task.task),
                 task.pending_initial_input.unwrap_or_default(),
                 task.outcome_handoff,
+                task._agent_execution_guard,
             )
         };
         turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();
-        let last_agent_message = regular_output.and_then(|output| output.last_agent_message);
+        let (mut last_agent_message, mut checkpoint) =
+            match regular_output.map(|output| output.outcome) {
+                Some(TurnRunOutcome::Finished(message)) => (message, None),
+                Some(TurnRunOutcome::Checkpoint(ticket)) => (None, Some(ticket)),
+                None => (None, None),
+            };
         pending_input.extend(
             self.input_queue
                 .take_pending_input_for_turn_state(turn_state.as_ref())
@@ -975,6 +1241,36 @@ impl Session {
                 turn_id: turn_context.sub_id.clone(),
                 profile,
             });
+        if let Some(WorkCheckpoint::Completion(completion)) = checkpoint.as_ref() {
+            if turn_context.terminal_error.lock().await.is_some() {
+                // Recording/hook failure is a real failure, not a successful
+                // candidate. The terminal reporter replaces the held candidate.
+                checkpoint = None;
+            } else {
+                // Capture and final input recording have both finished. Keep
+                // admission fenced until this exact execution has settled; a
+                // descendant callback must never publish a premature success.
+                let active = self.active_turn.lock().await;
+                if active.as_ref().is_some_and(|turn| {
+                    turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, &turn_state)
+                }) {
+                    match self
+                        .services
+                        .local_agent_runtime
+                        .settle_completion_checkpoint(completion)
+                        .await
+                    {
+                        Ok(CompletionSettlement::Published(answer)) => {
+                            last_agent_message = answer;
+                            checkpoint = None;
+                        }
+                        Ok(CompletionSettlement::Superseded) => checkpoint = None,
+                        Ok(CompletionSettlement::Pending) => {}
+                        Err(error) => warn!(%error, "native completion checkpoint remains pending"),
+                    }
+                }
+            }
+        }
         let idle_cause = if matches!(
             abort_reason.as_ref(),
             Some(TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited)
@@ -1000,6 +1296,10 @@ impl Session {
                 completed_at,
                 duration_ms,
             })
+        } else if let Some(checkpoint) = checkpoint.as_ref() {
+            // Execution is idle, but this accepted work has not completed. Do not
+            // route a checkpoint through terminal parent delivery or stop hooks.
+            EventMsg::TurnCheckpointed(checkpoint.event(turn_context.sub_id.clone()))
         } else {
             let time_to_first_token_ms = turn_context
                 .turn_timing_state
@@ -1024,6 +1324,7 @@ impl Session {
         if !saved_guardian_completion {
             self.send_event(turn_context.as_ref(), event.clone()).await;
         }
+        drop(execution_guard);
 
         let cleared_active_turn = {
             let mut active = self.active_turn.lock().await;
@@ -1037,24 +1338,12 @@ impl Session {
                 false
             }
         };
-        for receipt in self
-            .services
-            .code_mode_service
-            .dispatch_broker
-            .end_compound_turn(
-                &turn_context.sub_id,
-                matches!(&event, EventMsg::TurnAborted(_)),
-            )
-        {
-            self.send_event(turn_context.as_ref(), EventMsg::CompoundWaitReset(receipt))
-                .await;
-        }
         if saved_guardian_completion {
             // The parent can request another review as soon as it receives this event.
             self.send_event(turn_context.as_ref(), event).await;
         }
         drop(outcome_handoff);
-        if cleared_active_turn {
+        if cleared_active_turn && checkpoint.is_none() {
             self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
         }
         // Private reviewers already flushed the terminal event before delivering it.
@@ -1232,18 +1521,6 @@ impl Session {
             duration_ms,
         });
         self.send_event(task.turn_context.as_ref(), event).await;
-        for receipt in self
-            .services
-            .code_mode_service
-            .dispatch_broker
-            .end_compound_turn(&task.turn_context.sub_id, true)
-        {
-            self.send_event(
-                task.turn_context.as_ref(),
-                EventMsg::CompoundWaitReset(receipt),
-            )
-            .await;
-        }
         // Regular items were flushed before this terminal event was appended; buffering
         // thread writers may not flush it without another explicit barrier.
         if let Err(err) = self.flush_rollout().await {

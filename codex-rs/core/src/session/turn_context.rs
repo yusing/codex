@@ -596,6 +596,10 @@ impl TurnContext {
         Arc::clone(&self.next_step_settings.load().model_info)
     }
 
+    pub(crate) fn capture_current_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
+        self.next_step_settings.load().effective_reasoning_effort()
+    }
+
     /// Legacy: returns the frozen initial-turn model metadata.
     /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn model_info(&self) -> &Arc<CatalogModel> {

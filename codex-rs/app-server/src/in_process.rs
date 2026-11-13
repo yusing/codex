@@ -609,7 +609,12 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                                     .await;
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                warn!("thread_created receiver lagged; skipping resync");
+                                let connection_ids = if session.initialized() {
+                                    vec![IN_PROCESS_CONNECTION_ID]
+                                } else {
+                                    Vec::new()
+                                };
+                                processor.resync_created_thread_listeners(connection_ids).await;
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                                 listen_for_threads = false;

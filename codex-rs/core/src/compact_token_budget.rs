@@ -19,13 +19,15 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
 
 #[path = "compact_token_budget_reload.rs"]
-mod reload;
+pub(crate) mod reload;
 
 impl Session {
     pub(crate) async fn accept_self_reset(&self, turn: &TurnContext, call: &str) {
-        use codex_protocol::feature_use::FeatureUseEvent;
-        use codex_protocol::feature_use::FeatureUseFact;
-        let operation = format!("new_context:{}:{call}", turn.sub_id);
+        self.accept_self_reset_operation(format!("new_context:{}:{call}", turn.sub_id))
+            .await;
+    }
+
+    pub(crate) async fn accept_self_reset_operation(&self, operation: String) {
         let preload = {
             let mut state = self.state.lock().await;
             let preload = state
@@ -36,15 +38,6 @@ impl Session {
             state.accepted_self_resets.push(operation.clone());
             preload
         };
-        self.send_event(
-            turn,
-            EventMsg::FeatureUse(FeatureUseFact {
-                thread_id: self.thread_id.to_string(),
-                operation,
-                event: FeatureUseEvent::SelfResetRequested { preload },
-            }),
-        )
-        .await;
     }
 
     pub(crate) async fn finish_aborted_reset(&self, turn: &TurnContext) {
@@ -56,25 +49,8 @@ impl Session {
             .take_aborted(&turn.sub_id);
         if let Some((receipt, self_requests)) = receipt {
             let completed = receipt.status == ContextResetStatus::Completed;
-            if receipt.generation != 0 {
-                self.send_event(turn, EventMsg::ContextReset(receipt)).await;
-            }
+            self.send_event(turn, EventMsg::ContextReset(receipt)).await;
             for operation in self_requests {
-                use codex_protocol::feature_use::FeatureUseEvent;
-                use codex_protocol::feature_use::FeatureUseFact;
-                self.send_event(
-                    turn,
-                    EventMsg::FeatureUse(FeatureUseFact {
-                        thread_id: self.thread_id.to_string(),
-                        operation,
-                        event: if completed {
-                            FeatureUseEvent::SelfResetCompleted
-                        } else {
-                            FeatureUseEvent::SelfResetFailed
-                        },
-                    }),
-                )
-                .await;
             }
         }
     }
@@ -201,9 +177,9 @@ async fn run_compact_task_inner(
     lease.record_self_requests(&receipt, &self_requests);
     if generation != 0 {
         lease.record(&receipt);
-        sess.send_event(turn_context, EventMsg::ContextReset(receipt.clone()))
-            .await;
     }
+    sess.send_event(turn_context, EventMsg::ContextReset(receipt.clone()))
+        .await;
     let reset = async {
         let step_context = match step_context {
             Some(step) => step,
@@ -257,26 +233,9 @@ async fn run_compact_task_inner(
     // Record the terminal outcome before any await, including self-only resets
     // whose manual generation is zero. Joined abort cleanup preserves it.
     lease.record(&receipt);
-    if generation != 0 {
-        sess.send_event(turn_context, EventMsg::ContextReset(receipt))
-            .await;
-    }
-    for operation in self_requests {
-        use codex_protocol::feature_use::FeatureUseEvent;
-        use codex_protocol::feature_use::FeatureUseFact;
-        sess.send_event(
-            turn_context,
-            EventMsg::FeatureUse(FeatureUseFact {
-                thread_id: sess.thread_id.to_string(),
-                operation,
-                event: if result.is_ok() {
-                    FeatureUseEvent::SelfResetCompleted
-                } else {
-                    FeatureUseEvent::SelfResetFailed
-                },
-            }),
-        )
+    sess.send_event(turn_context, EventMsg::ContextReset(receipt))
         .await;
+    for operation in self_requests {
     }
     lease.finish();
     if inline && manual_canceled && !parent_cancellation.is_cancelled() {

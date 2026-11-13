@@ -24,10 +24,64 @@ use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn default_residency_keeps_more_than_three_children_loaded() {
+    let mut config = test_config().await;
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    assert_eq!(
+        config.multi_agent_v2.max_concurrent_threads_per_session,
+        None
+    );
+    let home = tempfile::tempdir().unwrap();
+    config.codex_home = home.path().to_path_buf().try_into().unwrap();
+    config.cwd = home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .unwrap();
+    let control = manager.agent_control();
+    let state = control.runtime.upgrade().unwrap();
+    let membership = control.runtime.admit_start().unwrap();
+    let mut children = Vec::new();
+    for index in 0..4 {
+        let slot = control
+            .reserve_v2_residency_slot(&state, &config, &membership, None)
+            .await
+            .unwrap();
+        let child = spawn_v2_subagent(
+            &control,
+            &state,
+            config.clone(),
+            root.thread_id,
+            &format!("worker-{index}"),
+        )
+        .await;
+        slot.commit(child.thread_id);
+        mark_thread_completed(child.thread.as_ref()).await;
+        children.push(child.thread_id);
+    }
+    for child in children {
+        assert!(manager.get_thread(child).await.is_ok());
+    }
+    assert!(manager.get_thread(root.thread_id).await.is_ok());
+    drop(membership);
+    let report = manager
+        .shutdown_all_threads_bounded(std::time::Duration::from_secs(5))
+        .await;
+    assert!(report.timed_out.is_empty());
+    assert!(report.submit_failed.is_empty());
+}
+
+#[tokio::test]
 async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
     let mut config = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
-    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    config.multi_agent_v2.max_concurrent_threads_per_session = Some(2);
     let temp_home = tempfile::tempdir().expect("create temp home");
     config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
     config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
@@ -120,7 +174,7 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
 async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
     let mut config = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
-    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    config.multi_agent_v2.max_concurrent_threads_per_session = Some(2);
     let temp_home = tempfile::tempdir().expect("create temp home");
     config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
     config.cwd = temp_home.path().to_path_buf().try_into().unwrap();

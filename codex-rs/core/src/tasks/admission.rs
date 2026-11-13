@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::host::AgentTurnAdmission;
 use crate::agent::host::AgentTurnAdmissionRequest;
+use crate::agent::types::AgentExecutionGuard;
 use crate::hook_environment_executor::with_environment_hooks;
 use crate::hook_runtime::record_pending_input;
 use crate::session::TurnInput;
@@ -23,10 +24,56 @@ use crate::state::TurnState;
 use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_thread_store::PersistContext;
+use futures::future::BoxFuture;
 use tokio::sync::Mutex;
 
 /// The host admission path already emitted the logical turn's start event.
 pub(crate) struct HostTurnStarted;
+
+/// The original task stays registered while its quiescent execution releases capacity.
+#[must_use = "resume execution capacity before allowing the original task to continue"]
+pub(crate) struct PausedTurnExecution {
+    session: Arc<Session>,
+    context: Arc<TurnContext>,
+    cancellation: CancellationToken,
+    auxiliary_tasks: tokio_util::task::TaskTracker,
+    resume: Option<BoxFuture<'static, Result<AgentExecutionGuard>>>,
+}
+
+#[cfg(test)]
+#[path = "admission_tests.rs"]
+mod tests;
+
+impl PausedTurnExecution {
+    pub(crate) async fn resume(self) -> Result<()> {
+        self.auxiliary_tasks.close();
+        self.auxiliary_tasks
+            .wait()
+            .or_cancel(&self.cancellation)
+            .await
+            .map_err(|_| CodexErr::TurnAborted)?;
+        let guard = match self.resume {
+            Some(resume) => Some(
+                resume
+                    .or_cancel(&self.cancellation)
+                    .await
+                    .map_err(|_| CodexErr::new(CodexErrorDetails::TurnAborted))??,
+            ),
+            None => None,
+        };
+        let mut active = self.session.active_turn.lock().await;
+        let task = active
+            .as_mut()
+            .and_then(|turn| turn.task.as_mut())
+            .filter(|task| Arc::ptr_eq(&task.turn_context, &self.context))
+            .filter(|_| !self.cancellation.is_cancelled())
+            .ok_or_else(|| CodexErr::new(CodexErrorDetails::TurnAborted))?;
+        if let Some(guard) = guard {
+            task._agent_execution_guard = Some(guard);
+        }
+        Ok(())
+    }
+}
 
 pub(super) async fn admit(
     session: &Arc<Session>,
@@ -67,6 +114,55 @@ pub(super) async fn admit(
 }
 
 impl Session {
+    /// Call only when all work in the original execution is quiescent, not for each
+    /// individual pending tool. The caller owns the sole pause token for this task
+    /// until resumption or cancellation. No turn, input, or residency ownership changes here.
+    pub(crate) async fn pause_turn_execution(
+        self: &Arc<Self>,
+        context: &Arc<TurnContext>,
+    ) -> Result<PausedTurnExecution> {
+        let mut active = self.active_turn.lock().await;
+        let auxiliary_tasks = active
+            .as_ref()
+            .ok_or(CodexErr::TurnAborted)?
+            .auxiliary_tasks
+            .clone();
+        let task = active
+            .as_mut()
+            .and_then(|turn| turn.task.as_mut())
+            .filter(|task| Arc::ptr_eq(&task.turn_context, context))
+            .filter(|task| !task.cancellation_token.is_cancelled())
+            .ok_or_else(|| CodexErr::new(CodexErrorDetails::TurnAborted))?;
+        let resume = match task._agent_execution_guard.take() {
+            Some(guard) => match self.host_turn_admission() {
+                Some(provider) => {
+                    let request = AgentTurnAdmissionRequest {
+                        thread_id: self.thread_id,
+                        turn_id: context.sub_id.clone(),
+                    };
+                    drop(guard);
+                    Some(Box::pin(async move { provider.admit_turn(request).await })
+                        as BoxFuture<'static, Result<AgentExecutionGuard>>)
+                }
+                None => match guard.suspend() {
+                    Ok(resume) => Some(resume),
+                    Err(guard) => {
+                        task._agent_execution_guard = Some(guard);
+                        None
+                    }
+                },
+            },
+            None => None,
+        };
+        Ok(PausedTurnExecution {
+            session: Arc::clone(self),
+            context: Arc::clone(context),
+            cancellation: task.cancellation_token.clone(),
+            auxiliary_tasks,
+            resume,
+        })
+    }
+
     pub(crate) fn host_turn_admission(&self) -> Option<Arc<dyn AgentTurnAdmission>> {
         match &self.agent_runtime {
             crate::agent::host::AgentRuntimeServices::Controller => None,

@@ -66,6 +66,22 @@ pub struct ResponseItemEnvelope {
 ///
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 pub struct CodexHarnessMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_acquisition: Option<codex_protocol::source_acquisition::SourceAcquisition>,
+    /// Frozen native UI facts, never reconstructed from message text or current work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordination: Option<codex_protocol::agent_coordination::CoordinationProjection>,
+    /// Authenticated coordination inputs actually represented by this item.
+    /// History alone is not acceptance or consumption; the native ledger owns both.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(with = "Vec<String>")]
+    pub coordination_delivery_ids: Vec<uuid::Uuid>,
+    /// Proof belongs to one complete frozen native wait output, including a
+    /// transitive-only result with no caller-addressed delivery IDs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub coordination_wait_claim_id: Option<uuid::Uuid>,
+
     /// Thread-local append sequence. Compaction keeps the identities of retained inputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_sequence: Option<u64>,
@@ -179,6 +195,9 @@ where
 impl CodexHarnessMetadata {
     /// Shortened messages no longer prove complete instruction or review delivery.
     pub fn mark_retained_sources_incomplete(&mut self) {
+        self.source_acquisition = None;
+        self.coordination_delivery_ids.clear();
+        self.coordination_wait_claim_id = None;
         self.guardian_review_ids.clear();
         self.guardian_source_order_guidance = false;
         self.guardian_retained_omissions = None;

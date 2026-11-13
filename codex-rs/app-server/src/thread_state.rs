@@ -94,8 +94,9 @@ pub(crate) enum ThreadListenerCommand {
     },
 }
 
-/// Retained until core resolves or withdraws the prompt, even if the client replies first.
-pub(crate) struct PendingNetworkApproval {
+/// Command prompts are keyed by originating context and approval ID. Network guards remain
+/// until core resolves the prompt; other commands retire on response or explicit withdrawal.
+pub(crate) struct PendingCommandApproval {
     pub(crate) request_id: RequestId,
     pub(crate) permission_guard: crate::thread_status::ThreadWatchActiveGuard,
 }
@@ -126,7 +127,7 @@ impl TurnSummary {
 pub(crate) struct ThreadState {
     goal_resume_lock: Arc<Mutex<()>>,
     pub(crate) pending_interrupts: PendingInterruptQueue,
-    pub(crate) network_approvals: HashMap<String, PendingNetworkApproval>,
+    pub(crate) command_approvals: HashMap<(String, String), PendingCommandApproval>,
     pub(crate) turn_summary: TurnSummary,
     pub(crate) last_terminal_turn_id: Option<String>,
     /// Lets runtime removal or replacement wait until the old listener has processed Core's
@@ -314,6 +315,27 @@ mod tests {
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
 
+    #[tokio::test]
+    async fn rejected_listener_removes_subscribers_but_never_a_replacement_generation() {
+        let manager = ThreadStateManager::new();
+        let id = ThreadId::new();
+        let connection = ConnectionId(1);
+        manager
+            .connection_initialized(connection, ConnectionCapabilities::default())
+            .await;
+        let expected = manager.thread_state(id).await;
+        manager.try_add_connection_to_thread(id, connection).await;
+        expected.lock().await.listener_generation = 2;
+        assert!(!manager.remove_rejected_listener(id, &expected, 1).await);
+        assert!(manager.has_subscribers(id).await);
+        assert!(manager.remove_rejected_listener(id, &expected, 2).await);
+        assert!(!manager.has_subscribers(id).await);
+        let replacement = manager.thread_state(id).await;
+        assert!(!Arc::ptr_eq(&expected, &replacement));
+        assert!(!manager.remove_rejected_listener(id, &expected, 2).await);
+        assert!(Arc::ptr_eq(&replacement, &manager.thread_state(id).await));
+    }
+
     #[test]
     fn note_thread_settings_reports_only_effective_changes() {
         let mut state = ThreadState::default();
@@ -397,9 +419,10 @@ struct ThreadStateManagerInner {
     thread_ids_by_connection: HashMap<ConnectionId, HashSet<ThreadId>>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ConnectionCapabilities {
     pub(crate) request_attestation: bool,
+    pub(crate) disconnect: tokio_util::sync::CancellationToken,
 }
 
 #[derive(Clone, Default)]
@@ -482,6 +505,18 @@ impl ThreadStateManager {
                     .then_some(*connection_id)
             })
             .min_by_key(|connection_id| connection_id.0)
+    }
+
+    pub(crate) async fn connection_lifetime(
+        &self,
+        connection_id: ConnectionId,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.state
+            .lock()
+            .await
+            .live_connections
+            .get(&connection_id)
+            .map(|connection| connection.disconnect.clone())
     }
 
     pub(crate) async fn wait_for_thread_subscriber(&self, thread_id: ThreadId) {
@@ -605,6 +640,37 @@ impl ThreadStateManager {
             return false;
         }
         state.threads.remove(&thread_id);
+        self.unregister_listener_command_tx(thread_id);
+        thread_state.clear_listener();
+        true
+    }
+
+    /// A rejected provisional runtime has no retained attachment, including its subscribers.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the exact listener generation must stay fixed while removing its map entry"
+    )]
+    pub(crate) async fn remove_rejected_listener(
+        &self,
+        thread_id: ThreadId,
+        expected: &Arc<Mutex<ThreadState>>,
+        generation: u64,
+    ) -> bool {
+        let mut thread_state = expected.lock().await;
+        let mut state = self.state.lock().await;
+        if thread_state.listener_generation != generation
+            || !state
+                .threads
+                .get(&thread_id)
+                .is_some_and(|entry| Arc::ptr_eq(&entry.state, expected))
+        {
+            return false;
+        }
+        state.threads.remove(&thread_id);
+        state.thread_ids_by_connection.retain(|_, thread_ids| {
+            thread_ids.remove(&thread_id);
+            !thread_ids.is_empty()
+        });
         self.unregister_listener_command_tx(thread_id);
         thread_state.clear_listener();
         true
@@ -739,7 +805,9 @@ impl ThreadStateManager {
     pub(crate) async fn remove_connection(&self, connection_id: ConnectionId) -> Vec<ThreadId> {
         {
             let mut state = self.state.lock().await;
-            state.live_connections.remove(&connection_id);
+            if let Some(connection) = state.live_connections.remove(&connection_id) {
+                connection.disconnect.cancel();
+            }
             let thread_ids = state
                 .thread_ids_by_connection
                 .remove(&connection_id)

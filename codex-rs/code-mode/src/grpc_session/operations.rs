@@ -8,11 +8,14 @@ use codex_code_mode_protocol::CellId;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::DEFAULT_EXEC_YIELD_TIME_MS;
 use codex_code_mode_protocol::ExecuteRequest;
+use codex_code_mode_protocol::ExecuteToPendingOutcome;
 use codex_code_mode_protocol::RuntimeResponse;
 use codex_code_mode_protocol::StartedCell;
 use codex_code_mode_protocol::TerminateRequest;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
+use codex_code_mode_protocol::WaitToPendingOutcome;
+use codex_code_mode_protocol::WaitToPendingRequest;
 use codex_code_mode_protocol::grpc;
 use codex_protocol::protocol::W3cTraceContext;
 use tokio::sync::OwnedMutexGuard;
@@ -266,46 +269,7 @@ impl SessionInner {
         preempt: Option<CancellationToken>,
     ) -> Result<WaitOutcome, String> {
         self.require_open()?;
-        let slot = {
-            let mut slots = self
-                .wait_slots
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            slots.retain(|_, slot| slot.strong_count() != 0);
-            let slot = match slots
-                .get(&request.cell_id)
-                .and_then(std::sync::Weak::upgrade)
-            {
-                Some(slot) => slot,
-                None => {
-                    let slot = Arc::new(WaitSlot {
-                        lock: Arc::new(tokio::sync::Mutex::new(())),
-                        active: AtomicBool::new(false),
-                    });
-                    slots.insert(request.cell_id.clone(), Arc::downgrade(&slot));
-                    slot
-                }
-            };
-            if slot.active.swap(true, Ordering::AcqRel) {
-                return Err(format!(
-                    "exec cell {} already has an active observer",
-                    request.cell_id
-                ));
-            }
-            slot
-        };
-        let lock = Arc::clone(&slot.lock);
-        let mut cancellation = WaitCancellation {
-            session: Arc::clone(self),
-            slot: Some(slot),
-            wait_id: None,
-            permit: None,
-        };
-        let permit = lock.lock_owned().await;
-        self.require_open()?;
-        let wait_id = Uuid::new_v4().to_string();
-        cancellation.wait_id = Some(wait_id.clone());
-        cancellation.permit = Some(permit);
+        let (mut cancellation, wait_id) = self.begin_wait(&request.cell_id).await?;
         let expected_cell_id = request.cell_id;
         let runtime_timeout =
             Duration::from_millis(request.yield_time_ms).saturating_add(Duration::from_secs(1));
@@ -338,6 +302,93 @@ impl SessionInner {
         self.prune_wait_slots();
         let outcome = conversion::wait_outcome(response?)?;
         self.validate_wait_cell(&expected_cell_id, outcome).await
+    }
+
+    pub(super) async fn wait_to_pending(
+        self: &Arc<Self>,
+        request: WaitToPendingRequest,
+    ) -> Result<WaitToPendingOutcome, String> {
+        self.require_open()?;
+        let (mut cancellation, wait_id) = self.begin_wait(&request.cell_id).await?;
+        let mut client = self.client()?;
+        let response = deadline::unbounded_session_request(
+            self,
+            "pending-frontier observation",
+            client.wait_to_pending(self.request(grpc::WaitToPendingRequest {
+                session_id: self.id.clone(),
+                cell_id: request.cell_id.to_string(),
+                wait_id,
+                max_output_tokens: conversion::output_budget(
+                    self.output_truncation,
+                    request.max_output_tokens,
+                )?,
+            })),
+        )
+        .await;
+        cancellation.disarm();
+        self.prune_wait_slots();
+        let outcome = conversion::wait_to_pending_outcome(response?)?;
+        if outcome.cell_id() != &request.cell_id {
+            let error = format!(
+                "gRPC code-mode host returned cell {} instead of {}",
+                outcome.cell_id(),
+                request.cell_id
+            );
+            self.fail(error.clone());
+            return Err(error);
+        }
+        match &outcome {
+            WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Completed(response))
+            | WaitToPendingOutcome::MissingCell(response) => {
+                self.settle_notifications(response).await
+            }
+            WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Pending { .. }) => {}
+        }
+        Ok(outcome)
+    }
+
+    async fn begin_wait(
+        self: &Arc<Self>,
+        cell_id: &CellId,
+    ) -> Result<(WaitCancellation, String), String> {
+        let slot = {
+            let mut slots = self
+                .wait_slots
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            slots.retain(|_, slot| slot.strong_count() != 0);
+            let slot = match slots.get(cell_id).and_then(std::sync::Weak::upgrade) {
+                Some(slot) => slot,
+                None => {
+                    let slot = Arc::new(WaitSlot {
+                        lock: Arc::new(tokio::sync::Mutex::new(())),
+                        active: AtomicBool::new(false),
+                    });
+                    slots.insert(cell_id.clone(), Arc::downgrade(&slot));
+                    slot
+                }
+            };
+            if slot.active.swap(true, Ordering::AcqRel) {
+                return Err(format!(
+                    "exec cell {} already has an active observer",
+                    cell_id
+                ));
+            }
+            slot
+        };
+        let lock = Arc::clone(&slot.lock);
+        let mut cancellation = WaitCancellation {
+            session: Arc::clone(self),
+            slot: Some(slot),
+            wait_id: None,
+            permit: None,
+        };
+        let permit = lock.lock_owned().await;
+        self.require_open()?;
+        let wait_id = Uuid::new_v4().to_string();
+        cancellation.wait_id = Some(wait_id.clone());
+        cancellation.permit = Some(permit);
+        Ok((cancellation, wait_id))
     }
 
     fn watch_yield(

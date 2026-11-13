@@ -14,9 +14,7 @@ use codex_app_server_protocol::CodexErrorInfo;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
-use codex_app_server_protocol::RawResponseCompletedNotification;
 use codex_app_server_protocol::RequestId;
-use codex_app_server_protocol::ResponseUsageMetadata;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadForkParams;
@@ -27,7 +25,6 @@ use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
-use codex_app_server_protocol::TokenUsageBreakdown;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
@@ -477,19 +474,11 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         responses::ev_assistant_message("seed", "FIRST_REPLY"),
         responses::ev_completed_with_tokens("seed", /*total_tokens*/ 120),
     ]);
-    let mut completed = responses::ev_completed_with_tokens("r1", /*total_tokens*/ 200);
-    completed["response"]["usage_metadata"] = serde_json::json!({ "amount": "0.125" });
-    completed["response"]["usage"]["extra"] = serde_json::json!({ "label": "example" });
-    let expected_metadata = completed["response"]["usage"].clone();
-    let sse = responses::sse(vec![
-        responses::ev_assistant_message("m1", "MANUAL_COMPACT_SUMMARY"),
-        completed,
-    ]);
     let followup = responses::sse(vec![
         responses::ev_assistant_message("followup", "FINAL_REPLY"),
         responses::ev_completed_with_tokens("followup", /*total_tokens*/ 120),
     ]);
-    let _responses = responses::mount_sse_sequence(&server, vec![seed, sse, followup]).await;
+    let _responses = responses::mount_sse_sequence(&server, vec![seed, followup]).await;
 
     let codex_home = TempDir::new()?;
     let initial_cwd = TempDir::new()?;
@@ -544,11 +533,6 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(compact_id)).await??;
 
     let started = wait_for_context_compaction_started(&mut mcp).await?;
-    let raw_completed: RawResponseCompletedNotification = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_notification("rawResponse/completed"),
-    )
-    .await??;
     let completed = wait_for_context_compaction_completed(&mut mcp).await?;
     wait_for_turn_completed(&mut mcp, &started.turn_id).await?;
 
@@ -562,27 +546,6 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(started_id, completed_id);
-    assert_eq!(
-        raw_completed,
-        RawResponseCompletedNotification {
-            thread_id: thread_id.clone(),
-            turn_id: started.turn_id,
-            response_id: "r1".to_string(),
-            usage_metadata: Some(ResponseUsageMetadata {
-                amount: Some("0.125".to_string()),
-                metadata: Some(expected_metadata),
-            }),
-            usage: Some(TokenUsageBreakdown {
-                total_tokens: 200,
-                input_tokens: 200,
-                cached_input_tokens: 0,
-                cache_write_input_tokens: 0,
-                output_tokens: 0,
-                reasoning_output_tokens: 0,
-            }),
-        }
-    );
-
     // A completed turn after compaction permits bounded replay. Neither this turn nor
     // resume resends settings, so restoring the updated cwd and roots depends on the
     // checkpoint; startup metadata does not contain the extra root.

@@ -29,6 +29,10 @@ impl LocalAgentRuntime {
             .ok_or_else(|| CodexErr::ThreadNotFound(agent_id))
     }
 
+    pub(crate) fn has_admitted_actor(&self, actor: ThreadId) -> bool {
+        self.registry.is_admitted(actor)
+    }
+
     pub(crate) async fn list_live_agent_subtree_thread_ids(
         &self,
         agent_id: ThreadId,

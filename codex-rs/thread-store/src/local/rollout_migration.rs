@@ -49,7 +49,7 @@ use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
 mod canonicalizer;
-mod legacy_event;
+pub(super) mod legacy_event;
 mod line_parser;
 mod publish;
 mod rollback;
@@ -1215,6 +1215,7 @@ impl LocalThreadStore {
                     start_byte_offset: offset,
                     end_byte_offset: next_offset,
                     fallback_created_at_ms: Some(fallback_created_at_ms),
+                    compaction_actor: super::thread_history::compaction_actor(&line.item),
                     changes: if is_inherited_subagent_history {
                         Default::default()
                     } else {

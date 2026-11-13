@@ -3050,6 +3050,392 @@ async fn projection_store(codex_home: &Path) -> LocalThreadStore {
     LocalThreadStore::new(config, Some(state_db))
 }
 
+#[tokio::test]
+async fn completed_compaction_projection_counts_identities_not_repeated_events() {
+    let home = TempDir::new().unwrap();
+    let store = projection_store(home.path()).await;
+    let id = ThreadId::new();
+    create_paginated_thread(&store, id).await;
+    store
+        .persist_thread(id, PersistContext::Standard)
+        .await
+        .unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(0));
+    let completed = completed_item(
+        id,
+        "turn-1",
+        TurnItem::ContextCompaction(codex_protocol::items::ContextCompactionItem {
+            id: "compact-1".to_owned(),
+        }),
+    );
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: id,
+            items: vec![turn_started("turn-1"), completed.clone(), completed],
+        })
+        .await
+        .unwrap();
+    store.flush_thread(id).await.unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(1));
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: id,
+            items: vec![completed_item(
+                id,
+                "turn-1",
+                TurnItem::ContextCompaction(codex_protocol::items::ContextCompactionItem {
+                    id: "compact-2".to_owned(),
+                }),
+            )],
+        })
+        .await
+        .unwrap();
+    store.flush_thread(id).await.unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(2));
+    store.shutdown_thread(id).await.unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(2));
+}
+
+#[tokio::test]
+async fn completed_compaction_projection_never_claims_an_unprocessed_suffix() {
+    let home = TempDir::new().unwrap();
+    let store = projection_store(home.path()).await;
+    let id = ThreadId::new();
+    create_paginated_thread(&store, id).await;
+    store
+        .persist_thread(id, PersistContext::Standard)
+        .await
+        .unwrap();
+    let path = store.live_rollout_path(id).await.unwrap();
+    append_suffix(
+        &path,
+        &format!("{}\n", rollout_line(Some(2), turn_started("gap"))),
+    );
+    assert_eq!(store.completed_compactions(id).await.unwrap(), None);
+    super::materialize_to_sqlite(&store, id, &path)
+        .await
+        .unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), None);
+}
+
+fn compaction_completed(thread: ThreadId, turn: &str, id: &str) -> RolloutItem {
+    completed_item(
+        thread,
+        turn,
+        TurnItem::ContextCompaction(codex_protocol::items::ContextCompactionItem {
+            id: id.to_owned(),
+        }),
+    )
+}
+
+#[tokio::test]
+async fn retained_compactions_bootstrap_old_projection_and_keep_appends_incremental() {
+    let home = TempDir::new().unwrap();
+    let store = projection_store(home.path()).await;
+    let id = ThreadId::new();
+    create_paginated_thread(&store, id).await;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: id,
+            items: vec![
+                turn_started("turn-1"),
+                compaction_completed(id, "turn-1", "one"),
+                compaction_completed(id, "turn-1", "one"),
+                compaction_completed(ThreadId::new(), "turn-1", "foreign"),
+            ],
+        })
+        .await
+        .unwrap();
+    store
+        .persist_thread(id, PersistContext::Standard)
+        .await
+        .unwrap();
+    let pool = store.thread_history_db().await.unwrap();
+    // An old projection has item identities, but no derived owner/boundary.
+    sqlx::query("UPDATE thread_history_projection_state SET completed_compactions=NULL, compaction_owner_id=NULL, compaction_revision=NULL")
+        .execute(pool).await.unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(1));
+    let revision: Option<String> = sqlx::query_scalar(
+        "SELECT compaction_revision FROM thread_history_projection_state WHERE thread_id=?",
+    )
+    .bind(id.to_string())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(revision.is_some());
+    // A completion with the same identity in another turn still counts once.
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: id,
+            items: vec![
+                turn_started("turn-2"),
+                compaction_completed(id, "turn-2", "one"),
+                compaction_completed(ThreadId::new(), "turn-2", "another-foreign"),
+                compaction_completed(id, "turn-2", "two"),
+            ],
+        })
+        .await
+        .unwrap();
+    store.flush_thread(id).await.unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(2));
+    let revision: Option<String> = sqlx::query_scalar(
+        "SELECT compaction_revision FROM thread_history_projection_state WHERE thread_id=?",
+    )
+    .bind(id.to_string())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(
+        revision.is_none(),
+        "native append projection must avoid another bootstrap scan"
+    );
+}
+
+#[tokio::test]
+async fn retained_compactions_read_compressed_history_once_without_materializing_it() {
+    let home = TempDir::new().unwrap();
+    let store = projection_store(home.path()).await;
+    let id = ThreadId::new();
+    create_paginated_thread(&store, id).await;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: id,
+            items: vec![
+                turn_started("turn"),
+                compaction_completed(id, "turn", "one"),
+            ],
+        })
+        .await
+        .unwrap();
+    let path = store.live_rollout_path(id).await.unwrap();
+    store.shutdown_thread(id).await.unwrap();
+    compress_rollout(&path);
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(1));
+    let pool = store.thread_history_db().await.unwrap();
+    // Re-running bootstrap would publish its derived metadata and trip this guard.
+    sqlx::query("CREATE TRIGGER reject_compaction_rebootstrap BEFORE UPDATE ON thread_history_projection_state BEGIN SELECT RAISE(ABORT, 'unexpected repeated compaction bootstrap'); END")
+        .execute(pool).await.unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(1));
+    assert!(
+        !path.exists(),
+        "observation must not restore a plain rollout"
+    );
+}
+
+#[tokio::test]
+async fn retained_compactions_reconcile_a_valid_suffix_ahead_of_item_projection() {
+    let home = TempDir::new().unwrap();
+    let store = projection_store(home.path()).await;
+    let id = ThreadId::new();
+    create_paginated_thread(&store, id).await;
+    store
+        .persist_thread(id, PersistContext::Standard)
+        .await
+        .unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(0));
+    let path = store.live_rollout_path(id).await.unwrap();
+    append_suffix(
+        &path,
+        &format!(
+            "{}\n{}\n",
+            rollout_line(Some(1), turn_started("turn")),
+            rollout_line(Some(2), compaction_completed(id, "turn", "one"))
+        ),
+    );
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(1));
+    super::materialize_to_sqlite(&store, id, &path)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.completed_compactions(id).await.unwrap(),
+        Some(1),
+        "catch-up must not count the bootstrapped suffix twice"
+    );
+}
+
+#[tokio::test]
+async fn retained_compactions_exclude_parent_fork_history_and_survive_omitted_projection() {
+    let home = TempDir::new().unwrap();
+    let store = projection_store(home.path()).await;
+    let parent = ThreadId::new();
+    create_paginated_thread(&store, parent).await;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: parent,
+            items: vec![
+                turn_started("parent"),
+                compaction_completed(parent, "parent", "parent-one"),
+                turn_completed("parent"),
+            ],
+        })
+        .await
+        .unwrap();
+    let base = prepare_paginated_fork(&store, parent, ForkBoundary::Latest)
+        .await
+        .history_base;
+    let child = ThreadId::new();
+    create_paginated_subagent_thread(&store, child, base, None).await;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: child,
+            items: vec![
+                turn_started("child"),
+                compaction_completed(child, "child", "child-one"),
+            ],
+        })
+        .await
+        .unwrap();
+    assert_eq!(store.completed_compactions(parent).await.unwrap(), Some(1));
+    assert_eq!(store.completed_compactions(child).await.unwrap(), Some(1));
+    let omitted = ThreadId::new();
+    create_paginated_subagent_thread(&store, omitted, None, Some(4)).await;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: omitted,
+            items: vec![
+                turn_started("copied"),
+                compaction_completed(parent, "copied", "parent-one"),
+                turn_completed("copied"),
+                turn_started("local"),
+                compaction_completed(omitted, "local", "local-one"),
+            ],
+        })
+        .await
+        .unwrap();
+    assert_eq!(store.completed_compactions(omitted).await.unwrap(), Some(1));
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: omitted,
+            items: vec![compaction_completed(omitted, "local", "local-two")],
+        })
+        .await
+        .unwrap();
+    assert_eq!(store.completed_compactions(omitted).await.unwrap(), Some(2));
+}
+
+#[tokio::test]
+async fn retained_compactions_follow_same_thread_revert_cutoff_not_launch_lifetime() {
+    let home = TempDir::new().unwrap();
+    let store = projection_store(home.path()).await;
+    let id = ThreadId::new();
+    create_paginated_thread(&store, id).await;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id: id,
+            items: vec![
+                turn_started("one"),
+                compaction_completed(id, "one", "compact-one"),
+                turn_completed("one"),
+                turn_started("two"),
+                compaction_completed(id, "two", "compact-two"),
+                turn_completed("two"),
+            ],
+        })
+        .await
+        .unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(2));
+    let path = store.live_rollout_path(id).await.unwrap();
+    store.shutdown_thread(id).await.unwrap();
+    compress_rollout(&path);
+    store
+        .revert_thread(crate::RevertThreadParams {
+            thread_id: id,
+            before_turn_id: "two".to_owned(),
+            multi_agent_version: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), Some(1));
+}
+
+#[tokio::test]
+async fn retained_compactions_read_legacy_with_or_without_a_projection_database() {
+    for with_database in [false, true] {
+        let home = TempDir::new().unwrap();
+        let store = if with_database {
+            projection_store(home.path()).await
+        } else {
+            LocalThreadStore::new(test_config(home.path()), None)
+        };
+        let id = ThreadId::new();
+        store
+            .create_thread(CreateThreadParams {
+                attached_thread: false,
+                creator_user_id: None,
+                creator_account_id: None,
+                session_id: id.into(),
+                thread_id: id,
+                extra_config: None,
+                forked_from_id: None,
+                parent_thread_id: None,
+                source: SessionSource::Exec,
+                thread_source: None,
+                originator: "test".to_owned(),
+                base_instructions: BaseInstructions::default(),
+                dynamic_tools: Vec::new(),
+                selected_capability_roots: Vec::new(),
+                multi_agent_version: None,
+                history_mode: ThreadHistoryMode::Legacy,
+                history_base: None,
+                subagent_history_start_ordinal: None,
+                initial_window_id: "window".to_owned(),
+                runtime_workspace_roots: None,
+                metadata: ThreadPersistenceMetadata {
+                    cwd: Some(home.path().to_path_buf()),
+                    model_provider: "test-provider".to_owned(),
+                    memory_mode: ThreadMemoryMode::Enabled,
+                },
+            })
+            .await
+            .unwrap();
+        store
+            .append_items(AppendThreadItemsParams {
+                thread_id: id,
+                items: vec![
+                    turn_started("turn"),
+                    RolloutItem::EventMsg(EventMsg::ContextCompacted(
+                        codex_protocol::protocol::ContextCompactedEvent,
+                    )),
+                    RolloutItem::EventMsg(EventMsg::ContextCompacted(
+                        codex_protocol::protocol::ContextCompactedEvent,
+                    )),
+                ],
+            })
+            .await
+            .unwrap();
+        store
+            .persist_thread(id, PersistContext::Standard)
+            .await
+            .unwrap();
+        let path = store.live_rollout_path(id).await.unwrap();
+        store.shutdown_thread(id).await.unwrap();
+        assert_eq!(store.completed_compactions(id).await.unwrap(), Some(2));
+        compress_rollout(&path);
+        assert_eq!(store.completed_compactions(id).await.unwrap(), Some(2));
+        assert!(!path.exists());
+    }
+}
+
+#[tokio::test]
+async fn retained_compactions_keep_incomplete_evidence_unavailable_without_rescanning() {
+    let home = TempDir::new().unwrap();
+    let store = projection_store(home.path()).await;
+    let id = ThreadId::new();
+    create_paginated_thread(&store, id).await;
+    store
+        .persist_thread(id, PersistContext::Standard)
+        .await
+        .unwrap();
+    let path = store.live_rollout_path(id).await.unwrap();
+    store.shutdown_thread(id).await.unwrap();
+    append_suffix(&path, "{");
+    assert_eq!(store.completed_compactions(id).await.unwrap(), None);
+    let pool = store.thread_history_db().await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_incomplete_rebootstrap BEFORE UPDATE ON thread_history_projection_state BEGIN SELECT RAISE(ABORT, 'unchanged incomplete source was rescanned'); END")
+        .execute(pool).await.unwrap();
+    assert_eq!(store.completed_compactions(id).await.unwrap(), None);
+}
+
 async fn create_paginated_thread(store: &LocalThreadStore, thread_id: ThreadId) {
     create_paginated_subagent_thread(
         store, thread_id, /*history_base*/ None, /*subagent_history_start_ordinal*/ None,

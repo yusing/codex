@@ -301,6 +301,34 @@ impl GrpcCodeModeHost {
         conversions::wait_response(outcome).map_err(|error| Status::internal(error.to_string()))
     }
 
+    async fn wait_to_pending_request(
+        &self,
+        request: proto::WaitToPendingRequest,
+    ) -> Result<Response<proto::WaitToPendingResponse>, Status> {
+        let received_at = Instant::now();
+        let session = self.state.session(&request.session_id)?;
+        validation::identifier(&request.cell_id, "cell ID")?;
+        validation::identifier(&request.wait_id, "wait ID")?;
+        let _permit = self.state.request_permit()?;
+        let max_output_tokens = conversions::observation_budget(
+            request.max_output_tokens,
+            session.runtime.output_truncation(),
+        )?;
+        let registration = WaitRegistration::new(Arc::clone(&session), request.wait_id)?;
+        let outcome = tokio::select! {
+            biased;
+            _ = registration.cancellation().cancelled() => return Err(Status::cancelled("code-mode wait was cancelled")),
+            _ = session.closed.cancelled() => return Err(Status::cancelled("code-mode session is closed")),
+            outcome = session.runtime.wait_to_pending(codex_code_mode_protocol::WaitToPendingRequest {
+                cell_id: CellId::new(request.cell_id), max_output_tokens,
+            }) => outcome.map_err(Status::failed_precondition)?,
+        };
+        conversions::wait_to_pending_response(
+            outcome.with_code_mode_host_duration(received_at.elapsed()),
+        )
+        .map_err(|error| Status::internal(error.to_string()))
+    }
+
     async fn cancel_wait_request(
         &self,
         request: proto::CancelWaitRequest,
@@ -482,6 +510,17 @@ impl CodeModeHost for GrpcCodeModeHost {
         Self: 'async_trait,
     {
         Box::pin(self.wait_request(request.into_inner()))
+    }
+
+    fn wait_to_pending<'a, 'async_trait>(
+        &'a self,
+        request: Request<proto::WaitToPendingRequest>,
+    ) -> GrpcFuture<'async_trait, proto::WaitToPendingResponse>
+    where
+        'a: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(self.wait_to_pending_request(request.into_inner()))
     }
 
     fn cancel_wait<'a, 'async_trait>(

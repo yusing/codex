@@ -78,24 +78,7 @@ impl ThreadManagerState {
                 .collect();
             let runtime = &thread.session.services.local_agent_runtime;
             let _ = runtime.mailboxes.enqueue(thread_id, /*id*/ None, mail);
-            // Reuse the same effective configuration snapshot as a fork. This includes live
-            // permissions and network restrictions that a profile name cannot reconstruct.
-            let (config, ..) = thread.session.fork_config().await;
-            // Preserve configured bindings across eviction without retaining turn-only attachments.
-            // Raw bindings keep the original pending owner configuration alive.
-            let environments = EvictedEnvironments {
-                config: Arc::new(config),
-                has_independent_service_tier: matches!(
-                    &thread.session.agent_runtime,
-                    AgentRuntimeServices::Host(services) if services.service_tier.is_none()
-                ),
-                selections: thread.environment_selections().await,
-                bindings: thread
-                    .session
-                    .services
-                    .turn_environments
-                    .configured_snapshot_now(),
-            };
+            let environments = retained_environments(&thread).await;
             let mut threads = manager.threads.write().await;
             if threads
                 .get(&thread_id)
@@ -159,9 +142,7 @@ impl LocalAgentControl {
         membership: &AgentTreeMembership,
         protected_thread_id: Option<ThreadId>,
     ) -> CodexResult<V2ResidencySlot> {
-        let capacity = config
-            .effective_agent_max_threads(MultiAgentVersion::V2)
-            .unwrap_or(usize::MAX);
+        let capacity = config.effective_agent_max_threads(MultiAgentVersion::V2);
         Arc::clone(&self.runtime.residency)
             .reserve_slot(state, capacity, membership, protected_thread_id)
             .await
@@ -173,6 +154,16 @@ impl LocalAgentControl {
 }
 
 impl LocalAgentRuntime {
+    /// Ending a runtime retains the same effective settings as ordinary eviction.
+    /// Graph identity and durable mail remain with their existing owners.
+    pub(crate) async fn retain_ended_thread(&self, thread: &CodexThread) {
+        self.registry.save_evicted_environments(
+            thread.session.thread_id,
+            retained_environments(thread).await,
+        );
+        self.residency.remove(thread.session.thread_id);
+    }
+
     /// Pins and touches the registered runtime without waiting for unrelated eviction.
     pub(crate) async fn pin_v2_residency(
         &self,
@@ -192,11 +183,29 @@ impl LocalAgentRuntime {
     }
 }
 
+async fn retained_environments(thread: &CodexThread) -> EvictedEnvironments {
+    // Reuse the effective fork snapshot, not a profile name reconstructed after shutdown.
+    let (config, ..) = thread.session.fork_config().await;
+    EvictedEnvironments {
+        config: Arc::new(config),
+        has_independent_service_tier: matches!(
+            &thread.session.agent_runtime,
+            AgentRuntimeServices::Host(services) if services.service_tier.is_none()
+        ),
+        selections: thread.environment_selections().await,
+        bindings: thread
+            .session
+            .services
+            .turn_environments
+            .configured_snapshot_now(),
+    }
+}
+
 impl V2Residency {
     async fn reserve_slot(
         self: Arc<Self>,
         manager: &Arc<ThreadManagerState>,
-        capacity: usize,
+        capacity: Option<usize>,
         membership: &AgentTreeMembership,
         protected_thread_id: Option<ThreadId>,
     ) -> CodexResult<V2ResidencySlot> {
@@ -212,19 +221,21 @@ impl V2Residency {
                 .await
             {
                 return Err(CodexErr::new(CodexErrorDetails::AgentLimitReached {
-                    max_threads: capacity,
+                    max_threads: capacity.expect("unbounded residency always reserves a slot"),
                 })
                 .with_agent_context(AgentErrorContext::ResidencyCapacity));
             }
         }
     }
 
-    fn try_reserve_pending_slot(&self, capacity: usize) -> bool {
+    fn try_reserve_pending_slot(&self, capacity: Option<usize>) -> bool {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.residents.len().saturating_add(state.pending_slots) >= capacity {
+        if capacity.is_some_and(|capacity| {
+            state.residents.len().saturating_add(state.pending_slots) >= capacity
+        }) {
             return false;
         }
         state.pending_slots += 1;

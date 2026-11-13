@@ -351,6 +351,7 @@ text("after");
     assert_eq!(
         service
             .wait_to_pending(WaitToPendingRequest {
+                max_output_tokens: None,
                 cell_id: cell_id("1"),
             })
             .await

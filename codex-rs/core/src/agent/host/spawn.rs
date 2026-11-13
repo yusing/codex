@@ -11,6 +11,7 @@ use crate::agent::control::effective_spawn_config;
 use crate::agent::control::fresh_child_history_and_tools;
 use crate::agent::control::inherited_exec_policy_for_parent;
 use crate::agent::history::prepare_forked_history;
+use crate::agent::history::prepare_initial_sources;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
 use crate::codex_thread::CodexThread;
@@ -71,6 +72,7 @@ async fn prepare_spawn_inputs(
         initial_history,
         history_mode,
         dynamic_tools,
+        environments: Some(snapshot.inheritable_requests()),
         disabled_plugin_ids: options.disabled_plugin_ids,
         client_mcp_extensions: parent.session.services.client_mcp_extensions.clone(),
         prompt_cache_key: parent
@@ -89,6 +91,9 @@ async fn prepare_spawn_inputs(
     thread_options.inherited_environments = options.environments;
     let client_metadata = parent.session.app_server_client_metadata().await;
     let inheritance = PreparedChildInheritance {
+        runtime_authority: Arc::new(
+            crate::thread_manager::CapturedNativeRuntimeAuthority::capture(&parent.session),
+        ),
         instructions,
         exec_policy,
         originator: parent.session.originator().await,
@@ -104,6 +109,7 @@ pub(super) async fn create_spawn(
     task_name: AgentPath,
     reservation: HostThreadSpawnReservation,
 ) -> std::result::Result<ThreadSpawnResult, ThreadSpawnError> {
+    let preload = request.options.preload.clone();
     let (mut options, inheritance, client_metadata) =
         Box::pin(prepare_spawn_inputs(parent, request)).await?;
     let caller = parent.session.thread_id;
@@ -138,6 +144,13 @@ pub(super) async fn create_spawn(
     if let Some(accounting) = reservation.usage_accounting {
         options.thread_extension_init.insert(accounting);
     }
+    let mut pending = PendingSpawn::new(
+        Arc::clone(&state),
+        reservation.thread_id,
+        membership,
+        SpawnOwner::Host,
+    );
+    pending.bind_child_runtime(runtime.for_actor_start(reservation.thread_id, Some(caller))?)?;
     let child = state
         .spawn_host_child_thread(
             options,
@@ -150,12 +163,24 @@ pub(super) async fn create_spawn(
         )
         .await
         .map_err(|error| error.with_agent_context(AgentErrorContext::ChildStartup))?;
-    let pending = PendingSpawn::new(
-        Arc::clone(&state),
-        child.thread_id,
-        membership,
-        SpawnOwner::Host,
-    );
+    let cancellation = child
+        .thread
+        .session
+        .services
+        .local_agent_runtime
+        .shutdown
+        .child_token();
+    let _cancel_on_drop = cancellation.clone().drop_guard();
+    // Attach the existing recipient listener before any reader can prompt.
+    state.notify_thread_created(&child.thread);
+    if let Err(error) =
+        prepare_initial_sources(&child.thread, None, preload.as_ref(), &cancellation).await
+    {
+        pending.reject().await;
+        return Err(error
+            .with_agent_context(AgentErrorContext::InputAdmission)
+            .into());
+    }
     child.thread.emit_thread_ready_lifecycle().await;
     child
         .thread
@@ -168,7 +193,6 @@ pub(super) async fn create_spawn(
     let status = child.thread.io.agent_status.borrow().clone();
     let _active = invocation.lock_active()?;
     let _membership = pending.disarm();
-    state.notify_thread_created(child.thread_id);
     Ok(ThreadSpawnResult {
         agent: LiveAgent {
             thread_id: child.thread_id,

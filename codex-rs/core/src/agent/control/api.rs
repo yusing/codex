@@ -97,6 +97,13 @@ impl AgentControl for LocalAgentControl {
         })
     }
 
+    fn side_question(
+        &self,
+        request: crate::agent::api::SideQuestionRequest,
+    ) -> BoxFuture<'_, Result<crate::agent::api::SideQuestionAnswer>> {
+        Box::pin(self.answer_side_question(request))
+    }
+
     fn send(&self, request: SendRequest) -> BoxFuture<'_, Result<DeliveryReceipt>> {
         Box::pin(async move {
             let SendRequest {
@@ -121,6 +128,8 @@ impl AgentControl for LocalAgentControl {
                 }
                 AgentInput::Message { message, mode } => {
                     let receiver = self.runtime.ensure_agent_known(target)?;
+                    let sources = matches!(&message, crate::agent::types::AgentMessage::Plaintext(text)
+                        if !crate::compact_token_budget::reload::message_selection(text).sources.is_empty());
                     let author = self
                         .runtime
                         .ensure_agent_known(caller)?
@@ -142,7 +151,8 @@ impl AgentControl for LocalAgentControl {
                     // locally evicted recipients can retain mail without reloading.
                     // Loaded recipients go straight to delivery, which rejects sends
                     // racing an in-progress eviction when it acquires the residency pin.
-                    let _residency_pin = if mode == MessageDeliveryMode::TriggerTurn
+                    let _residency_pin = if sources
+                        || mode == MessageDeliveryMode::TriggerTurn
                         || (self.runtime.upgrade()?.get_thread(target).await.is_err()
                             && self.runtime.registry.evicted_environments(target).is_none())
                     {
@@ -151,7 +161,19 @@ impl AgentControl for LocalAgentControl {
                     } else {
                         None
                     };
-                    let communication = message.into_communication(author, receiver_path, mode);
+                    let mut communication = message.into_communication(author, receiver_path, mode);
+                    if sources {
+                        let thread = self.runtime.upgrade()?.get_thread(target).await?;
+                        let cancellation = self.runtime.shutdown.child_token();
+                        let _cancel_on_drop = cancellation.clone().drop_guard();
+                        crate::agent::history::prepare_initial_sources(
+                            &thread,
+                            Some(&mut communication),
+                            None,
+                            &cancellation,
+                        )
+                        .await?;
+                    }
                     let kind = match mode {
                         MessageDeliveryMode::QueueOnly => {
                             start_options.parent_turn_id = None;
@@ -163,7 +185,7 @@ impl AgentControl for LocalAgentControl {
                         .send_inter_agent_communication(
                             target,
                             communication,
-                            AgentCommunicationContext::new(kind, caller),
+                            AgentCommunicationContext::new(kind, caller).with_sources(sources),
                             start_options,
                         )
                         .await?;
@@ -211,6 +233,28 @@ impl AgentControl for LocalAgentControl {
                     Ok(snapshot)
                 }
                 MultiAgentVersion::V2 => self.interrupt_spawned_agent(caller, target).await,
+            }
+        })
+    }
+
+    fn interrupt_with_receipt(
+        &self,
+        caller: ThreadId,
+        target: AgentTarget,
+        version: MultiAgentVersion,
+    ) -> BoxFuture<'_, Result<crate::agent::api::AgentInterruptReceipt>> {
+        Box::pin(async move {
+            if version == MultiAgentVersion::V2 {
+                let target = self.resolve_target(caller, &target)?;
+                self.interrupt_spawned_agent_with_receipt(caller, target)
+                    .await
+            } else {
+                self.interrupt(caller, target, version)
+                    .await
+                    .map(|snapshot| crate::agent::api::AgentInterruptReceipt {
+                        snapshot,
+                        requested_work: None,
+                    })
             }
         })
     }

@@ -273,3 +273,26 @@ async fn set_rate_limits_carries_account_metadata_from_codex_to_codex_other() {
         Some(false)
     );
 }
+
+#[tokio::test]
+async fn capture_delivery_context_is_live_only_and_rotates_on_history_replacement() {
+    let config = make_session_configuration_for_tests().await;
+    let mut state = SessionState::new(config.clone());
+    let first = state.delivery_context_id;
+    let same_window = state.auto_compact_window_snapshot();
+    state.set_auto_compact_window_estimated_prefill(12);
+    assert_eq!(
+        state.delivery_context_id, first,
+        "ordinary accounting does not reset delivery scope"
+    );
+    state.replace_history(Vec::new(), None);
+    assert_ne!(state.delivery_context_id, first);
+    let restored = SessionState::new(config);
+    assert_ne!(restored.delivery_context_id, first);
+    assert_ne!(restored.delivery_context_id, state.delivery_context_id);
+    assert_eq!(
+        same_window,
+        restored.auto_compact_window_snapshot(),
+        "same window observations do not imply same live delivery scope"
+    );
+}

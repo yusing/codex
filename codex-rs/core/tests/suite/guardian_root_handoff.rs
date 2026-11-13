@@ -77,7 +77,7 @@ pub(crate) async fn handoff_scenario(native_history: bool) -> Result<Vec<Respons
                     .enable(Feature::GuardianNativeMultiAgentHistory)
                     .expect("enable native multi-agent history");
             }
-            config.multi_agent_v2.max_concurrent_threads_per_session = 4;
+            config.multi_agent_v2.max_concurrent_threads_per_session = Some(4);
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config

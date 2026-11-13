@@ -68,6 +68,13 @@ pub trait AgentControl: Send + Sync {
     /// the root. Legacy user input can address loaded threads outside the agent registry.
     fn send(&self, request: SendRequest) -> BoxFuture<'_, Result<DeliveryReceipt>>;
 
+    /// Answer independently from a loaded target's current context. This never delivers
+    /// primary input or restores a target, and rejects an answer from superseded work.
+    fn side_question(
+        &self,
+        request: SideQuestionRequest,
+    ) -> BoxFuture<'_, Result<SideQuestionAnswer>>;
+
     /// Take queued, non-turn-starting mail in order, without loading the recipient.
     /// This in-memory operation performs no I/O; returning transfers ownership to the caller.
     fn take_mailbox(&self, agent: ThreadId) -> Vec<crate::PendingAgentMessage>;
@@ -89,6 +96,24 @@ pub trait AgentControl: Send + Sync {
         target: AgentTarget,
         version: MultiAgentVersion,
     ) -> BoxFuture<'_, Result<AgentInfo>>;
+
+    /// Exact native effect, when this controller owns durable work. Other
+    /// controllers retain their existing interruption behavior without guessing.
+    fn interrupt_with_receipt(
+        &self,
+        caller: ThreadId,
+        target: AgentTarget,
+        version: MultiAgentVersion,
+    ) -> BoxFuture<'_, Result<AgentInterruptReceipt>> {
+        Box::pin(async move {
+            self.interrupt(caller, target, version)
+                .await
+                .map(|snapshot| AgentInterruptReceipt {
+                    snapshot,
+                    requested_work: None,
+                })
+        })
+    }
 
     /// List loaded agents using the caller's captured source to resolve a path prefix.
     /// The local backend lazily registers callers with no parent. Callers own formatting.
@@ -181,6 +206,13 @@ pub enum AgentInfo {
     Unloaded(AgentMetadata),
 }
 
+pub struct AgentInterruptReceipt {
+    pub snapshot: AgentInfo,
+    /// The owner selected this work for interruption, not proof it terminated.
+    /// None means no native nonterminal work was targeted.
+    pub requested_work: Option<codex_state::coordination::WorkStamp>,
+}
+
 impl AgentInfo {
     pub fn metadata(&self) -> &AgentMetadata {
         match self {
@@ -230,6 +262,19 @@ pub struct DeliveryReceipt {
     pub metadata: AgentMetadata,
     /// Acceptance identifier, not evidence that the recipient processed the input.
     pub submission_id: String,
+}
+
+pub struct SideQuestionRequest {
+    pub caller: ThreadId,
+    pub operation_id: String,
+    pub target: AgentTarget,
+    pub question: String,
+}
+
+pub struct SideQuestionAnswer {
+    pub thread_id: ThreadId,
+    pub metadata: AgentMetadata,
+    pub answer: String,
 }
 
 #[derive(Clone)]

@@ -20,6 +20,8 @@ use codex_code_mode_protocol::StartedCell;
 use codex_code_mode_protocol::TerminateRequest;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
+use codex_code_mode_protocol::WaitToPendingOutcome;
+use codex_code_mode_protocol::WaitToPendingRequest;
 use codex_code_mode_protocol::host::SessionId;
 use codex_install_context::InstallContext;
 use tokio::sync::Semaphore;
@@ -311,6 +313,18 @@ impl ProcessOwnedCodeModeSession {
             .await
     }
 
+    pub async fn wait_to_pending(
+        &self,
+        mut request: WaitToPendingRequest,
+    ) -> Result<WaitToPendingOutcome, String> {
+        let binding = self.connection().await?;
+        request.max_output_tokens = self.server_output_budget(request.max_output_tokens);
+        binding
+            .connection
+            .wait_to_pending(binding.remote, request)
+            .await
+    }
+
     pub async fn terminate(&self, mut request: TerminateRequest) -> Result<WaitOutcome, String> {
         let binding = self.connection().await?;
         request.max_output_tokens = self.server_output_budget(request.max_output_tokens);
@@ -581,6 +595,13 @@ impl CodeModeSession for ProcessOwnedCodeModeSession {
         preempt: Option<CancellationToken>,
     ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
         Box::pin(ProcessOwnedCodeModeSession::wait(self, request, preempt))
+    }
+
+    fn wait_to_pending<'a>(
+        &'a self,
+        request: WaitToPendingRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitToPendingOutcome> {
+        Box::pin(ProcessOwnedCodeModeSession::wait_to_pending(self, request))
     }
 
     fn terminate<'a>(

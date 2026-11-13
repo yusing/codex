@@ -1,0 +1,1 @@
+Summarize the changes in the frozen capture selection below using your existing context. State the concrete changes and their purpose, relevant unfinished work or blockers, and what has actually been verified. Do not investigate, use tools, or describe this progress report as completion of your assignment. Return only a concise, substantive summary.

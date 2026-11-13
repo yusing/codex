@@ -146,6 +146,7 @@ pub(crate) struct OutgoingMessageSender {
     /// We keep them here because this is where responses, errors, and
     /// disconnect cleanup all get handled.
     request_contexts: Mutex<HashMap<ConnectionRequestId, RequestContext>>,
+    host_requests: tokio_util::task::TaskTracker,
     analytics_events_client: AnalyticsEventsClient,
 }
 
@@ -158,10 +159,12 @@ pub(crate) struct ThreadScopedOutgoingMessageSender {
 
 struct PendingCallbackEntry {
     human_approval_recipients: HashSet<ConnectionId>,
+    host_owner: Option<ConnectionId>,
     verification_owner: Option<ConnectionId>,
     verification_auth_revision: Option<u64>,
     verification_identity: Option<user_verification_auth::Identity>,
     callback: oneshot::Sender<ClientRequestResult>,
+    preparation: bool,
     thread_id: Option<ThreadId>,
     request: ServerRequest,
     _diagnostics_guard: GaugeGuard,
@@ -189,6 +192,21 @@ impl ThreadScopedOutgoingMessageSender {
                 Some(self.connection_ids.as_slice()),
                 payload,
                 Some(self.thread_id),
+            )
+            .await
+    }
+
+    pub(crate) async fn send_preparation_command_approval(
+        &self,
+        params: codex_app_server_protocol::CommandExecutionRequestApprovalParams,
+    ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
+        self.outgoing
+            .send_request_with_lifetime(
+                self.outgoing.next_request_id(),
+                Some(self.connection_ids.as_slice()),
+                ServerRequestPayload::CommandExecutionRequestApproval(params),
+                Some(self.thread_id),
+                /*preparation*/ true,
             )
             .await
     }
@@ -242,8 +260,9 @@ impl ThreadScopedOutgoingMessageSender {
 
     pub(crate) async fn abort_pending_server_requests(&self) {
         self.outgoing
-            .cancel_requests_for_thread(
+            .cancel_thread_requests(
                 self.thread_id,
+                /*include_preparations*/ false,
                 Some({
                     let mut error = internal_error(
                         "client request resolved because the turn state was changed",
@@ -279,6 +298,7 @@ impl OutgoingMessageSender {
             sender,
             request_id_to_callback: Mutex::new(HashMap::new()),
             request_contexts: Mutex::new(HashMap::new()),
+            host_requests: tokio_util::task::TaskTracker::new(),
             analytics_events_client,
         }
     }
@@ -299,6 +319,18 @@ impl OutgoingMessageSender {
         {
             warn!("replaced unresolved request context");
         }
+    }
+
+    pub(crate) fn track_host_request(
+        &self,
+        request: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        self.host_requests.spawn(request);
+    }
+
+    pub(crate) async fn drain_host_requests(&self) {
+        self.host_requests.close();
+        self.host_requests.wait().await;
     }
 
     pub(crate) async fn cancel_user_verification_request(&self, request_id: &ConnectionRequestId) {
@@ -381,7 +413,7 @@ impl OutgoingMessageSender {
         .await
     }
 
-    fn next_request_id(&self) -> RequestId {
+    pub(crate) fn next_request_id(&self) -> RequestId {
         RequestId::Integer(self.next_server_request_id.fetch_add(1, Ordering::Relaxed))
     }
 
@@ -391,7 +423,24 @@ impl OutgoingMessageSender {
         request: ServerRequestPayload,
         thread_id: Option<ThreadId>,
     ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
-        let id = self.next_request_id();
+        self.send_request_with_lifetime(
+            self.next_request_id(),
+            connection_ids,
+            request,
+            thread_id,
+            /*preparation*/ false,
+        )
+        .await
+    }
+
+    pub(crate) async fn send_request_with_lifetime(
+        &self,
+        id: RequestId,
+        connection_ids: Option<&[ConnectionId]>,
+        request: ServerRequestPayload,
+        thread_id: Option<ThreadId>,
+        preparation: bool,
+    ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
         let outgoing_message_id = id.clone();
         let request = request.request_with_id(outgoing_message_id.clone());
         let user_verification = matches!(
@@ -413,6 +462,18 @@ impl OutgoingMessageSender {
                     || verification_identity != self.verification_identity())
         };
         let (tx_approve, rx_approve) = oneshot::channel();
+        let host_owner = if matches!(
+            &request,
+            ServerRequest::AgentPrepareFinalCapture { .. }
+                | ServerRequest::AgentPrepareHostAdmission { .. }
+        ) {
+            let Some([owner]) = connection_ids else {
+                return (outgoing_message_id, rx_approve);
+            };
+            Some(*owner)
+        } else {
+            None
+        };
         let human_connections;
         let connection_ids = if requires_human_approval(&request) {
             let eligible = self.human_approval_connections.lock().await;
@@ -451,6 +512,7 @@ impl OutgoingMessageSender {
             request_id_to_callback.insert(
                 id,
                 PendingCallbackEntry {
+                    host_owner,
                     human_approval_recipients: if requires_human_approval(&request) {
                         connection_ids.unwrap_or_default().iter().copied().collect()
                     } else {
@@ -460,6 +522,7 @@ impl OutgoingMessageSender {
                     verification_auth_revision,
                     verification_identity: verification_identity.clone(),
                     callback: tx_approve,
+                    preparation,
                     thread_id,
                     request: request.clone(),
                     _diagnostics_guard: PENDING_SERVER_REQUESTS.track(),
@@ -666,6 +729,9 @@ impl OutgoingMessageSender {
             .contains(&connection_id);
         let mut callbacks = self.request_id_to_callback.lock().await;
         let entry = callbacks.get(id)?;
+        if entry.host_owner.is_some_and(|owner| owner != connection_id) {
+            return None;
+        }
         if requires_human_approval(&entry.request)
             && (!human_approval || !entry.human_approval_recipients.contains(&connection_id))
         {
@@ -693,8 +759,10 @@ impl OutgoingMessageSender {
         let mut requests = request_id_to_callback
             .values()
             .filter_map(|entry| {
-                (entry.thread_id == Some(thread_id) && entry.verification_owner.is_none())
-                    .then_some(entry.request.clone())
+                (entry.thread_id == Some(thread_id)
+                    && entry.verification_owner.is_none()
+                    && entry.host_owner.is_none())
+                .then_some(entry.request.clone())
             })
             .collect::<Vec<_>>();
         requests.sort_by(|left, right| left.id().cmp(right.id()));
@@ -706,12 +774,24 @@ impl OutgoingMessageSender {
         thread_id: ThreadId,
         error: Option<JSONRPCErrorError>,
     ) {
+        self.cancel_thread_requests(thread_id, /*include_preparations*/ true, error)
+            .await;
+    }
+
+    async fn cancel_thread_requests(
+        &self,
+        thread_id: ThreadId,
+        include_preparations: bool,
+        error: Option<JSONRPCErrorError>,
+    ) {
         let entries = {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
             let request_ids = request_id_to_callback
                 .iter()
                 .filter_map(|(request_id, entry)| {
-                    (entry.thread_id == Some(thread_id)).then_some(request_id.clone())
+                    (entry.thread_id == Some(thread_id)
+                        && (include_preparations || !entry.preparation))
+                        .then_some(request_id.clone())
                 })
                 .collect::<Vec<_>>();
 
@@ -1720,6 +1800,74 @@ mod tests {
                 &first_request_id,
                 &second_request_id
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn preparation_command_survives_turn_transition_but_not_thread_shutdown() {
+        let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(8);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let scoped = ThreadScopedOutgoingMessageSender::new(
+            Arc::clone(&outgoing),
+            vec![ConnectionId(1)],
+            thread_id,
+        );
+        let params = CommandExecutionRequestApprovalParams {
+            kind: codex_app_server_protocol::CommandExecutionApprovalKind::HumanCommand,
+            thread_id: thread_id.to_string(),
+            turn_id: "preparation-1".into(),
+            item_id: "source-reader".into(),
+            started_at_ms: 0,
+            approval_id: None,
+            environment_id: None,
+            reason: None,
+            network_approval_context: None,
+            command: Some("mchanges receipt1".into()),
+            cwd: None,
+            command_actions: None,
+            additional_permissions: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: None,
+            available_decisions: None,
+        };
+        let (_, unowned) = scoped
+            .send_preparation_command_approval(params.clone())
+            .await;
+        assert!(
+            unowned.await.is_err(),
+            "preparation cannot borrow a nonhuman connection"
+        );
+        outgoing
+            .enable_human_approval_connection(ConnectionId(1))
+            .await;
+        let (preparation_id, mut preparation) = scoped
+            .send_preparation_command_approval(params.clone())
+            .await;
+        let (_, ordinary) = scoped
+            .send_request(ServerRequestPayload::CommandExecutionRequestApproval(
+                params,
+            ))
+            .await;
+        scoped.abort_pending_server_requests().await;
+        assert!(ordinary.await.unwrap().is_err());
+        assert!(matches!(
+            preparation.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        let pending = outgoing.pending_requests_for_thread(thread_id).await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id(), &preparation_id);
+        outgoing.cancel_requests_for_thread(thread_id, None).await;
+        assert!(preparation.await.is_err());
+        assert!(
+            outgoing
+                .pending_requests_for_thread(thread_id)
+                .await
+                .is_empty()
         );
     }
 

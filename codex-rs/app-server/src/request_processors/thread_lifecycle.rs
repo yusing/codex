@@ -267,10 +267,15 @@ pub(super) async fn ensure_conversation_listener(
         .thread_state_manager
         .thread_state(conversation_id)
         .await;
-    start_listener(
+    let outgoing = Arc::clone(&listener_task_context.outgoing);
+    let connection_lifetime = listener_task_context
+        .thread_state_manager
+        .connection_lifetime(connection_id)
+        .await;
+    let result = start_listener(
         listener_task_context,
         conversation_id,
-        conversation,
+        Arc::clone(&conversation),
         ListenerStateCandidate::Existing(state),
         ListenerStartup::Subscribe {
             connection_id,
@@ -278,7 +283,17 @@ pub(super) async fn ensure_conversation_listener(
         },
     )
     .await
-    .into_subscription(conversation_id)
+    .into_subscription(conversation_id)?;
+    if matches!(result, EnsureConversationListenerResult::Attached)
+        && let Some(disconnect) = connection_lifetime
+    {
+        conversation.install_host_callbacks(crate::agent_host::host_callbacks(
+            &outgoing,
+            connection_id,
+            disconnect,
+        ));
+    }
+    Ok(result)
 }
 
 pub(super) fn log_listener_attach_result(
@@ -414,6 +429,16 @@ async fn start_listener(
                 }
             }
         }
+        // Created notifications are delivery receipts, not a request to resubscribe. This
+        // check shares the unsubscribe/install lock, including duplicate lag recovery.
+        if created
+            && state.listener_matches(&conversation)
+            && !conversation.has_pending_created_notification()
+        {
+            conversation.acknowledge_created_notification();
+            return ListenerStartOutcome::Started { attached: false };
+        }
+        let acknowledge_creation = created || !connection_ids.is_empty();
         let installed = listener_task_context
             .thread_state_manager
             .subscribe_and_install_listener(
@@ -438,6 +463,9 @@ async fn start_listener(
                         state.set_experimental_raw_events(/*enabled*/ true);
                     }
                     if listener_matches {
+                        if acknowledge_creation {
+                            conversation.acknowledge_created_notification();
+                        }
                         return Ok(None);
                     }
                     let (listener_command_rx, listener_generation) = state.set_listener(
@@ -457,6 +485,9 @@ async fn start_listener(
                     listener_task_context
                         .thread_state_manager
                         .register_listener_command_tx(conversation_id, listener_command_tx);
+                    if acknowledge_creation {
+                        conversation.acknowledge_created_notification();
+                    }
                     Ok(Some((listener_command_rx, listener_generation)))
                 },
             )
@@ -505,6 +536,7 @@ async fn start_listener(
     } = listener_task_context;
     let outgoing_for_task = Arc::clone(&outgoing);
     tokio::spawn(async move {
+        let mut provisional_rejected = false;
         let shutdown_complete = loop {
             tokio::select! {
                 biased;
@@ -538,6 +570,11 @@ async fn start_listener(
                         }
                     };
 
+                    if matches!(event.msg, EventMsg::ProvisionalSpawnRejected) {
+                        provisional_rejected = true;
+                        continue;
+                    }
+
                     if let Some(worker) = &turn_cost_worker {
                         worker.observe_event(
                             conversation_id,
@@ -557,11 +594,18 @@ async fn start_listener(
                             .then(|| thread_state.turn_summary.clone());
                         (thread_state.experimental_raw_events, terminal)
                     };
-                    if matches!(
-                        &event.msg,
-                        EventMsg::RawResponseItem(_) | EventMsg::RawResponseCompleted(_) | EventMsg::PrivateSessionEvent(_)
-                    ) && !raw_events_enabled
-                    {
+                    // Directed messages are admitted conversation input, not optional
+                    // raw provider telemetry. Publish them for every listener, including
+                    // resume/fork listeners that cannot opt into the broad raw stream.
+                    let requires_raw_events = match &event.msg {
+                        EventMsg::RawResponseItem(record) => record.source_acquisition.is_none() && !matches!(
+                            record.item,
+                            codex_protocol::models::ResponseItem::AgentMessage { .. }
+                        ),
+                        EventMsg::RawResponseCompleted(_) | EventMsg::PrivateSessionEvent(_) => true,
+                        _ => false,
+                    };
+                    if requires_raw_events && !raw_events_enabled {
                         continue;
                     }
                     let subscribed_connection_ids = thread_state_manager
@@ -746,6 +790,28 @@ async fn start_listener(
                 }
             }
         };
+        if shutdown_complete && provisional_rejected {
+            {
+                let mut pending = pending_thread_unloads.lock().await;
+                if !thread_state_manager
+                    .remove_rejected_listener(conversation_id, &thread_state, listener_generation)
+                    .await
+                {
+                    drained_tx.send_replace(true);
+                    return;
+                }
+                pending.insert(conversation_id, watch::channel(()).0);
+            }
+            outgoing_for_task
+                .cancel_requests_for_thread(conversation_id, /*error*/ None)
+                .await;
+            thread_watch_manager
+                .remove_thread(&conversation_id.to_string())
+                .await;
+            pending_thread_unloads.lock().await.remove(&conversation_id);
+            drained_tx.send_replace(true);
+            return;
+        }
         // The thread owns its event sender, so waiting for channel closure retains
         // the runtime. Keep only the notification relay after ShutdownComplete.
         drop(conversation);

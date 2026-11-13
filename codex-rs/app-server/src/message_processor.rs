@@ -423,6 +423,10 @@ impl MessageProcessor {
                     Some(time_provider)
                 },
             );
+            let manager = match state_db.as_ref() {
+                Some(state_db) => manager.with_work_state(Arc::clone(state_db)),
+                None => manager,
+            };
             match code_mode_session_provider {
                 Some(provider) => manager.with_code_mode_session_provider(provider),
                 None => manager,
@@ -875,7 +879,7 @@ impl MessageProcessor {
     pub(crate) async fn connection_initialized(
         &self,
         connection_id: ConnectionId,
-        request_attestation: bool,
+        session: &ConnectionSessionState,
     ) {
         self.account_processor
             .notify_workspace_routing_to_connection(connection_id);
@@ -883,7 +887,8 @@ impl MessageProcessor {
             .connection_initialized(
                 connection_id,
                 ConnectionCapabilities {
-                    request_attestation,
+                    request_attestation: session.request_attestation(),
+                    disconnect: session.disconnect.clone(),
                 },
             )
             .await;
@@ -892,6 +897,12 @@ impl MessageProcessor {
     pub(crate) async fn send_initialize_notifications(&self) {
         self.startup_warnings
             .send_config_to_connections(&self.outgoing, &[])
+            .await;
+    }
+
+    pub(crate) async fn resync_created_thread_listeners(&self, connection_ids: Vec<ConnectionId>) {
+        self.thread_processor
+            .resync_created_thread_listeners(connection_ids)
             .await;
     }
 
@@ -931,6 +942,7 @@ impl MessageProcessor {
 
     pub(crate) async fn shutdown_threads(&self) {
         self.thread_processor.shutdown_threads().await;
+        self.outgoing.drain_host_requests().await;
     }
 
     pub(crate) async fn connection_closed(
@@ -1019,8 +1031,7 @@ impl MessageProcessor {
                 )
                 .await?;
             if connection_initialized {
-                self.connection_initialized(connection_id, session.request_attestation())
-                    .await;
+                self.connection_initialized(connection_id, &session).await;
             }
             return Ok(());
         }
@@ -1552,11 +1563,24 @@ impl MessageProcessor {
             ClientRequest::ThreadPredictionRequest { .. } => Err(method_not_found(
                 "thread/prediction/request is not implemented yet",
             )),
-            ClientRequest::FeatureUseRecord { params, .. } => {
-                self.thread_processor.feature_use_record(params)
+            ClientRequest::AgentObserve { params, .. } => {
+                self.thread_processor.agent_observe(params).await
             }
-            ClientRequest::FeatureUseRead { params, .. } => {
-                self.thread_processor.feature_use_read(params)
+            ClientRequest::AgentForeignReceive { params, .. } => {
+                self.thread_processor
+                    .agent_foreign_receive(
+                        connection_id,
+                        params,
+                        request_context.cancellation.clone(),
+                    )
+                    .await
+            }
+            ClientRequest::AgentObserveTree { params, .. } => {
+                self.thread_processor.agent_observe_tree(params).await
+            }
+            ClientRequest::AgentEnd { params, .. } => self.thread_processor.agent_end(params).await,
+            ClientRequest::AgentInterrupt { params, .. } => {
+                self.thread_processor.agent_interrupt(params).await
             }
             ClientRequest::ThreadCompactStart { params, .. } => {
                 self.thread_processor
@@ -1564,7 +1588,9 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::ThreadCompactCancel { params, .. } => {
-                self.thread_processor.thread_compact_cancel(&request_id, params).await
+                self.thread_processor
+                    .thread_compact_cancel(&request_id, params)
+                    .await
             }
             ClientRequest::ThreadBackgroundTerminalsClean { params, .. } => {
                 self.thread_processor

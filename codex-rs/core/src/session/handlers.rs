@@ -23,9 +23,6 @@ use crate::context::GuardianApprovedAction;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
-use crate::tasks::UserShellCommandMode;
-use crate::tasks::UserShellCommandTask;
-use crate::tasks::execute_user_shell_command;
 use crate::thread_manager::AgentTreeShutdownFailure;
 use crate::thread_manager::thread_store_error_kind;
 use codex_protocol::approvals::ExecApprovalKind;
@@ -107,33 +104,16 @@ pub async fn run_user_shell_command(
     command: String,
     timeout_ms: Option<u64>,
 ) {
-    if let Some((turn_context, cancellation_token)) =
-        sess.active_turn_context_and_cancellation_token().await
+    if let Err(error) = sess
+        .start_user_shell_command(sub_id.clone(), command, timeout_ms)
+        .await
     {
-        let session = Arc::clone(sess);
-        tokio::spawn(async move {
-            execute_user_shell_command(
-                session,
-                turn_context,
-                command,
-                timeout_ms,
-                cancellation_token,
-                UserShellCommandMode::ActiveTurnAuxiliary,
-            )
-            .await;
-        });
-        return;
-    }
-
-    let turn_context = sess
-        .new_turn_with_default_settings(sub_id, Default::default())
+        sess.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::Error(error.to_error_event(None)),
+        })
         .await;
-    sess.spawn_task(
-        turn_context,
-        Vec::new(),
-        UserShellCommandTask::new(command, timeout_ms),
-    )
-    .await;
+    }
 }
 
 pub async fn resolve_elicitation(
@@ -185,7 +165,7 @@ impl Session {
         turn_id: Option<String>,
         decision: ReviewDecision,
     ) {
-        let Some((pending, active_turn_id)) = self
+        let Some((pending, owner)) = self
             .take_pending_approval(&approval_id, turn_id.as_deref())
             .await
         else {
@@ -193,18 +173,25 @@ impl Session {
         };
         let decision = pending.validate(decision);
         if decision == ReviewDecision::Abort {
-            let turn_id = if pending.kind == ExecApprovalKind::HumanCommand {
-                Some(&pending.turn_id)
-            } else {
-                active_turn_id.as_ref()
-            };
-            if let Some(turn_id) = turn_id {
-                self.abort_turn_if_active(
-                    turn_id,
-                    TurnAbortReason::Interrupted,
-                    /*error*/ None,
-                )
-                .await;
+            match owner {
+                super::preparation::ApprovalOwner::Preparation(cancellation) => {
+                    cancellation.cancel()
+                }
+                super::preparation::ApprovalOwner::Turn(active_turn_id) => {
+                    let turn_id = if pending.kind == ExecApprovalKind::HumanCommand {
+                        Some(&pending.turn_id)
+                    } else {
+                        active_turn_id.as_ref()
+                    };
+                    if let Some(turn_id) = turn_id {
+                        self.abort_turn_if_active(
+                            turn_id,
+                            TurnAbortReason::Interrupted,
+                            /*error*/ None,
+                        )
+                        .await;
+                    }
+                }
             }
         } else if let ReviewDecision::ApprovedExecpolicyAmendment {
             proposed_execpolicy_amendment,
@@ -303,11 +290,26 @@ pub async fn compact(
         .await;
         requests.publish(generation, context_reset_request_id);
     }
+    let broker = &sess.services.code_mode_service.dispatch_broker;
+    if token_budget {
+        match sess.has_pending_turn_wait().await {
+            Ok(provider_wait) if provider_wait || broker.has_paused_waits() => {
+                broker.wake_paused_waits();
+                return;
+            }
+            Err(error) => {
+                warn!(%error, "failed to inspect pending wait for context reset");
+                broker.wake_paused_waits();
+                return;
+            }
+            _ => {}
+        }
+    }
     let Some(admission) = sess
         .services
         .code_mode_service
         .dispatch_broker
-        .admit_reset(None)
+        .admit_reset()
     else {
         if !token_budget {
             sess.request_new_context_window().await;
@@ -389,6 +391,7 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
     if let Some(reporting) = &sess.outcome_reporting {
         reporting.handoffs.wait().await;
     }
+    sess.shutdown_preparations().await;
     super::async_compaction::shutdown(sess).await;
     let shell_snapshot_prewarm = sess.state.lock().await.shell_snapshot_prewarm.take();
     if let Some(shell_snapshot_prewarm) = shell_snapshot_prewarm {
@@ -863,12 +866,6 @@ pub(super) async fn submission_loop(
                 }
                 Op::CancelCompact { request_id } => {
                     sess.cancel_manual_reset(request_id).await;
-                    false
-                }
-                Op::CompoundWaitResponse { cell_id, response } => {
-                    sess.services.code_mode_service.dispatch_broker.compound_response(
-                        &codex_code_mode::CellId::new(cell_id), response,
-                    );
                     false
                 }
                 Op::SetThreadMemoryMode { mode } => {

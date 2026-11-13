@@ -163,6 +163,11 @@ impl RequestTracker {
                     cell_id: pending_cell_id,
                     cancellation,
                     ..
+                } | PendingRequest::WaitToPending {
+                    session: pending_session,
+                    cell_id: pending_cell_id,
+                    cancellation,
+                    ..
                 } if pending_session == session
                     && pending_cell_id == cell_id
                     && cancellation.is_cancelled()
@@ -192,7 +197,7 @@ impl RequestTracker {
             let _ = initial.response_tx.send(Err(reason.to_string()));
         }
         for wait in self.deferred_waits.drain(..) {
-            let _ = wait.response_tx.send(Err(reason.to_string()));
+            wait.pending.fail(reason.to_string());
         }
     }
 }

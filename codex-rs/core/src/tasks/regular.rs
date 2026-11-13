@@ -14,6 +14,7 @@ use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::startup_prewarm::SessionStartupPrewarmResolution;
 use crate::session::turn::McpStartupRequirements;
+use crate::session::turn::TurnRunOutcome;
 use crate::session::turn::run_hooks_and_record_inputs;
 use crate::session::turn::run_turn;
 use crate::session::turn_context::TurnContext;
@@ -25,9 +26,9 @@ use tracing::trace_span;
 use super::SessionTask;
 use super::SessionTaskResult;
 
-/// The last answer and the MCP requirements needed if a steer reopens sampling.
+/// The execution disposition and MCP requirements retained across steers.
 pub(crate) struct RegularTaskOutput {
-    pub(super) last_agent_message: Option<String>,
+    pub(super) outcome: TurnRunOutcome,
     pub(super) mcp_startup_requirements: McpStartupRequirements,
 }
 
@@ -157,7 +158,7 @@ impl RegularTask {
                 turn.id = %ctx.sub_id,
             );
             loop {
-                let last_agent_message = run_turn(
+                let outcome = run_turn(
                     Arc::clone(&sess),
                     Arc::clone(&ctx),
                     next_input,
@@ -169,11 +170,13 @@ impl RegularTask {
                 .await?;
                 // Terminal errors are already reported. Let task completion preserve pending
                 // input instead of restarting the failed turn for that same input.
-                if ctx.terminal_error.lock().await.is_some()
-                    || !sess.input_queue.has_pending_input(&sess.active_turn).await
+                if matches!(&outcome, TurnRunOutcome::Checkpoint(_))
+                    || ctx.terminal_error.lock().await.is_some()
+                    || (!sess.input_queue.has_pending_input(&sess.active_turn).await
+                        && !sess.has_pending_coordination_messages().await?)
                 {
                     return Ok(Some(RegularTaskOutput {
-                        last_agent_message,
+                        outcome,
                         mcp_startup_requirements,
                     }));
                 }

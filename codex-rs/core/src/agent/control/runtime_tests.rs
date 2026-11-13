@@ -12,7 +12,172 @@ fn runtime() -> LocalAgentRuntime {
         Weak::default(),
         default_thread_id_generator(),
         /*rollout_budget*/ None,
+        /*work_state*/ None,
     )
+}
+
+#[tokio::test]
+async fn lifetime_parent_survives_optional_paths_and_rejects_changed_ownership() {
+    for named in [false, true] {
+        let tree = runtime();
+        let root = ThreadId::new();
+        let child = ThreadId::new();
+        let nested = ThreadId::new();
+        tree.registry.register_root_thread(root);
+        tree.for_actor_start(root, None).unwrap();
+        if named {
+            for (actor, path) in [(child, "/root/child"), (nested, "/root/child/nested")] {
+                tree.registry.reserve_spawn_slot(None).unwrap().commit(
+                    crate::agent::types::AgentMetadata {
+                        agent_id: Some(actor),
+                        agent_path: Some(AgentPath::try_from(path).unwrap()),
+                        ..Default::default()
+                    },
+                );
+            }
+        } else {
+            tree.for_actor_start(child, Some(root)).unwrap();
+        }
+        // Named retained metadata can establish its unloaded ancestor without
+        // recursively acquiring the scope mutex. Anonymous actors retain source ownership.
+        tree.for_actor_start(nested, Some(child)).unwrap();
+        assert_eq!(tree.registered_parent(root), None);
+        assert_eq!(tree.registered_parent(child), Some(root));
+        assert_eq!(tree.registered_parent(nested), Some(child));
+        assert!(tree.for_actor_start(nested, Some(root)).is_err());
+        tree.for_actor_start(nested, tree.registered_parent(nested))
+            .unwrap();
+        assert_eq!(tree.registered_parent(nested), Some(child));
+        tree.request_shutdown().wait().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn subtree_shutdown_joins_startup_cleanup_and_auxiliaries_without_stopping_siblings() {
+    let tree = runtime();
+    let root = ThreadId::new();
+    let child = ThreadId::new();
+    let nested = ThreadId::new();
+    let sibling = ThreadId::new();
+    let root_runtime = tree.for_actor_start(root, None).unwrap();
+    let child_runtime = tree.for_actor_start(child, Some(root)).unwrap();
+    let nested_runtime = tree.for_actor_start(nested, Some(child)).unwrap();
+    let sibling_runtime = tree.for_actor_start(sibling, Some(root)).unwrap();
+    let root_live = root_runtime.admit_start().unwrap();
+    let sibling_live = sibling_runtime.admit_start().unwrap();
+    let startup = child_runtime.admit_start().unwrap();
+    let cleanup = startup
+        .clone()
+        .into_teardown_guard("test_cleanup", Some(child));
+    let auxiliary = nested_runtime.admit_start().unwrap();
+
+    assert!(tree.request_actor_shutdown(root).is_err());
+    assert!(tree.request_actor_shutdown(ThreadId::new()).is_err());
+    let ending = tree.request_actor_shutdown(child).unwrap();
+    assert!(child_runtime.shutdown.is_cancelled());
+    assert!(nested_runtime.shutdown.is_cancelled());
+    assert!(!root_runtime.shutdown.is_cancelled());
+    assert!(!sibling_runtime.shutdown.is_cancelled());
+    assert!(child_runtime.admit_start().is_err());
+    assert!(tree.for_actor_start(child, Some(root)).is_err());
+    assert!(
+        nested_runtime
+            .for_actor_start(ThreadId::new(), Some(nested))
+            .is_err()
+    );
+    assert!(futures::poll!(Box::pin(ending.wait())).is_pending());
+    drop(startup);
+    cleanup.complete();
+    assert!(futures::poll!(Box::pin(ending.wait())).is_pending());
+    drop(auxiliary);
+    ending.wait().await.unwrap();
+    tree.complete_actor_shutdown(&ending);
+    let resumed = tree.for_actor_start(child, Some(root)).unwrap();
+    assert!(!resumed.shutdown.is_cancelled());
+    assert!(
+        child_runtime.shutdown.is_cancelled(),
+        "old handles cannot admit into the renewed generation"
+    );
+    assert!(child_runtime.admit_start().is_err());
+    assert!(tree.for_actor_start(child, Some(sibling)).is_err());
+    let resumed_live = resumed.admit_start().unwrap();
+    let shutdown = tree.request_shutdown();
+    assert!(root_runtime.shutdown.is_cancelled());
+    assert!(sibling_runtime.shutdown.is_cancelled());
+    assert!(resumed.shutdown.is_cancelled());
+    assert!(futures::poll!(Box::pin(shutdown.wait())).is_pending());
+    drop((root_live, sibling_live, resumed_live));
+    shutdown.wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn subtree_cleanup_failure_is_retained_for_tree_and_subtree_waiters() {
+    let tree = runtime();
+    let root = ThreadId::new();
+    let child = ThreadId::new();
+    tree.for_actor_start(root, None).unwrap();
+    let child_runtime = tree.for_actor_start(child, Some(root)).unwrap();
+    let cleanup = child_runtime
+        .admit_start()
+        .unwrap()
+        .into_teardown_guard("test_cleanup", Some(child));
+    let ending = tree.request_actor_shutdown(child).unwrap();
+    cleanup.record_shutdown_failure("join", "test_failure");
+    cleanup.complete();
+    assert!(ending.wait().await.is_err());
+    assert!(tree.request_shutdown().wait().await.is_err());
+}
+
+#[tokio::test]
+async fn provisional_cleanup_joins_under_ancestor_ownership_and_retires_only_rejected_scope() {
+    let tree = runtime();
+    let root = ThreadId::new();
+    let child = ThreadId::new();
+    let nested = ThreadId::new();
+    tree.registry.register_root_thread(root);
+    tree.for_actor_start(root, None).unwrap();
+    let child_runtime = tree.for_actor_start(child, Some(root)).unwrap();
+    let child_cleanup = child_runtime.admit_start().unwrap();
+    let ancestor_join = child_cleanup.ancestor_membership();
+    let nested_runtime = tree.for_actor_start(nested, Some(child)).unwrap();
+    let nested_live = nested_runtime.admit_start().unwrap();
+    let ending = tree.request_actor_shutdown(child).unwrap();
+    drop(child_cleanup);
+    assert!(futures::poll!(Box::pin(ending.wait())).is_pending());
+    drop(nested_live);
+    ending.wait().await.unwrap();
+    tree.complete_actor_shutdown(&ending);
+    tree.retire_rejected_scope(&ending);
+    assert!(tree.for_actor(child).is_err());
+    assert!(tree.for_actor(nested).is_err());
+    assert!(tree.for_actor(root).is_ok());
+    let shutdown = tree.request_shutdown();
+    assert!(
+        futures::poll!(Box::pin(shutdown.wait())).is_pending(),
+        "ancestor still owns cleanup bookkeeping"
+    );
+    drop(ancestor_join);
+    shutdown.wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn parent_end_joins_already_admitted_nested_end_bookkeeping() {
+    let tree = runtime();
+    let root = ThreadId::new();
+    let parent = ThreadId::new();
+    let child = ThreadId::new();
+    tree.for_actor_start(root, None).unwrap();
+    tree.for_actor_start(parent, Some(root)).unwrap();
+    tree.for_actor_start(child, Some(parent)).unwrap();
+    let child_end = tree.admit_actor_teardown(child).unwrap();
+    let child_scope = tree.request_actor_shutdown(child).unwrap();
+    child_scope.wait().await.unwrap();
+    let parent_scope = tree.request_actor_shutdown(parent).unwrap();
+    assert!(futures::poll!(Box::pin(parent_scope.wait())).is_pending());
+    assert!(tree.admit_actor_teardown(child).is_err());
+    drop(child_end);
+    parent_scope.wait().await.unwrap();
+    tree.request_shutdown().wait().await.unwrap();
 }
 
 #[tokio::test]

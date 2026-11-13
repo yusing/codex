@@ -1,3 +1,5 @@
+use crate::WaitToPendingOutcome;
+use crate::WaitToPendingRequest;
 use std::fmt;
 
 use serde::Deserialize;
@@ -204,6 +206,11 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_output_tokens: Option<usize>,
     },
+    #[serde(rename = "session/waitToPending")]
+    WaitToPending {
+        session_id: SessionId,
+        request: WaitToPendingRequest,
+    },
     #[serde(rename = "session/terminate")]
     Terminate {
         session_id: SessionId,
@@ -224,6 +231,8 @@ pub enum HostResponse {
     ExecutionStarted { cell_id: WireCellId },
     #[serde(rename = "wait/completed")]
     WaitCompleted { outcome: WireWaitOutcome },
+    #[serde(rename = "wait/pending")]
+    WaitToPendingCompleted { outcome: WaitToPendingOutcome },
     #[serde(rename = "session/closed")]
     SessionClosed { session_id: SessionId },
 }

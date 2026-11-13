@@ -157,7 +157,7 @@ fn configure_multi_agent_v2_with_role(
     config.multi_agent_v2.subagent_developer_instructions =
         Some(SUBAGENT_DEVELOPER_INSTRUCTIONS.to_string());
     // Keep the root, worker, grandchild, and sibling resident until explicit shutdown.
-    config.multi_agent_v2.max_concurrent_threads_per_session = 4;
+    config.multi_agent_v2.max_concurrent_threads_per_session = Some(4);
     let role_path = config.codex_home.join("durable-worker-role.toml");
     std::fs::write(
         &role_path,
@@ -522,7 +522,13 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         ]),
     )
     .await;
-    resumed.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
+    resumed
+        .codex
+        .submit(Op::Compact {
+            reload: None,
+            context_reset_request_id: None,
+        })
+        .await?;
     wait_for_event(&resumed.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -630,7 +636,13 @@ openai_base_url = "{redirected_base_url}"
         ]),
     )
     .await;
-    resumed.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
+    resumed
+        .codex
+        .submit(Op::Compact {
+            reload: None,
+            context_reset_request_id: None,
+        })
+        .await?;
     wait_for_event(&resumed.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

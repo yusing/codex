@@ -15,6 +15,8 @@ use crate::RuntimeResponse;
 use crate::TerminateRequest;
 use crate::WaitOutcome;
 use crate::WaitRequest;
+use crate::WaitToPendingOutcome;
+use crate::WaitToPendingRequest;
 
 pub type CodeModeSessionResultFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
@@ -203,6 +205,15 @@ pub trait CodeModeSession: Send + Sync {
         request: WaitRequest,
         preempt: Option<CancellationToken>,
     ) -> CodeModeSessionResultFuture<'a, WaitOutcome>;
+
+    /// Observes actual JavaScript quiescence, leaving a pending cell paused until its next observation.
+    /// Server mode applies the request's output limit; Client mode ignores it.
+    fn wait_to_pending<'a>(
+        &'a self,
+        _request: WaitToPendingRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitToPendingOutcome> {
+        Box::pin(async { Err("code-mode pending-frontier observation is unsupported".to_string()) })
+    }
 
     /// Terminates a cell, applying the request's limit to its final observation
     /// in Server mode; Client mode ignores the limit.

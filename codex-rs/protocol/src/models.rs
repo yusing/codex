@@ -1028,6 +1028,12 @@ pub enum MessagePhase {
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct InternalChatMessageMetadataPassthrough {
+    /// Host-private request projection of the canonical retained acquisition receipt.
+    /// The host consumes this before forwarding to any provider API.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub source_acquisition: Option<crate::source_acquisition::SourceAcquisition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub turn_id: Option<String>,

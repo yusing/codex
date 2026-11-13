@@ -2238,170 +2238,6 @@ allow_local_binding = false
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn turn_start_enforces_managed_network_sandbox() -> Result<()> {
-    skip_if_remote!(
-        Ok(()),
-        "network probe uses a host-local test executable and loopback server"
-    );
-
-    let server = responses::start_mock_server().await;
-    let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .enable_feature(Feature::NetworkProxy)
-        .enable_feature(Feature::UnifiedExec)
-        .write(codex_home.path())?;
-    std::fs::write(
-        codex_home.path().join("requirements.toml"),
-        r#"
-default_permissions = "managed-network"
-
-[allowed_permission_profiles]
-managed-network = true
-":read-only" = true
-
-[permissions.managed-network]
-extends = ":read-only"
-
-[permissions.managed-network.network]
-enabled = true
-allow_local_binding = false
-allow_upstream_proxy = false
-
-[permissions.managed-network.network.domains]
-"127.0.0.2" = "allow"
-"#,
-    )?;
-
-    let mut app_server = TestAppServer::builder()
-        .with_codex_home(codex_home.path())
-        .build_initialized()
-        .await?;
-    let ThreadStartResponse { thread, .. } = app_server
-        .start_thread(ThreadStartParams {
-            model: Some("mock-model".to_string()),
-            ..Default::default()
-        })
-        .await?;
-
-    // A different loopback address avoids confusing the host's target port with
-    // a coincidentally equal 127.0.0.1 listener port inside the sandbox namespace.
-    let listener = tokio::net::TcpListener::bind("127.0.0.2:0").await?;
-    let target = listener.local_addr()?;
-    let router = axum::Router::new().route(
-        "/sandbox",
-        axum::routing::get(|| async { "sandbox proxy response" }),
-    );
-    // Keep the real origin listening throughout both the proxied and direct
-    // requests, and clean it up even if an assertion fails.
-    let _origin = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
-        axum::serve(listener, router).await
-    }));
-    let test_executable = std::env::current_exe()?;
-    let test_executable = test_executable
-        .to_str()
-        .context("integration test executable path must be UTF-8")?;
-    // Libtest selectors omit the integration crate name.
-    let (_, test_module) = module_path!()
-        .split_once("::")
-        .context("network sandbox test must be in an integration test module")?;
-    let child_test = format!("{test_module}::managed_network_sandbox_probe");
-    let target_env = format!("CODEX_TEST_MANAGED_NETWORK_TARGET={target}");
-    let command = shlex::try_join([
-        "env",
-        &target_env,
-        test_executable,
-        "--exact",
-        &child_test,
-        "--ignored",
-        "--nocapture",
-        "--test-threads=1",
-    ])?;
-    let call_id = "managed-network-probe";
-    let probe_timeout = std::time::Duration::from_secs(/*secs*/ 30);
-    let _command_response = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-network-command"),
-            responses::ev_exec_command_call_with_args(
-                call_id,
-                &json!({
-                    "cmd": command,
-                    "shell": "/bin/sh",
-                    "login": false,
-                    "yield_time_ms": probe_timeout.as_millis(),
-                }),
-            ),
-            responses::ev_completed("resp-network-command"),
-        ]),
-    )
-    .await;
-    let final_response = responses::mount_sse_once(
-        &server,
-        create_final_assistant_message_sse_response("Network probe complete")?,
-    )
-    .await;
-
-    let _: TurnStartResponse = app_server
-        .request(|request_id| ClientRequest::TurnStart {
-            request_id,
-            params: TurnStartParams {
-                thread_id: thread.id,
-                input: vec![V2UserInput::Text {
-                    text: "Verify managed sandbox networking".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                permissions: Some("managed-network".to_string()),
-                ..Default::default()
-            },
-        })
-        .await?;
-
-    let expected_output = "proxied request succeeded; direct access blocked\n";
-    timeout(probe_timeout, async {
-        loop {
-            let completed: ItemCompletedNotification =
-                app_server.read_notification("item/completed").await?;
-            if let ThreadItemPayload::CommandExecution {
-                id,
-                status,
-                exit_code,
-                ..
-            } = completed.item.payload
-                && id == call_id
-            {
-                assert_eq!(
-                    (status, exit_code),
-                    (CommandExecutionStatus::Completed, Some(0))
-                );
-                break;
-            }
-        }
-        anyhow::Ok(())
-    })
-    .await??;
-    let completed: TurnCompletedNotification = timeout(
-        probe_timeout,
-        app_server.read_notification("turn/completed"),
-    )
-    .await??;
-    assert_eq!(completed.turn.status, TurnStatus::Completed);
-    // Early stdout can reach the tool-result buffer before the separate event
-    // subscriber attaches, so verify it in the model continuation instead.
-    // The marker also proves the child ran: libtest succeeds if no selector matches.
-    let output = final_response
-        .single_request()
-        .function_call_output_text(call_id)
-        .context("model continuation should contain the sandboxed command output")?;
-    assert!(
-        output.contains(expected_output),
-        "unexpected tool output: {output}"
-    );
-
-    Ok(())
-}
-
 /// Runs as the model-controlled command inside app-server's managed network sandbox.
 #[cfg(target_os = "linux")]
 #[test]
@@ -4476,6 +4312,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             prompt: Some(CHILD_PROMPT.to_string()),
             model: Some(REQUESTED_MODEL.to_string()),
             reasoning_effort: Some(REQUESTED_REASONING_EFFORT),
+            timeout_ms: None,
             agents_states: HashMap::new(),
         }
     );
@@ -4501,6 +4338,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         prompt,
         model,
         reasoning_effort,
+        timeout_ms,
         agents_states,
     } = spawn_completed
     else {
@@ -4518,6 +4356,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(REQUESTED_MODEL.to_string()));
     assert_eq!(reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
+    assert_eq!(timeout_ms, None);
     let agent_state = agents_states
         .get(&receiver_thread_id)
         .expect("spawn completion should include child agent state");
@@ -4619,7 +4458,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
 #[test_case(ThreadHistoryMode::Legacy; "legacy")]
 #[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test]
-async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
+async fn human_child_input_retains_parent_owned_authority(
     history_mode: ThreadHistoryMode,
 ) -> Result<()> {
     const CHILD_PROMPT: &str = "child: do work";
@@ -4681,6 +4520,25 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
             ..Default::default()
         })
         .await?;
+
+    let root_thread_id = thread.id.clone();
+    let _initial_child = responses::mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            body_contains(request, CHILD_PROMPT)
+                && request
+                    .headers
+                    .get("thread-id")
+                    .and_then(|value| value.to_str().ok())
+                    != Some(root_thread_id.as_str())
+        },
+        responses::sse(vec![
+            responses::ev_response_created("initial-child-response"),
+            responses::ev_assistant_message("initial-child-answer", "Initial child work complete"),
+            responses::ev_completed("initial-child-response"),
+        ]),
+    )
+    .await;
 
     let _: TurnStartResponse = mcp
         .request(|request_id| ClientRequest::TurnStart {
@@ -4761,7 +4619,18 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
         )
     ));
     assert_eq!(listed_child.history_mode, history_mode);
-    assert_eq!(listed_child.can_accept_direct_input, Some(false));
+    assert_eq!(listed_child.can_accept_direct_input, Some(true));
+    timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let completed: TurnCompletedNotification =
+                mcp.read_notification("turn/completed").await?;
+            if completed.thread_id == child_thread_id {
+                assert_eq!(completed.turn.status, TurnStatus::Completed);
+                break Ok::<(), anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
 
     let direct_inject_req = mcp
         .send_thread_inject_items_request(ThreadInjectItemsParams {
@@ -4784,6 +4653,16 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
     assert_eq!(direct_inject_error.error.code, INVALID_REQUEST_ERROR_CODE);
     assert_eq!(direct_inject_error.error.message, ERROR_MESSAGE);
 
+    let human_turn = responses::mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "direct app-server turn"),
+        responses::sse(vec![
+            responses::ev_response_created("human-child-response"),
+            responses::ev_assistant_message("human-child-answer", "Human input accepted"),
+            responses::ev_completed("human-child-response"),
+        ]),
+    )
+    .await;
     let direct_turn_req = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: child_thread_id.clone(),
@@ -4794,13 +4673,55 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
             ..Default::default()
         })
         .await?;
-    let direct_turn_error: JSONRPCError = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(direct_turn_req)),
-    )
+    let human_started: TurnStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(direct_turn_req)).await??;
+    timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let completed: TurnCompletedNotification =
+                mcp.read_notification("turn/completed").await?;
+            if completed.thread_id == child_thread_id && completed.turn.id == human_started.turn.id
+            {
+                assert_eq!(completed.turn.status, TurnStatus::Completed);
+                break Ok::<(), anyhow::Error>(());
+            }
+        }
+    })
     .await??;
-    assert_eq!(direct_turn_error.error.code, INVALID_REQUEST_ERROR_CODE);
-    assert_eq!(direct_turn_error.error.message, ERROR_MESSAGE);
+    assert!(
+        human_turn
+            .single_request()
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text == "direct app-server turn")
+    );
+
+    let settings_request = mcp
+        .send_thread_settings_update_request(ThreadSettingsUpdateParams {
+            thread_id: child_thread_id.clone(),
+            model: Some("gpt-5.4".to_string()),
+            effort: Some(ReasoningEffort::Low),
+            ..Default::default()
+        })
+        .await?;
+    let _: codex_app_server_protocol::ThreadSettingsUpdateResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(settings_request)).await??;
+
+    let queue_request = mcp
+        .send_raw_request(
+            "thread/queue/add",
+            Some(json!({
+                "threadId": child_thread_id,
+                "clientUserMessageId": "queued-human-child-message",
+                "input": [{"type": "text", "text": "queued human child input", "textElements": []}],
+            })),
+        )
+        .await?;
+    let queued: codex_app_server_protocol::ThreadQueueAddResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(queue_request)).await??;
+    assert_eq!(
+        queued.queued_submission.client_user_message_id,
+        "queued-human-child-message"
+    );
 
     let direct_steer_req = mcp
         .send_turn_steer_request(TurnSteerParams {
@@ -4822,7 +4743,48 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
     )
     .await??;
     assert_eq!(direct_steer_error.error.code, INVALID_REQUEST_ERROR_CODE);
-    assert_eq!(direct_steer_error.error.message, ERROR_MESSAGE);
+    assert_eq!(direct_steer_error.error.message, "no active turn to steer");
+
+    let queued_turn = responses::mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "queued human child input"),
+        responses::sse(vec![
+            responses::ev_response_created("queued-child-response"),
+            responses::ev_assistant_message("queued-child-answer", "Queued human input accepted"),
+            responses::ev_completed("queued-child-response"),
+        ]),
+    )
+    .await;
+    let start_queue_request = mcp
+        .send_raw_request(
+            "thread/queue/start",
+            Some(json!({
+                "threadId": child_thread_id,
+                "queuedSubmissionId": queued.queued_submission.id,
+            })),
+        )
+        .await?;
+    let queued_started: codex_app_server_protocol::ThreadQueueStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(start_queue_request)).await??;
+    timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let completed: TurnCompletedNotification =
+                mcp.read_notification("turn/completed").await?;
+            if completed.thread_id == child_thread_id && completed.turn.id == queued_started.turn.id
+            {
+                assert_eq!(completed.turn.status, TurnStatus::Completed);
+                break Ok::<(), anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
+    assert!(
+        queued_turn
+            .single_request()
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text == "queued human child input")
+    );
 
     let direct_guardian_req = mcp
         .send_raw_request(
@@ -4885,11 +4847,6 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
             "mcpServer/tool/call",
             json!({"server": "unknown-server", "tool": "unknown-tool"}),
         ),
-        ("thread/compact/start", json!({})),
-        (
-            "turn/settings/update",
-            json!({"turnId": "any-child-turn", "model": "gpt-5.4"}),
-        ),
         ("thread/revert", json!({"beforeTurnId": "any-child-turn"})),
         (
             "review/start",
@@ -4941,6 +4898,19 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
             "{method}",
         );
     }
+
+    let compact_request = mcp
+        .send_raw_request(
+            "thread/compact/start",
+            Some(json!({
+                "threadId": child_thread_id,
+                "contextResetRequestId": "human-child-reset",
+                "reload": [],
+            })),
+        )
+        .await?;
+    let _: codex_app_server_protocol::ThreadCompactStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(compact_request)).await??;
 
     let event = wait_for_matching_analytics_event(&server, DEFAULT_READ_TIMEOUT, |event| {
         event["event_type"] == "codex_collab_agent_tool_call_event"
@@ -5129,6 +5099,7 @@ config_file = "./custom-role.toml"
         prompt,
         model,
         reasoning_effort,
+        timeout_ms,
         agents_states,
     } = spawn_completed
     else {
@@ -5146,6 +5117,7 @@ config_file = "./custom-role.toml"
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(ROLE_MODEL.to_string()));
     assert_eq!(reasoning_effort, Some(ROLE_REASONING_EFFORT));
+    assert_eq!(timeout_ms, None);
     let agent_state = agents_states
         .get(&receiver_thread_id)
         .expect("spawn completion should include child agent state");

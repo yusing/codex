@@ -3,11 +3,13 @@ use std::sync::Arc;
 use codex_code_mode_protocol::CellId;
 use codex_code_mode_protocol::CodeModeNestedToolCall;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
+use codex_code_mode_protocol::ExecuteToPendingOutcome;
 use codex_code_mode_protocol::NotificationFuture;
 use codex_code_mode_protocol::RuntimeResponse;
 use codex_code_mode_protocol::StartedCell;
 use codex_code_mode_protocol::ToolInvocationFuture;
 use codex_code_mode_protocol::WaitOutcome;
+use codex_code_mode_protocol::WaitToPendingOutcome;
 use tokio_util::sync::CancellationToken;
 
 pub(super) struct GenerationDelegate {
@@ -123,6 +125,31 @@ pub(super) fn public_wait_outcome(generation: u64, outcome: WaitOutcome) -> Wait
         }
         WaitOutcome::MissingCell(response) => {
             WaitOutcome::MissingCell(public_runtime_response(generation, response))
+        }
+    }
+}
+
+pub(super) fn public_wait_to_pending_outcome(
+    generation: u64,
+    outcome: WaitToPendingOutcome,
+) -> WaitToPendingOutcome {
+    match outcome {
+        WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Pending {
+            cell_id,
+            content_items,
+            pending_tool_call_ids,
+        }) => WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Pending {
+            cell_id: public_cell_id(generation, &cell_id),
+            content_items,
+            pending_tool_call_ids,
+        }),
+        WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Completed(response)) => {
+            WaitToPendingOutcome::LiveCell(ExecuteToPendingOutcome::Completed(
+                public_runtime_response(generation, response),
+            ))
+        }
+        WaitToPendingOutcome::MissingCell(response) => {
+            WaitToPendingOutcome::MissingCell(public_runtime_response(generation, response))
         }
     }
 }

@@ -80,6 +80,7 @@ pub struct PreparedChildContext {
 }
 
 pub(crate) struct PreparedChildInheritance {
+    pub(crate) runtime_authority: Arc<crate::thread_manager::CapturedNativeRuntimeAuthority>,
     pub(crate) instructions: SessionInstructions,
     pub(crate) exec_policy: Option<Arc<ExecPolicyManager>>,
     pub(crate) originator: String,

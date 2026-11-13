@@ -1737,6 +1737,10 @@ fn variant_definition_name(base: &str, variant: &Value) -> Option<String> {
             });
         }
 
+        if let Some(kind_literal) = literal_from_property(props, "kind") {
+            return Some(format!("{}{base}", to_pascal_case(kind_literal)));
+        }
+
         if props.len() == 1
             && let Some(key) = props.keys().next()
         {
@@ -1924,7 +1928,7 @@ fn variant_title_collision_key(base: &str, generated_name: &str, variant: &Value
     parts.join("|")
 }
 
-const DISCRIMINATOR_KEYS: &[&str] = &["type", "method", "mode", "status", "role", "reason"];
+const DISCRIMINATOR_KEYS: &[&str] = &["type", "method", "kind", "mode", "status", "role", "reason"];
 
 fn set_discriminator_titles(props: &mut Map<String, Value>, owner: &str) {
     for key in DISCRIMINATOR_KEYS {
@@ -2180,6 +2184,39 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use uuid::Uuid;
+
+    #[test]
+    fn coordination_wait_cancellation_variants_have_distinct_titles() -> Result<()> {
+        let output_dir = tempfile::tempdir()?;
+        write_json_schema::<codex_protocol::agent_coordination::CoordinationWaitCancellation>(
+            output_dir.path(),
+            "CoordinationWaitCancellation",
+        )?;
+        let schema = read_json_value(&output_dir.path().join("CoordinationWaitCancellation.json"))?;
+        let variants = schema["oneOf"]
+            .as_array()
+            .context("cancellation variants")?;
+        let expected = [
+            ("cancelled", "Cancelled"),
+            ("executionFailed", "ExecutionFailed"),
+            ("inputSuperseded", "InputSuperseded"),
+            ("workTerminated", "WorkTerminated"),
+            ("shellOutput", "ShellOutput"),
+            ("dispatchRejected", "DispatchRejected"),
+            ("notDispatched", "NotDispatched"),
+        ];
+        assert_eq!(variants.len(), expected.len());
+        for (variant, (kind, prefix)) in variants.iter().zip(expected) {
+            let title = format!("{prefix}CoordinationWaitCancellation");
+            assert_eq!(variant["title"], title);
+            assert_eq!(string_literal(&variant["properties"]["kind"]), Some(kind));
+            assert_eq!(
+                variant["properties"]["kind"]["title"],
+                format!("{title}Kind")
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn generated_ts_optional_nullable_fields_only_in_params() -> Result<()> {

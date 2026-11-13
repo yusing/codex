@@ -395,6 +395,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::TurnStarted(_)
         | EventMsg::ThreadSettingsApplied(_)
         | EventMsg::TurnComplete(_)
+        | EventMsg::TurnCheckpointed(_)
         | EventMsg::TokenCount(_)
         | EventMsg::AgentMessage(_)
         | EventMsg::UserMessage(_)
@@ -418,15 +419,14 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::ExecApprovalRequest(_)
         | EventMsg::RequestPermissions(_)
         | EventMsg::RequestUserInput(_)
-        | EventMsg::CompoundWaitSettlement(_)
-        | EventMsg::FeatureUse(_)
         | EventMsg::ContextReset(_)
-        | EventMsg::CompoundWaitReset(_)
         | EventMsg::DynamicToolCallRequest(_)
         | EventMsg::DynamicToolCallResponse(_)
         | EventMsg::ElicitationRequest(_)
         | EventMsg::ElicitationAbandoned(_)
         | EventMsg::NetworkApprovalResolved { .. }
+        | EventMsg::CommandApprovalResolved { .. }
+        | EventMsg::ProvisionalSpawnRejected
         | EventMsg::ApplyPatchApprovalRequest(_)
         | EventMsg::GuardianAssessment(_)
         | EventMsg::DeprecationNotice(_)
@@ -440,6 +440,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::EnteredReviewMode(_)
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::PrivateSessionEvent(_)
+        | EventMsg::AgentCoordination(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::ItemStarted(_)
@@ -460,6 +461,8 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         EventMsg::SessionConfigured(_) => Some("session_configured"),
         EventMsg::TurnStarted(_) => Some("turn_started"),
         EventMsg::TurnComplete(_) => Some("turn_complete"),
+        EventMsg::TurnCheckpointed(_) => Some("turn_checkpointed"),
+        EventMsg::AgentCoordination(_) => Some("agent_coordination"),
         EventMsg::TurnAborted(_) => Some("turn_aborted"),
         EventMsg::ThreadRolledBack(_) => Some("thread_rolled_back"),
         EventMsg::Error(_) => Some("error"),
@@ -504,15 +507,14 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::ExecApprovalRequest(_)
         | EventMsg::RequestPermissions(_)
         | EventMsg::RequestUserInput(_)
-        | EventMsg::CompoundWaitSettlement(_)
-        | EventMsg::FeatureUse(_)
         | EventMsg::ContextReset(_)
-        | EventMsg::CompoundWaitReset(_)
         | EventMsg::DynamicToolCallRequest(_)
         | EventMsg::DynamicToolCallResponse(_)
         | EventMsg::ElicitationRequest(_)
         | EventMsg::ElicitationAbandoned(_)
         | EventMsg::NetworkApprovalResolved { .. }
+        | EventMsg::CommandApprovalResolved { .. }
+        | EventMsg::ProvisionalSpawnRejected
         | EventMsg::ApplyPatchApprovalRequest(_)
         | EventMsg::GuardianAssessment(_)
         | EventMsg::DeprecationNotice(_)

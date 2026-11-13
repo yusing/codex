@@ -83,6 +83,8 @@ use rmcp::model::ReadResourceRequestParams;
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::oneshot;
@@ -93,6 +95,9 @@ use uuid::Uuid;
 use codex_rollout::state_db::StateDbHandle;
 
 static LIVE_THREADS: Gauge = Gauge::new("core.threads.live");
+
+/// An owed creation notification, scoped to this runtime rather than retained thread identity.
+struct PendingCreatedNotification(AtomicBool);
 
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
@@ -251,6 +256,17 @@ impl CodexThread {
         self.session.services.local_agent_runtime.tree_id()
     }
 
+    /// Bind resource acquisition to this live tree's host. Later subscribers cannot
+    /// replace the owner; native children borrow the same provider.
+    pub fn install_host_callbacks(&self, callbacks: crate::AgentHostCallbacks) -> bool {
+        self.session
+            .services
+            .local_agent_runtime
+            .host_callbacks
+            .set(callbacks)
+            .is_ok()
+    }
+
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
         self.submit_with_trace(op, /*trace*/ None).await
     }
@@ -350,6 +366,36 @@ impl CodexThread {
         &self.session.services.thread_extension_data
     }
 
+    pub(crate) fn mark_created_notification_pending(&self) {
+        self.thread_extension_data().insert_if(
+            PendingCreatedNotification(AtomicBool::new(true)),
+            |existing| existing.is_none(),
+        );
+    }
+
+    /// Recover only an actual creation notification lost to broadcast lag.
+    pub fn has_pending_created_notification(&self) -> bool {
+        self.thread_extension_data()
+            .get::<PendingCreatedNotification>()
+            .is_some_and(|pending| pending.0.load(Ordering::Acquire))
+    }
+
+    /// The existing exact-runtime listener consumes the notification, not its subscribers.
+    pub fn acknowledge_created_notification(&self) {
+        // An explicit subscription can precede the creation callback. Retain that receipt
+        // so delayed or repeated notification delivery cannot override later unsubscribe.
+        self.thread_extension_data().insert_if(
+            PendingCreatedNotification(AtomicBool::new(false)),
+            |existing| existing.is_none(),
+        );
+        if let Some(pending) = self
+            .thread_extension_data()
+            .get::<PendingCreatedNotification>()
+        {
+            pending.0.store(false, Ordering::Release);
+        }
+    }
+
     /// Generator used for response items produced on behalf of this thread.
     pub fn item_id_generator(&self) -> &codex_protocol::ItemIdGenerator {
         &self.session.item_id_generator
@@ -388,6 +434,31 @@ impl CodexThread {
             return None;
         }
         Some(task.turn_context.capture_current_model_info().slug.clone())
+    }
+
+    pub(crate) async fn observed_model_settings(
+        &self,
+    ) -> (
+        String,
+        Option<codex_protocol::openai_models::ReasoningEffort>,
+    ) {
+        {
+            let active = self.session.active_turn.lock().await;
+            if let Some(task) = active.as_ref().and_then(|turn| turn.task.as_ref()) {
+                return (
+                    task.turn_context.capture_current_model_info().slug.clone(),
+                    task.turn_context.capture_current_reasoning_effort(),
+                );
+            }
+        }
+        let config = self.config_snapshot().await;
+        let model = self.selected_model_info().await;
+        (
+            config.model,
+            config
+                .reasoning_effort
+                .or_else(|| model.default_reasoning_level.clone()),
+        )
     }
 
     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
@@ -523,6 +594,25 @@ impl CodexThread {
             .await
     }
 
+    /// Acknowledge actual shell admission, not merely insertion into the generic
+    /// operation queue. A competing native continuation keeps its reservation.
+    pub async fn start_user_shell_command(
+        &self,
+        command: String,
+        timeout_ms: Option<u64>,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<()> {
+        use tracing::Instrument;
+        let span = tracing::info_span!("user_shell_admission", thread_id = %self.session.thread_id);
+        if let Some(trace) = trace.as_ref() {
+            codex_otel::set_parent_from_w3c_trace_context(&span, trace);
+        }
+        self.session
+            .start_user_shell_command(Uuid::now_v7().to_string(), command, timeout_ms)
+            .instrument(span)
+            .await
+    }
+
     /// Waits for input activity without consuming input, following native `wait_agent` behavior.
     ///
     /// The named turn supplies any already-buffered steering input. Subsequent activity is
@@ -555,6 +645,15 @@ impl CodexThread {
     ) -> CodexResult<TurnInputSubmission> {
         self.submit_turn_input_with_mode(request, TurnInputMode::StartOrSteer)
             .await
+    }
+
+    /// Whether this loaded thread has the native durable owner needed for attributed work.
+    /// This is observation only; checking a composer capability must not register or load work.
+    pub fn has_native_work_owner(&self) -> bool {
+        let runtime = &self.session.services.local_agent_runtime;
+        runtime.work.is_some()
+            && runtime.has_admitted_actor(self.session.thread_id)
+            && !runtime.shutdown.is_cancelled()
     }
 
     /// Starts a regular turn only when the thread is idle.
@@ -727,11 +826,30 @@ impl CodexThread {
         request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
         mode: TurnInputMode,
     ) -> CodexResult<TurnInputSubmission> {
+        let mut request: WithTurnExtensionData<TurnInputRequest> = request.into();
         if !matches!(mode, TurnInputMode::Steer { .. }) {
             self.ensure_execution_capacity_for_turn_start(
                 self.session.services.agent_control.as_ref(),
             )
             .await?;
+        }
+        if self.session.services.local_agent_runtime.work.is_some()
+            && self.session.multi_agent_version()
+                == Some(codex_protocol::protocol::MultiAgentVersion::V2)
+            && let codex_protocol::turn_input::TurnInput::InterAgentCommunication(communication) =
+                &mut request.request.input
+        {
+            // Approval responses are processed by the serialized session loop.
+            // Prepare outside it, then submit only the frozen admitted input.
+            let cancellation = self
+                .session
+                .services
+                .local_agent_runtime
+                .shutdown
+                .child_token();
+            let _cancel_on_drop = cancellation.clone().drop_guard();
+            crate::agent::prepare_initial_sources(self, Some(communication), None, &cancellation)
+                .await?;
         }
         self.io.submit_turn_input(request, mode).await
     }

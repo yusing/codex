@@ -1,5 +1,6 @@
 mod managed;
 mod model_catalog;
+mod observation;
 mod shared_instructions;
 mod shutdown;
 
@@ -328,6 +329,30 @@ pub struct InternalSessionParent {
     pub(crate) inherited_instructions: Option<SessionInstructions>,
 }
 
+/// Native startup services borrowed by an admitted prepared child. These exact
+/// handles may outlive the source Session; they never reconstruct its authority.
+pub(crate) struct CapturedNativeRuntimeAuthority {
+    pub(crate) source: ThreadId,
+    pub(crate) tree_id: uuid::Uuid,
+    auth_manager: Arc<AuthManager>,
+    runtime_auth: crate::runtime_auth::RuntimeAuthSlot,
+    client_mcp_extensions: ClientMcpExtensions,
+    prompt_cache_key: PromptCacheKey,
+}
+
+impl CapturedNativeRuntimeAuthority {
+    pub(crate) fn capture(session: &crate::session::session::Session) -> Self {
+        Self {
+            source: session.thread_id(),
+            tree_id: session.services.local_agent_runtime.tree_id(),
+            auth_manager: Arc::clone(&session.services.auth_manager),
+            runtime_auth: Arc::clone(&session.services.runtime_auth),
+            client_mcp_extensions: session.services.client_mcp_extensions.clone(),
+            prompt_cache_key: session.services.model_client.prompt_cache_key_policy(),
+        }
+    }
+}
+
 /// Controls the prompt cache key sent on model requests, independently of session identity.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum PromptCacheKey {
@@ -601,6 +626,7 @@ pub(crate) struct ThreadManagerState {
     image_store: Arc<dyn AttachmentStore>,
     thread_store: Arc<dyn ThreadStore>,
     agent_graph_store: Option<Arc<dyn AgentGraphStore>>,
+    work_state: Option<StateDbHandle>,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
     external_time_provider: Option<Arc<dyn TimeProvider>>,
     session_source: SessionSource,
@@ -702,6 +728,7 @@ impl ThreadManager {
                 image_store,
                 thread_store,
                 agent_graph_store,
+                work_state: None,
                 attestation_provider,
                 external_time_provider,
                 auth_manager,
@@ -714,6 +741,16 @@ impl ThreadManager {
             }),
             _test_codex_home_guard: None,
         }
+    }
+
+    /// Bind durable work to the same already-opened state used by local topology.
+    /// Absence disables work operations; it never opens another ambient database.
+    pub fn with_work_state(mut self, state_db: StateDbHandle) -> Self {
+        let Some(state) = Arc::get_mut(&mut self.state) else {
+            unreachable!("work storage must be supplied before thread manager is shared");
+        };
+        state.work_state = Some(state_db);
+        self
     }
 
     /// Generate every new thread identifier with the caller-provided factory.
@@ -928,6 +965,7 @@ impl ThreadManager {
                 image_store: passthrough_image_store(),
                 thread_store,
                 agent_graph_store,
+                work_state: state_db,
                 attestation_provider: None,
                 external_time_provider: None,
                 auth_manager,
@@ -1111,12 +1149,7 @@ impl ThreadManager {
 
     /// Select the app-server catalog using the same owner as thread requests.
     pub fn models_manager_for_config(&self, config: &Config) -> SharedModelsManager {
-        self.state.model_catalog.for_config(
-            config,
-            config.model_catalog.as_ref(),
-            self.catalog_auth_context(config),
-            /*same_owner*/ true,
-        )
+        self.state.models_manager_for_external_config(config)
     }
 
     /// Build a separate catalog with the harness's runtime identity and the caller's cache policy.
@@ -1134,17 +1167,7 @@ impl ThreadManager {
     }
 
     fn catalog_auth_context(&self, config: &Config) -> ProviderAuthContext {
-        let credentials = self.auth_manager();
-        let runtime = crate::runtime_auth::runtime_for_config(
-            &self.state.runtime_auth,
-            config,
-            Arc::clone(&credentials),
-            &self.state.installation_id,
-        );
-        ProviderAuthContext {
-            credentials,
-            runtime_auth: runtime.map(|runtime| (runtime, config.runtime_auth_mode)),
-        }
+        self.state.catalog_auth_context(config)
     }
 
     /// Resolves the model before starting or cold-resuming a thread with this manager's credentials.
@@ -1219,6 +1242,10 @@ impl ThreadManager {
 
     pub fn subscribe_thread_created(&self) -> broadcast::Receiver<ThreadId> {
         self.state.thread_created_tx.subscribe()
+    }
+
+    pub(crate) fn notify_thread_created_for_tests(&self, thread: &Arc<CodexThread>) {
+        self.state.notify_thread_created(thread);
     }
 
     pub async fn get_thread(&self, thread_id: ThreadId) -> CodexResult<Arc<CodexThread>> {
@@ -1717,6 +1744,7 @@ impl ThreadManager {
     /// Threads that complete shutdown are removed from the manager; incomplete shutdowns
     /// remain tracked so callers can retry or inspect them later.
     pub async fn shutdown_all_threads_bounded(&self, timeout: Duration) -> ThreadShutdownReport {
+        let deadline = tokio::time::Instant::now() + timeout;
         let threads = {
             let threads = self.state.threads.read().await;
             threads
@@ -1725,15 +1753,41 @@ impl ThreadManager {
                 .collect::<Vec<_>>()
         };
 
+        // Fence native owners before taking down individual listeners. Their
+        // memberships include pending startup and detached cleanup.
+        let mut trees = HashMap::new();
+        for (id, thread) in &threads {
+            let runtime = &thread.session.services.local_agent_runtime;
+            trees
+                .entry(runtime.tree_id())
+                .or_insert_with(|| (runtime.tree_runtime(), Vec::new()))
+                .1
+                .push(*id);
+        }
+        let mut tree_shutdowns = trees
+            .into_iter()
+            .map(|(tree_id, (runtime, ids))| {
+                let shutdown = runtime.request_shutdown();
+                async move {
+                    let outcome = match tokio::time::timeout_at(deadline, shutdown.wait()).await {
+                        Ok(Ok(())) => ShutdownOutcome::Complete,
+                        Ok(Err(_)) => ShutdownOutcome::SubmitFailed,
+                        Err(_) => ShutdownOutcome::TimedOut,
+                    };
+                    (tree_id, ids, outcome)
+                }
+            })
+            .collect::<FuturesUnordered<_>>();
+
         let mut shutdowns = threads
             .into_iter()
             .map(|(thread_id, thread)| async move {
-                let outcome = match tokio::time::timeout(timeout, thread.shutdown_and_wait()).await
-                {
-                    Ok(Ok(())) => ShutdownOutcome::Complete,
-                    Ok(Err(_)) => ShutdownOutcome::SubmitFailed,
-                    Err(_) => ShutdownOutcome::TimedOut,
-                };
+                let outcome =
+                    match tokio::time::timeout_at(deadline, thread.shutdown_and_wait()).await {
+                        Ok(Ok(())) => ShutdownOutcome::Complete,
+                        Ok(Err(_)) => ShutdownOutcome::SubmitFailed,
+                        Err(_) => ShutdownOutcome::TimedOut,
+                    };
                 (thread_id, outcome)
             })
             .collect::<FuturesUnordered<_>>();
@@ -1747,7 +1801,37 @@ impl ThreadManager {
             }
         }
 
+        let mut joined_trees = std::collections::HashSet::new();
+        while let Some((tree_id, ids, outcome)) = tree_shutdowns.next().await {
+            match outcome {
+                ShutdownOutcome::Complete => {
+                    joined_trees.insert(tree_id);
+                }
+                ShutdownOutcome::SubmitFailed | ShutdownOutcome::TimedOut => {
+                    report.completed.retain(|id| !ids.contains(id));
+                    report.submit_failed.retain(|id| !ids.contains(id));
+                    report.timed_out.retain(|id| !ids.contains(id));
+                    match outcome {
+                        ShutdownOutcome::SubmitFailed => report.submit_failed.extend(ids),
+                        ShutdownOutcome::TimedOut => report.timed_out.extend(ids),
+                        ShutdownOutcome::Complete => unreachable!(),
+                    }
+                }
+            }
+        }
+
         let mut tracked_threads = self.state.threads.write().await;
+        // A child may have published between the initial snapshot and its owner's
+        // fence. A joined native tree proves that generation stopped too.
+        for (id, thread) in tracked_threads.iter() {
+            if joined_trees.contains(&thread.session.services.local_agent_runtime.tree_id())
+                && !report.completed.contains(id)
+                && !report.submit_failed.contains(id)
+                && !report.timed_out.contains(id)
+            {
+                report.completed.push(*id);
+            }
+        }
         for thread_id in &report.completed {
             if let Some(thread) = tracked_threads.remove(thread_id) {
                 thread.session.services.mcp_runtime.revoke_ema();
@@ -1948,6 +2032,7 @@ impl ThreadManager {
             Arc::downgrade(&self.state),
             self.state.thread_id_generator.clone(),
             /*rollout_budget*/ None,
+            self.state.work_state.clone(),
         )
     }
 
@@ -1956,6 +2041,7 @@ impl ThreadManager {
             Arc::downgrade(&self.state),
             self.state.thread_id_generator.clone(),
             config.rollout_budget.clone(),
+            self.state.work_state.clone(),
         )
     }
 
@@ -1978,6 +2064,32 @@ impl ThreadManager {
 }
 
 impl ThreadManagerState {
+    pub(crate) fn models_manager_for_external_config(
+        &self,
+        config: &Config,
+    ) -> SharedModelsManager {
+        self.model_catalog.for_config(
+            config,
+            config.model_catalog.as_ref(),
+            self.catalog_auth_context(config),
+            /*same_owner*/ true,
+        )
+    }
+
+    fn catalog_auth_context(&self, config: &Config) -> ProviderAuthContext {
+        let credentials = Arc::clone(&self.auth_manager);
+        let runtime = crate::runtime_auth::runtime_for_config(
+            &self.runtime_auth,
+            config,
+            Arc::clone(&credentials),
+            &self.installation_id,
+        );
+        ProviderAuthContext {
+            credentials,
+            runtime_auth: runtime.map(|runtime| (runtime, config.runtime_auth_mode)),
+        }
+    }
+
     async fn models_for_thread(
         &self,
         config: &Config,
@@ -2332,13 +2444,57 @@ impl ThreadManagerState {
         parent_thread_id: ThreadId,
         inheritance: crate::agent::host::PreparedChildInheritance,
     ) -> CodexResult<NewThread> {
+        let parent = self.get_thread(parent_thread_id).await?;
+        if !parent.is_running()
+            || inheritance.runtime_authority.source != parent_thread_id
+            || inheritance.runtime_authority.tree_id != agent_control.runtime().tree_id()
+            || !Arc::ptr_eq(
+                &inheritance.runtime_authority.auth_manager,
+                &parent.session.services.auth_manager,
+            )
+            || !Arc::ptr_eq(
+                &inheritance.runtime_authority.runtime_auth,
+                &parent.session.services.runtime_auth,
+            )
+        {
+            return Err(CodexErr::ThreadNotFound(parent_thread_id));
+        }
+        self.spawn_prepared_child_thread(
+            options,
+            agent_control,
+            parent_thread_id,
+            parent_thread_id,
+            inheritance,
+            ThreadReadyNotification::Defer,
+        )
+        .await
+    }
+
+    async fn spawn_prepared_child_thread(
+        &self,
+        mut options: StartThreadOptions,
+        agent_control: AgentControlInit,
+        parent_thread_id: ThreadId,
+        authority_owner: ThreadId,
+        inheritance: crate::agent::host::PreparedChildInheritance,
+        ready_notification: ThreadReadyNotification,
+    ) -> CodexResult<NewThread> {
         options.reserved_thread_id.ok_or_else(|| {
             CodexErr::InvalidRequest("prepared child startup requires a reserved thread ID".into())
         })?;
-        let (auth_manager, runtime_auth) = self.inherited_child_auth(Some(parent_thread_id)).await;
+        let authority = &inheritance.runtime_authority;
+        if authority.source != authority_owner
+            || authority.tree_id != agent_control.runtime().tree_id()
+        {
+            return Err(CodexErr::ThreadNotFound(authority_owner));
+        }
+        let auth_manager = Arc::clone(&authority.auth_manager);
+        let runtime_auth = Arc::clone(&authority.runtime_auth);
+        options.client_mcp_extensions = authority.client_mcp_extensions.clone();
+        options.prompt_cache_key = authority.prompt_cache_key.clone();
         let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control);
         request.inherited_runtime_auth = Some(runtime_auth);
-        request.ready_notification = ThreadReadyNotification::Defer;
+        request.ready_notification = ready_notification;
         request.parent_thread_id = Some(parent_thread_id);
         let history_initialization = match &request.options.initial_history {
             InitialHistory::Forked(_) => {
@@ -2449,6 +2605,57 @@ impl ThreadManagerState {
 
     /// Spawn a new thread with optional history and register it with the manager.
     async fn spawn_thread(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+        if let InitialHistory::Resumed(resumed) = &request.options.initial_history {
+            let runtime = self.threads.read().await.values().find_map(|thread| {
+                let runtime = &thread.session.services.local_agent_runtime;
+                (runtime.observation_root(resumed.conversation_id) == Some(resumed.conversation_id))
+                    .then(|| runtime.tree_runtime())
+            });
+            if let Some(runtime) = runtime
+                && runtime.observation_root(resumed.conversation_id)
+                    == Some(resumed.conversation_id)
+            {
+                // Native descendants still own this exact tree.
+                // Replacing its root cannot create a second coordination owner.
+                request.agent_control = request.agent_control.with_runtime(runtime);
+            }
+        }
+        // Establish the exact lifetime before acquisition. SessionStartup retains
+        // this scope through cancellation cleanup, even before a runtime is published.
+        let runtime = request.agent_control.runtime().clone();
+        let actor = match &request.options.initial_history {
+            InitialHistory::Resumed(resumed) => resumed.conversation_id,
+            _ => *request
+                .options
+                .reserved_thread_id
+                .get_or_insert_with(|| runtime.generate_thread_id()),
+        };
+        let parent = request
+            .parent_thread_id
+            .or_else(|| {
+                request
+                    .options
+                    .session_source
+                    .as_ref()
+                    .and_then(SessionSource::parent_thread_id)
+            })
+            .or_else(|| {
+                request
+                    .options
+                    .initial_history
+                    .get_resumed_parent_thread_id()
+            });
+        let runtime = runtime.for_actor_start(actor, parent)?;
+        request.agent_control = request.agent_control.with_runtime(runtime.clone());
+        tokio::select! {
+            biased;
+            _ = runtime.shutdown.cancelled() => Err(crate::agent::control::runtime_shutting_down()),
+            result = Box::pin(self.spawn_thread_inner(request)) => result,
+        }
+    }
+
+    async fn spawn_thread_inner(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+        let runtime = request.agent_control.runtime().clone();
         let cancellation = request
             .options
             .config
@@ -2460,7 +2667,6 @@ impl ThreadManagerState {
             .config
             .config_layer_stack
             .with_mcp_ema_cancellation(cancellation);
-        let runtime = request.agent_control.runtime().clone();
         let membership = runtime.admit_start()?;
         let owns_startup = request.startup.is_none();
         let startup_state = Arc::clone(
@@ -2671,6 +2877,10 @@ impl ThreadManagerState {
             && initial_history.get_multi_agent_version() == Some(MultiAgentVersion::V2)
             && !session_source.is_non_root_agent()
             && let AgentControlInit::Local(control) = &agent_control
+            && control
+                .runtime
+                .observation_root(resumed.conversation_id)
+                .is_none()
         {
             control
                 .restore_v2_agent_metadata(&config, resumed.conversation_id)
@@ -2854,6 +3064,55 @@ impl ThreadManagerState {
                 &session_source,
             ) => manager,
         };
+        if startup_context.multi_agent_version == Some(MultiAgentVersion::V2)
+            && let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }) = &session_source
+            && let Some(host) = runtime.host_callbacks.get()
+        {
+            crate::environment_selection::validate_environment_ids_and_cwds(
+                self.environment_manager.as_ref(),
+                environment_requests
+                    .iter()
+                    .map(|environment| (environment.environment_id.as_str(), &environment.cwd)),
+            )?;
+            let child_id = match &initial_history {
+                InitialHistory::Resumed(resumed) => resumed.conversation_id,
+                _ => *reserved_thread_id.get_or_insert_with(|| runtime.generate_thread_id()),
+            };
+            let root_id = runtime
+                .observation_root(*parent_thread_id)
+                .ok_or(CodexErr::ThreadNotFound(*parent_thread_id))?;
+            let local_cwd = environment_requests
+                .iter()
+                .find(|environment| {
+                    environment.environment_id == codex_exec_server::LOCAL_ENVIRONMENT_ID
+                })
+                .map(|environment| environment.cwd.to_abs_path().map(|path| path.to_path_buf()))
+                .transpose()
+                .map_err(|error| {
+                    CodexErr::InvalidRequest(format!("invalid child capture workspace: {error}"))
+                })?;
+            let cancellation = runtime.shutdown.child_token();
+            let _cancel_on_drop = cancellation.clone().drop_guard();
+            // Namespace/capture admission precedes startup hooks, preloads and inference.
+            if let Err(error) = (host.admit_child)(
+                crate::ChildHostAdmissionRequest {
+                    root_id,
+                    parent_id: *parent_thread_id,
+                    thread_id: child_id,
+                    local_cwd,
+                },
+                cancellation,
+            )
+            .await
+            {
+                if let Some(startup_guard) = startup_guard {
+                    startup_guard.cleanup().await;
+                }
+                return Err(error);
+            }
+        }
         let spawn_result = Session::spawn(SessionSpawnArgs {
             attached_thread,
             startup,
@@ -3022,6 +3281,8 @@ impl ThreadManagerState {
             };
             let mut threads = self.threads.write().await;
             if let std::collections::hash_map::Entry::Vacant(e) = threads.entry(thread_id) {
+                let register_root = !session_source.is_non_root_agent()
+                    && session_configured.parent_thread_id.is_none();
                 ema_cancellation.publish();
                 let thread = Arc::new(CodexThread::new(
                     Arc::clone(&session),
@@ -3031,6 +3292,12 @@ impl ThreadManagerState {
                     session_source,
                 ));
                 e.insert(thread.clone());
+                if register_root {
+                    session
+                        .services
+                        .local_agent_runtime
+                        .register_session_root(thread_id, None);
+                }
                 let tier_acceptance = pending_service_tier.and_then(|(mut state, update)| {
                     state.service_tier_acceptance =
                         crate::agent::host::propagate_config_update(&session, update);
@@ -3054,8 +3321,9 @@ impl ThreadManagerState {
         )))
     }
 
-    pub(crate) fn notify_thread_created(&self, thread_id: ThreadId) {
-        let _ = self.thread_created_tx.send(thread_id);
+    pub(crate) fn notify_thread_created(&self, thread: &Arc<CodexThread>) {
+        thread.mark_created_notification_pending();
+        let _ = self.thread_created_tx.send(thread.session.thread_id);
     }
 }
 

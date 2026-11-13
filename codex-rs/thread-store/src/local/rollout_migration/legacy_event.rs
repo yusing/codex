@@ -151,7 +151,7 @@ pub(super) fn user_message_item(
 /// that paginated rollouts persist. This deliberately remains a frozen migration
 /// adapter rather than sharing the live thread-history reducer: migration must
 /// preserve historical payloads while synthesizing stable item and turn IDs.
-pub(super) fn completed_item(
+pub(in crate::local) fn completed_item(
     event: &EventMsg,
     next_item_id: &mut impl FnMut() -> ThreadStoreResult<String>,
 ) -> ThreadStoreResult<Option<(TurnItem, Option<String>)>> {

@@ -215,6 +215,9 @@ fn read_projection_batches(
                     "skipping malformed rollout line during projection"
                 );
                 record_projection_anomaly(ProjectionAnomaly::MalformedJson);
+                batch.push(RolloutProjectionStep::IncompleteCompactionEvidence {
+                    end_byte_offset: line_end_offset,
+                });
                 next_offset = line_end_offset;
                 line_start_offset = line_end_offset;
                 continue;
@@ -235,6 +238,9 @@ fn read_projection_batches(
                     "skipping unknown rollout line during projection"
                 );
                 record_projection_anomaly(ProjectionAnomaly::UnknownLine);
+                batch.push(RolloutProjectionStep::IncompleteCompactionEvidence {
+                    end_byte_offset: line_end_offset,
+                });
                 // Unknown records only advance the byte checkpoint. A writer that could not
                 // decode this line may have reused its ordinal, so let the next decoded line
                 // resolve reuse versus a gap.
@@ -255,6 +261,9 @@ fn read_projection_batches(
                     "skipping paginated rollout line without an ordinal"
                 );
                 record_projection_anomaly(ProjectionAnomaly::MissingOrdinal);
+                batch.push(RolloutProjectionStep::IncompleteCompactionEvidence {
+                    end_byte_offset: line_end_offset,
+                });
                 next_offset = line_end_offset;
                 line_start_offset = line_end_offset;
                 continue;
@@ -271,6 +280,9 @@ fn read_projection_batches(
                 "skipping duplicate or regressed rollout ordinal during projection"
             );
             record_projection_anomaly(ProjectionAnomaly::DuplicateOrRegressedOrdinal);
+            batch.push(RolloutProjectionStep::IncompleteCompactionEvidence {
+                end_byte_offset: line_end_offset,
+            });
             next_offset = line_end_offset;
             line_start_offset = line_end_offset;
             continue;
@@ -278,6 +290,9 @@ fn read_projection_batches(
         let is_inherited_subagent_history =
             subagent_history_start_ordinal.is_some_and(|start| ordinal < start);
         let changes = if is_inherited_subagent_history {
+            batch.push(RolloutProjectionStep::IncompleteCompactionEvidence {
+                end_byte_offset: line_end_offset,
+            });
             ThreadHistoryChangeSet::default()
         } else {
             project_rollout_line(&line)
@@ -353,6 +368,7 @@ fn read_projection_batches(
                 end_byte_offset: line_end_offset,
                 fallback_created_at_ms,
                 changes,
+                compaction_actor: super::thread_history::compaction_actor(&line.item),
                 realtime_item: match line.item {
                     RolloutItem::RealtimeItem(item) if !is_inherited_subagent_history => Some(item),
                     _ => None,

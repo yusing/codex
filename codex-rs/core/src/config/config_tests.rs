@@ -12741,7 +12741,10 @@ max_concurrent_threads_per_session = 9
         .await?;
 
     assert!(config.features.enabled(Feature::MultiAgentV2));
-    assert_eq!(config.multi_agent_v2.max_concurrent_threads_per_session, 5);
+    assert_eq!(
+        config.multi_agent_v2.max_concurrent_threads_per_session,
+        Some(5)
+    );
     assert_eq!(config.multi_agent_v2.min_wait_timeout_ms, 2500);
     assert_eq!(config.multi_agent_v2.max_wait_timeout_ms, 120000);
     assert_eq!(config.multi_agent_v2.default_wait_timeout_ms, 30000);
@@ -12792,7 +12795,7 @@ max_concurrent_threads_per_session = 9
 }
 
 #[tokio::test]
-async fn multi_agent_v2_default_session_thread_cap_counts_root() -> std::io::Result<()> {
+async fn multi_agent_v2_default_has_no_thread_cap() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     std::fs::write(
         codex_home.path().join(CONFIG_TOML_FILE),
@@ -12816,7 +12819,7 @@ enabled = true
             config.agent_max_threads,
             config.effective_agent_max_threads(MultiAgentVersion::V2)
         ),
-        (None, Some(3))
+        (None, None)
     );
 
     Ok(())
@@ -12934,6 +12937,9 @@ fn multi_agent_v2_exposes_model_overrides_by_default() {
 
     let mut config = resolve_multi_agent_v2_config(&config_toml);
     assert!(config.expose_spawn_agent_model_overrides);
+    assert!(!config.disable_native_tools);
+    assert!(!config.non_code_mode_only);
+    assert_eq!(config.tool_namespace.as_deref(), Some("collaboration"));
     let messages = ResolvedModelMessages::bundled().multi_agent();
     let usage_hints = resolve_usage_hints(
         &config, messages, /*omit_update_plan_instructions*/ false,
@@ -13098,7 +13104,7 @@ max_concurrent_threads_per_session = 7
             config.multi_agent_v2.max_concurrent_threads_per_session,
             config.effective_agent_max_threads(MultiAgentVersion::V2),
         ),
-        (8, Some(7))
+        (Some(8), Some(7))
     );
 
     Ok(())
@@ -13128,7 +13134,7 @@ max_concurrent_threads_per_session = 3
             config.multi_agent_v2.max_concurrent_threads_per_session,
             config.effective_agent_max_threads(MultiAgentVersion::V2),
         ),
-        (4, Some(3))
+        (Some(4), Some(3))
     );
 
     Ok(())
@@ -13386,7 +13392,10 @@ max_concurrent_threads_per_session = 1
         .build()
         .await?;
 
-    assert_eq!(config.multi_agent_v2.max_concurrent_threads_per_session, 1);
+    assert_eq!(
+        config.multi_agent_v2.max_concurrent_threads_per_session,
+        Some(1)
+    );
     assert_eq!(
         (
             config.agent_max_threads,

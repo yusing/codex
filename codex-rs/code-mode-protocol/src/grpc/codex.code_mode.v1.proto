@@ -37,6 +37,9 @@ service CodeModeHost {
   // the execution yields, completes, or is terminated.
   rpc Execute(ExecuteRequest) returns (stream ExecuteEvent);
   rpc Wait(WaitRequest) returns (WaitResponse);
+  // Returns only at actual JavaScript quiescence or completion. A pending cell
+  // remains paused until its next observation; this RPC has no yield timer.
+  rpc WaitToPending(WaitToPendingRequest) returns (WaitToPendingResponse);
 
   // Ends the current observation early without stopping its cell. The
   // corresponding Execute or Wait still returns its ordinary outcome.
@@ -217,6 +220,27 @@ message WaitResponse {
   oneof state {
     ExecutionOutcome live_cell = 1;
     ExecutionOutcome missing_cell = 2;
+  }
+}
+
+message WaitToPendingRequest {
+  string session_id = 1;
+  string cell_id = 2;
+  string wait_id = 3;
+  optional uint64 max_output_tokens = 4;
+}
+
+message PendingFrontier {
+  string cell_id = 1;
+  repeated ContentItem content_items = 2;
+  repeated string pending_tool_call_ids = 3;
+}
+
+message WaitToPendingResponse {
+  oneof state {
+    PendingFrontier pending = 1;
+    ExecutionOutcome completed = 2;
+    ExecutionOutcome missing_cell = 3;
   }
 }
 

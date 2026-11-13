@@ -32,3 +32,16 @@ async fn cancelling_turn_releases_backend_reservation() {
     assert!(turn.await.unwrap_err().is_cancelled());
     assert_eq!(capacity.available_permits(), 1);
 }
+
+#[tokio::test]
+async fn opaque_guard_keeps_capacity_when_it_cannot_suspend() {
+    let capacity = Arc::new(Semaphore::new(1));
+    let guard = AgentExecutionGuard::new(Arc::clone(&capacity).acquire_owned().await.unwrap());
+    let guard = guard
+        .suspend()
+        .err()
+        .expect("opaque permit must remain owned");
+    assert_eq!(capacity.available_permits(), 0);
+    drop(guard);
+    assert_eq!(capacity.available_permits(), 1);
+}

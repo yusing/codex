@@ -317,7 +317,7 @@ async fn websocket_transport_allows_turn_interrupt_during_drain() -> Result<()> 
 }); "persisted queue")]
 #[test_case::test_case("thread/goal/set", json!({
     "objective": "continue the goal",
-}); "goal continuation")]
+}); "rejected goal")]
 #[tokio::test]
 async fn websocket_transport_drain_stops_automatic_turns(
     rpc_method: &str,
@@ -350,7 +350,22 @@ async fn websocket_transport_drain_stops_automatic_turns(
 
     params["threadId"] = thread.id.into();
     send_request(&mut ws, rpc_method, /*id*/ 4, Some(params)).await?;
-    read_response_for_id(&mut ws, /*id*/ 4).await?;
+    if rpc_method == "thread/goal/set" {
+        timeout(DEFAULT_READ_TIMEOUT, async {
+            loop {
+                if let JSONRPCMessage::Error(error) = read_jsonrpc_message(&mut ws).await?
+                    && error.id == RequestId::Integer(4)
+                {
+                    assert_eq!(error.error.code, -32600);
+                    assert_eq!(error.error.message, "goals feature is disabled");
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+        })
+        .await??;
+    } else {
+        read_response_for_id(&mut ws, /*id*/ 4).await?;
+    }
     // Keep another turn active while the target turn runs its idle hooks.
     send_thread_start_request(&mut ws, /*id*/ 10).await?;
     let ThreadStartResponse { thread, .. } =

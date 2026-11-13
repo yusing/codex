@@ -2825,6 +2825,219 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     );
 }
 
+#[tokio::test]
+async fn native_terminal_projection_survives_raw_event_rollout_and_resume() -> anyhow::Result<()> {
+    use crate::agent::control::work::DeliveryKind;
+    use crate::agent::control::work::PublishDelivery;
+    use crate::agent::control::work::WorkDisposition;
+    use crate::agent::control::work::WorkStamp;
+    use crate::agent::control::work_lifecycle::CoordinationPayload;
+    use crate::agent::control::work_lifecycle::delivery_input;
+    use codex_protocol::agent_coordination::CoordinationDisposition;
+    use codex_utils_absolute_path::test_support::PathExt;
+    for (status, disposition, expected) in [
+        (
+            AgentStatus::Completed(None),
+            WorkDisposition::Completed,
+            CoordinationDisposition::Completed,
+        ),
+        (
+            AgentStatus::Errored("failed".into()),
+            WorkDisposition::Failed,
+            CoordinationDisposition::Failed,
+        ),
+        (
+            AgentStatus::Interrupted,
+            WorkDisposition::Interrupted,
+            CoordinationDisposition::Interrupted,
+        ),
+    ] {
+        let (mut session, turn_context, rx) = make_session_and_context_with_auth_and_config_and_rx(
+            CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            |_| {},
+        )
+        .await;
+        let rollout_path = attach_thread_persistence(Arc::get_mut(&mut session).unwrap()).await;
+        let directory = tempfile::tempdir()?;
+        let state = codex_state::StateRuntime::init(
+            codex_state::SqliteConfig::new_for_testing(directory.path().abs()),
+            "test-provider".into(),
+        )
+        .await?;
+        let runtime_id = uuid::Uuid::now_v7();
+        let root = ThreadId::new();
+        let work = WorkStamp {
+            root_id: root,
+            actor_id: root,
+            work_id: uuid::Uuid::now_v7(),
+        };
+        state
+            .coordination_admit_input(
+                &PublishDelivery {
+                    id: work.work_id,
+                    root_id: root,
+                    sender_id: None,
+                    recipient_id: root,
+                    work: Some(work),
+                    kind: DeliveryKind::Message,
+                    payload: serde_json::to_string(&CoordinationPayload::UserInput {
+                        content: Vec::new(),
+                    })?,
+                },
+                runtime_id,
+                true,
+                None,
+                None,
+                &[],
+                None,
+            )
+            .await?;
+        let candidate = state
+            .coordination_stage_completion(
+                work,
+                runtime_id,
+                "terminal-turn",
+                root,
+                disposition,
+                None,
+                &[],
+            )
+            .await?
+            .unwrap();
+        let id = candidate.delivery_id;
+        if disposition == WorkDisposition::Completed {
+            state.coordination_complete_capture(work, id, None).await?;
+        }
+        state
+            .coordination_completion_settlement(work, runtime_id, id, true)
+            .await?;
+        state
+            .coordination_finish_completion(
+                work,
+                runtime_id,
+                id,
+                &serde_json::to_string(&CoordinationPayload::Terminal {
+                    status,
+                    answers: vec!["authored answer".into()],
+                    capture: None,
+                })?,
+            )
+            .await?;
+        let record = state.coordination_delivery(root, root, id).await?.unwrap();
+        let TurnInput::InterAgentCommunication(message) =
+            delivery_input(&record, Some(AgentPath::root()), AgentPath::root())?
+        else {
+            panic!("terminal message")
+        };
+        let projection = message.coordination().unwrap().clone();
+        assert_eq!(projection.deliveries[0].source.work_id, work.work_id);
+        assert_eq!(projection.deliveries[0].disposition, expected);
+        assert_eq!(projection.deliveries[0].recipient, AgentPath::root());
+        match expected {
+            CoordinationDisposition::Completed => {
+                assert_eq!(projection.deliveries[0].body, "authored answer")
+            }
+            CoordinationDisposition::Failed => assert!(
+                projection.deliveries[0]
+                    .body
+                    .starts_with("Agent errored: failed")
+            ),
+            CoordinationDisposition::Interrupted => {
+                assert_eq!(projection.deliveries[0].body, "Agent work settled.")
+            }
+        }
+        assert_eq!(projection.deliveries[0].delivery_id, id);
+        assert!(projection.wait.is_none());
+        session
+            .record_inter_agent_communication(&turn_context, turn_context.model_info(), message)
+            .await;
+        let live = session.clone_history().await;
+        assert_eq!(
+            live.annotated_items()[0]
+                .metadata
+                .as_ref()
+                .unwrap()
+                .coordination
+                .as_ref(),
+            Some(&projection)
+        );
+        let raw = loop {
+            let event = rx.recv().await.expect("raw terminal event");
+            if let EventMsg::RawResponseItem(raw) = event.msg {
+                break raw;
+            }
+        };
+        assert_eq!(raw.coordination.as_ref(), Some(&projection));
+        assert!(matches!(raw.item, ResponseItem::AgentMessage { .. }));
+        session.flush_rollout().await?;
+        let InitialHistory::Resumed(resumed) =
+            RolloutRecorder::get_rollout_history(&rollout_path).await?
+        else {
+            panic!("resumed history")
+        };
+        assert!(resumed.history.iter().any(|item| matches!(item, RolloutItem::ResponseItem(item)
+            if item.metadata.as_ref().and_then(|metadata| metadata.coordination.as_ref()) == Some(&projection))));
+        let (restored, _) = make_session_and_context().await;
+        restored
+            .record_initial_history(InitialHistory::Resumed(resumed))
+            .await;
+        assert!(
+            restored
+                .clone_history()
+                .await
+                .annotated_items()
+                .iter()
+                .any(|item| item
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.coordination.as_ref())
+                    == Some(&projection))
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn aborted_self_reset_publishes_its_zero_generation_outcome_once() {
+    use codex_protocol::context_reset::ContextReset;
+    use codex_protocol::context_reset::ContextResetStatus;
+    let (session, turn, rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |_| {},
+    )
+    .await;
+    let resets = Arc::clone(&session.state.lock().await.manual_resets);
+    let lease = resets.begin(&session.thread_id.to_string(), &turn.sub_id, true);
+    assert_eq!(lease.generation, 0);
+    let receipt = ContextReset {
+        thread_id: session.thread_id.to_string(),
+        turn_id: turn.sub_id.clone(),
+        request_id: None,
+        generation: 0,
+        reset_id: Some("self-reset".into()),
+        status: ContextResetStatus::Started,
+        inline: true,
+        diagnostic: None,
+    };
+    lease.record_self_requests(&receipt, &["self-reset-request".into()]);
+    drop(lease);
+    session.finish_aborted_reset(&turn).await;
+    let actual = loop {
+        if let EventMsg::ContextReset(receipt) = rx.recv().await.unwrap().msg {
+            break receipt;
+        }
+    };
+    assert_eq!(actual.status, ContextResetStatus::Canceled);
+    assert_eq!(actual.reset_id, receipt.reset_id);
+    assert_eq!(actual.generation, 0);
+    session.finish_aborted_reset(&turn).await;
+    while let Ok(event) = rx.try_recv() {
+        assert!(!matches!(event.msg, EventMsg::ContextReset(_)));
+    }
+}
+
 #[test_case::test_case(false, None, false, 5; "plain items")]
 #[test_case::test_case(true, None, false, 5; "annotated items")]
 #[test_case::test_case(true, Some(100), false, 100; "existing tool budget")]
@@ -3438,11 +3651,13 @@ async fn recompute_token_usage_updates_model_context_window() {
     assert_eq!(actual.model_context_window, Some(128_000));
 }
 
-#[test_case(crate::session::TokenUsageContext::Sampling { includes_reasoning: false, input_item_count: 0 }; "sampling")]
-#[test_case(crate::session::TokenUsageContext::SpendingOnly; "spending_only")]
+#[test_case(crate::session::TokenUsageContext::Sampling { includes_reasoning: false, input_item_count: 0, history_version: 0 }, false; "sampling")]
+#[test_case(crate::session::TokenUsageContext::SpendingOnly, false; "spending_only")]
+#[test_case(crate::session::TokenUsageContext::Sampling { includes_reasoning: false, input_item_count: 0, history_version: 0 }, true; "sampling_after_reset")]
 #[tokio::test]
 async fn record_token_usage_info_notifies_extension_contributors(
     context: crate::session::TokenUsageContext,
+    reset: bool,
 ) {
     struct SessionTokenUsageMarker;
     struct ThreadTokenUsageMarker;
@@ -3528,10 +3743,14 @@ async fn record_token_usage_info_notifies_extension_contributors(
             crate::session::TokenUsageContext::Sampling {
                 includes_reasoning: true,
                 input_item_count: 0,
+                history_version: 0,
             },
         )
         .await
         .expect("first usage should be recorded");
+    if reset {
+        session.state.lock().await.history.replace(Vec::new());
+    }
     session
         .record_token_usage_info(
             &turn_context,
@@ -3542,6 +3761,11 @@ async fn record_token_usage_info_notifies_extension_contributors(
         .await
         .expect("second usage should be recorded");
 
+    let context = if reset {
+        crate::session::TokenUsageContext::SpendingOnly
+    } else {
+        context
+    };
     let mut expected_total_usage = first_usage.clone();
     expected_total_usage.add_assign(&second_usage);
     let expected_session_info = TokenUsageInfo {
@@ -7012,6 +7236,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
         active_turn: Mutex::new(None),
+        preparations: Default::default(),
         async_hook_results,
         input_queue: super::input_queue::InputQueue::new(),
         services,
@@ -9356,6 +9581,7 @@ where
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
         active_turn: Mutex::new(None),
+        preparations: Default::default(),
         async_hook_results,
         input_queue: super::input_queue::InputQueue::new(),
         services,
@@ -13657,4 +13883,278 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
             .is_some_and(|server| server.enabled),
         "rejection must not permit same-name ordinary-auth replacement in this session"
     );
+}
+
+mod paused_wait_tests {
+    use crate::session::TurnInput;
+    use crate::session::session::Session;
+    use crate::session::turn_context::TurnContext;
+    use crate::state::TaskKind;
+    use crate::tasks::{SessionTask, SessionTaskResult};
+    use codex_protocol::error::CodexErr;
+    use codex_protocol::models::ResponseItem;
+    use codex_protocol::protocol::EventMsg;
+    use codex_protocol::user_input::UserInput;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+    struct ProviderWaitTask {
+        registered: tokio::sync::mpsc::UnboundedSender<codex_state::coordination_wait::WaitTicket>,
+        resumed: tokio::sync::mpsc::UnboundedSender<codex_state::coordination_wait::WaitTicket>,
+    }
+
+    impl SessionTask for ProviderWaitTask {
+        fn kind(&self) -> TaskKind {
+            TaskKind::Regular
+        }
+
+        fn span_name(&self) -> &'static str {
+            "session_task.provider_wait"
+        }
+
+        async fn run(
+            self: Arc<Self>,
+            session: Arc<Session>,
+            context: Arc<TurnContext>,
+            _input: Vec<TurnInput>,
+            cancellation: CancellationToken,
+        ) -> SessionTaskResult {
+            let ticket = session
+                .services
+                .local_agent_runtime
+                .recover_exhausted_turn(
+                    session.thread_id,
+                    &context.sub_id,
+                    &CodexErr::UsageNotIncluded,
+                    Some(tokio::time::Instant::now() + std::time::Duration::from_secs(60)),
+                )
+                .await?
+                .expect("provider wait registered");
+            self.registered.send(ticket.clone()).unwrap();
+            let step = session.capture_step_context(context, &cancellation).await?;
+            let ready = session
+                .await_turn_wait(&step, &ticket, &cancellation)
+                .await?;
+            self.resumed.send(ready).unwrap();
+            cancellation.cancelled().await;
+            Err(CodexErr::TurnAborted)
+        }
+    }
+
+    #[test_case::test_case("deadline")]
+    #[test_case::test_case("shell")]
+    #[test_case::test_case("input")]
+    #[tokio::test]
+    async fn manual_reset_services_original_provider_wait_and_reload_before_wake(
+        wake: &str,
+    ) -> anyhow::Result<()> {
+        use crate::agent::control::LocalAgentControl;
+        use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
+        use anyhow::Context;
+        use codex_state::coordination_wait::WaitPhase;
+        use codex_utils_absolute_path::test_support::PathExt;
+
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("reload.txt");
+        std::fs::write(&source, "provider wait reload evidence")?;
+        let state = codex_state::StateRuntime::init(
+            codex_state::SqliteConfig::new_for_testing(directory.path().abs()),
+            "test-provider".into(),
+        )
+        .await?;
+        let (mut session, context, receiver) =
+            make_session_and_context_with_auth_and_config_and_rx(
+                codex_login::CodexAuth::from_api_key("Test API Key"),
+                Vec::new(),
+                |config| {
+                    config
+                        .features
+                        .enable(codex_features::Feature::MultiAgentV2)
+                        .unwrap();
+                    config
+                        .features
+                        .enable(codex_features::Feature::TokenBudget)
+                        .unwrap();
+                },
+            )
+            .await;
+        let control = LocalAgentControl::new(
+            std::sync::Weak::default(),
+            crate::thread_manager::default_thread_id_generator(),
+            None,
+            Some(state),
+        );
+        let runtime = control.runtime.for_actor_start(session.thread_id, None)?;
+        Arc::get_mut(&mut session)
+            .unwrap()
+            .services
+            .local_agent_runtime = runtime;
+        let mut input = TurnInput::UserInput {
+            content: vec![UserInput::Text {
+                text: "original assignment".into(),
+                text_elements: Vec::new(),
+            }],
+            client_id: None,
+            metadata: Default::default(),
+        };
+        session
+            .admit_coordination_input(&mut input, &context.sub_id, true)
+            .await?;
+        session
+            .confirm_coordination_input(&input, &context.sub_id)
+            .await?;
+        let ledger = control.runtime.work_ledger()?;
+        let work = ledger.work_stamp(session.thread_id).await?.unwrap();
+        ledger
+            .consume_deliveries(session.thread_id, &[work.work_id], &context.sub_id)
+            .await?;
+        let (registered, mut registrations) = tokio::sync::mpsc::unbounded_channel();
+        let (resumed, mut results) = tokio::sync::mpsc::unbounded_channel();
+        session
+            .spawn_task(
+                Arc::clone(&context),
+                Vec::new(),
+                ProviderWaitTask {
+                    registered,
+                    resumed,
+                },
+            )
+            .await;
+        let ticket = tokio::time::timeout(std::time::Duration::from_secs(5), registrations.recv())
+            .await
+            .context("original provider wait registration")?
+            .unwrap();
+        let original_done = {
+            let active = session.active_turn.lock().await;
+            Arc::clone(&active.as_ref().unwrap().task.as_ref().unwrap().done)
+        };
+        crate::session::handlers::compact(
+            &session,
+            "manual-reset".into(),
+            Some(codex_protocol::protocol::ReloadSelection {
+                sources: vec![format!("@{}", source.display())],
+            }),
+            Some("manual-request".into()),
+        )
+        .await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let event = receiver.recv().await.unwrap();
+                match event.msg {
+                    EventMsg::ContextReset(reset)
+                        if reset.status
+                            == codex_protocol::context_reset::ContextResetStatus::Completed =>
+                    {
+                        break;
+                    }
+                    EventMsg::ContextReset(reset)
+                        if matches!(
+                            reset.status,
+                            codex_protocol::context_reset::ContextResetStatus::Failed
+                                | codex_protocol::context_reset::ContextResetStatus::Canceled
+                        ) =>
+                    {
+                        panic!("reset failed: {reset:?}")
+                    }
+                    EventMsg::TurnComplete(_)
+                    | EventMsg::TurnAborted(_)
+                    | EventMsg::TurnCheckpointed(_) => {
+                        panic!("auxiliary reset replaced original task")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .context("auxiliary reset completion while provider wait remains pending")?;
+        {
+            let active = session.active_turn.lock().await;
+            let task = active.as_ref().unwrap().task.as_ref().unwrap();
+            assert!(Arc::ptr_eq(&task.turn_context, &context));
+            assert!(Arc::ptr_eq(&task.done, &original_done));
+            assert!(!task.handle.is_finished());
+        }
+        assert!(results.try_recv().is_err());
+        assert_eq!(
+            ledger.current_wait(session.thread_id).await?.unwrap().id,
+            ticket.id
+        );
+        assert!(session.clone_history().await.raw_items().any(|item| matches!(item,
+        ResponseItem::FunctionCallOutput { output, .. } if output.body.to_text().is_some_and(|text| text.contains("provider wait reload evidence"))
+    )));
+        match wake {
+            "shell" => {
+                session
+                    .start_user_shell_command(
+                        "auxiliary-shell".into(),
+                        "printf provider_shell_marker; exit 7".into(),
+                        None,
+                    )
+                    .await?
+            }
+            "input" => {
+                let submission = crate::session::turn_input::handle(
+                    &session,
+                    codex_protocol::turn_input::TurnInputRequest::new(
+                        codex_protocol::turn_input::TurnInput::UserInput {
+                            content: vec![UserInput::Text {
+                                text: "superseding provider wait input".into(),
+                                text_elements: Vec::new(),
+                            }],
+                            client_id: None,
+                        },
+                    ),
+                    codex_protocol::turn_input::TurnInputMode::Steer {
+                        expected_turn_id: context.sub_id.clone(),
+                    },
+                    "provider-wait-steer".into(),
+                )
+                .await?;
+                assert!(matches!(
+                    submission,
+                    codex_protocol::turn_input::TurnInputSubmission::Steered { .. }
+                ));
+            }
+            _ => {
+                tokio::time::pause();
+                tokio::time::advance(std::time::Duration::from_secs(60)).await;
+                tokio::time::resume();
+            }
+        }
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(5), results.recv())
+            .await
+            .context("original provider wait resumes at its retained retry deadline")?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "provider task ended before resuming: {:?}",
+                    std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>()
+                )
+            })?;
+        assert_eq!(ready.id, ticket.id);
+        assert_eq!(ready.origin, ticket.origin);
+        if wake == "deadline" {
+            assert_eq!(ready.phase, WaitPhase::Claimed);
+            assert!(ready.claim.unwrap().delivery_ids.is_empty());
+        } else {
+            assert_eq!(ready.phase, WaitPhase::Cancelled);
+            assert!(matches!(
+                (wake, ready.cancellation),
+                (
+                    "shell",
+                    Some(codex_state::coordination_wait::WaitCancellation::ShellOutput { .. })
+                ) | (
+                    "input",
+                    Some(codex_state::coordination_wait::WaitCancellation::InputSuperseded { .. })
+                )
+            ));
+            let active = session.active_turn.lock().await;
+            let task = active.as_ref().unwrap().task.as_ref().unwrap();
+            assert!(Arc::ptr_eq(&task.done, &original_done));
+            assert!(!task.handle.is_finished());
+        }
+        session
+            .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Interrupted)
+            .await;
+        control.runtime.request_shutdown().wait().await?;
+        Ok(())
+    }
 }

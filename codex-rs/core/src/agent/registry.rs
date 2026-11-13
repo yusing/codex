@@ -25,14 +25,30 @@ use std::sync::atomic::Ordering;
 ///
 /// This structure is shared by all agents in the same user session (because the `LocalAgentControl`
 /// is).
-#[derive(Default)]
 pub(crate) struct AgentRegistry {
     active_agents: Mutex<ActiveAgents>,
     total_count: AtomicUsize,
+    changes: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for AgentRegistry {
+    fn default() -> Self {
+        Self {
+            active_agents: Mutex::default(),
+            total_count: AtomicUsize::default(),
+            changes: tokio::sync::watch::channel(0).0,
+        }
+    }
+}
+
+pub(crate) struct AgentRegistrySnapshot {
+    pub(crate) revision: u64,
+    pub(crate) agents: Vec<AgentMetadata>,
 }
 
 #[derive(Default)]
 struct ActiveAgents {
+    revision: u64,
     agent_tree: HashMap<String, AgentMetadata>,
     thread_paths: HashMap<ThreadId, RegisteredAgent>,
     used_agent_nicknames: HashSet<String>,
@@ -51,6 +67,7 @@ pub(crate) struct EvictedEnvironments {
 struct RegisteredAgent {
     path: String,
     evicted_environments: Option<EvictedEnvironments>,
+    provisional: bool,
 }
 
 impl RegisteredAgent {
@@ -58,6 +75,7 @@ impl RegisteredAgent {
         Self {
             path,
             evicted_environments: None,
+            provisional: false,
         }
     }
 }
@@ -98,6 +116,42 @@ pub(crate) fn exceeds_thread_spawn_depth_limit(depth: i32, max_depth: i32) -> bo
 }
 
 impl AgentRegistry {
+    /// Subscribe before taking a snapshot. The watch retains only the latest
+    /// invalidation; consumers resnapshot rather than replaying a mutation log.
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    pub(crate) fn snapshot(&self) -> AgentRegistrySnapshot {
+        let active = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        AgentRegistrySnapshot {
+            revision: active.revision,
+            agents: active
+                .agent_tree
+                .values()
+                .filter(|metadata| metadata.agent_id.is_some())
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn changed(&self, active: &mut ActiveAgents) {
+        active.revision += 1;
+        self.changes.send_replace(active.revision);
+    }
+
+    /// Durable work owners invalidate only after their transaction succeeds.
+    pub(crate) fn invalidate_observation(&self) {
+        let mut active = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.changed(&mut active);
+    }
+
     pub(crate) fn reserve_spawn_slot(
         self: &Arc<Self>,
         max_threads: Option<usize>,
@@ -126,13 +180,16 @@ impl AgentRegistry {
                 .active_agents
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            active_agents
+            let removed = active_agents
                 .thread_paths
                 .remove(&thread_id)
-                .and_then(|agent| active_agents.agent_tree.remove(agent.path.as_str()))
-                .is_some_and(|metadata| {
-                    !metadata.agent_path.as_ref().is_some_and(AgentPath::is_root)
-                })
+                .and_then(|agent| active_agents.agent_tree.remove(agent.path.as_str()));
+            if removed.is_some() {
+                self.changed(&mut active_agents);
+            }
+            removed.is_some_and(|metadata| {
+                !metadata.agent_path.as_ref().is_some_and(AgentPath::is_root)
+            })
         };
         if removed_counted_agent {
             self.total_count.fetch_sub(1, Ordering::AcqRel);
@@ -145,6 +202,7 @@ impl AgentRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root_path = AgentPath::ROOT.to_string();
+        let existed = active_agents.agent_tree.contains_key(&root_path);
         let root_thread_id = active_agents
             .agent_tree
             .entry(root_path.clone())
@@ -158,6 +216,9 @@ impl AgentRegistry {
             active_agents
                 .thread_paths
                 .insert(root_thread_id, RegisteredAgent::new(root_path));
+        }
+        if !existed {
+            self.changed(&mut active_agents);
         }
     }
 
@@ -193,6 +254,7 @@ impl AgentRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
             agent.evicted_environments = Some(environments);
+            self.changed(&mut active_agents);
         }
     }
 
@@ -212,8 +274,10 @@ impl AgentRegistry {
             .active_agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
-            agent.evicted_environments = None;
+        if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id)
+            && agent.evicted_environments.take().is_some()
+        {
+            self.changed(&mut active_agents);
         }
     }
 
@@ -232,6 +296,14 @@ impl AgentRegistry {
     }
 
     fn register_spawned_thread(&self, agent_metadata: AgentMetadata) {
+        self.register_spawned_thread_with_admission(agent_metadata, false);
+    }
+
+    fn register_spawned_thread_with_admission(
+        &self,
+        agent_metadata: AgentMetadata,
+        provisional: bool,
+    ) {
         let Some(thread_id) = agent_metadata.agent_id else {
             return;
         };
@@ -247,9 +319,9 @@ impl AgentRegistry {
         if let Some(agent_nickname) = agent_metadata.agent_nickname.clone() {
             active_agents.used_agent_nicknames.insert(agent_nickname);
         }
-        if let Some(previous_agent) = active_agents
-            .thread_paths
-            .insert(thread_id, RegisteredAgent::new(key.clone()))
+        let mut registered = RegisteredAgent::new(key.clone());
+        registered.provisional = provisional;
+        if let Some(previous_agent) = active_agents.thread_paths.insert(thread_id, registered)
             && previous_agent.path != key
         {
             active_agents
@@ -261,6 +333,29 @@ impl AgentRegistry {
             && previous_thread_id != thread_id
         {
             active_agents.thread_paths.remove(&previous_thread_id);
+        }
+        self.changed(&mut active_agents);
+    }
+
+    pub(crate) fn is_admitted(&self, actor: ThreadId) -> bool {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .thread_paths
+            .get(&actor)
+            .is_some_and(|entry| !entry.provisional)
+    }
+
+    pub(crate) fn finish_provisional_admission(&self, actor: ThreadId) {
+        let mut active = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = active.thread_paths.get_mut(&actor)
+            && entry.provisional
+        {
+            entry.provisional = false;
+            self.changed(&mut active);
         }
     }
 
@@ -391,6 +486,15 @@ impl SpawnReservation {
         self.reserved_agent_nickname = None;
         self.reserved_agent_path = None;
         self.state.register_spawned_thread(agent_metadata);
+        self.active = false;
+    }
+
+    /// Publish validated identity for observation and approvals, not ordinary input.
+    pub(crate) fn commit_provisional(mut self, agent_metadata: AgentMetadata) {
+        self.reserved_agent_nickname = None;
+        self.reserved_agent_path = None;
+        self.state
+            .register_spawned_thread_with_admission(agent_metadata, true);
         self.active = false;
     }
 }

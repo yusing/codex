@@ -59,6 +59,7 @@ pub(crate) use self::runtime::AgentTreeMembership;
 pub(crate) use self::runtime::AgentTreeShutdownState;
 pub(crate) use self::runtime::AgentTreeTeardownGuard;
 pub(crate) use self::runtime::LocalAgentRuntime;
+pub(crate) use self::runtime::runtime_shutting_down;
 pub(crate) use self::watch::StatusSubscription;
 pub(in crate::agent) use spawn::effective_spawn_config;
 pub(in crate::agent) use spawn::fresh_child_history_and_tools;
@@ -71,24 +72,32 @@ mod budget;
 mod completion;
 mod delivery;
 mod execution;
+pub(crate) mod foreign;
 mod inspection;
 mod interrupt;
 mod legacy;
 mod mailbox;
+mod observation;
 mod residency;
 pub use residency::ThreadEvictionOutcome;
+pub(crate) mod progress;
+pub(crate) mod recovery;
 mod resume;
 mod root_handoff;
 mod runtime;
 mod runtime_context;
 mod sender_context;
 mod service_tier;
+mod side_question;
 mod spawn;
 mod spawn_guard;
 mod spawn_telemetry;
 mod target;
 mod user_authorization;
+mod wait_delivery;
 mod watch;
+pub(crate) mod work;
+pub(crate) mod work_lifecycle;
 
 /// Per-session controller handle for a local agent tree.
 /// Handles retain a session identity and share their tree's `LocalAgentRuntime`.
@@ -106,6 +115,7 @@ impl Default for LocalAgentControl {
             Weak::default(),
             default_thread_id_generator(),
             /*rollout_budget*/ None,
+            /*work_state*/ None,
         )
     }
 }
@@ -116,14 +126,24 @@ impl LocalAgentControl {
         manager: Weak<ThreadManagerState>,
         thread_id_generator: ThreadIdGenerator,
         rollout_budget: Option<RolloutBudgetConfig>,
+        work_state: Option<Arc<codex_state::StateRuntime>>,
     ) -> Self {
         Self {
             session_id: SessionId::default(),
-            runtime: LocalAgentRuntime::new(manager, thread_id_generator, rollout_budget),
+            runtime: LocalAgentRuntime::new(
+                manager,
+                thread_id_generator,
+                rollout_budget,
+                work_state,
+            ),
         }
     }
 
-    pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
+    pub(crate) fn with_session_id(
+        mut self,
+        session_id: SessionId,
+        max_threads: Option<usize>,
+    ) -> Self {
         self.session_id = session_id;
         self.runtime.agent_execution_limiter.initialize(max_threads);
         self
@@ -264,6 +284,31 @@ impl LocalAgentControl {
         context: AgentCommunicationContext,
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
+        if self.runtime.work.is_some() && self.runtime.ensure_agent_known(agent_id).is_ok() {
+            if !communication.trigger_turn {
+                return self
+                    .runtime
+                    .publish_message(
+                        agent_id,
+                        context.sender_thread_id,
+                        communication,
+                        context.sources,
+                    )
+                    .await;
+            }
+            let thread = state.get_thread(agent_id).await?;
+            let observers = state.extensions.message_lifecycle_contributors();
+            let delivery = (!observers.is_empty())
+                .then(|| MessageDelivery::publish(context.sender_thread_id, observers));
+            return thread
+                .session
+                .accept_coordination_message(
+                    crate::PendingAgentMessage::new(communication, delivery),
+                    start_options,
+                    context.sources,
+                )
+                .await;
+        }
         let observers = state.extensions.message_lifecycle_contributors();
         let delivery = (!observers.is_empty())
             .then(|| MessageDelivery::publish(context.sender_thread_id, observers));

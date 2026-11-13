@@ -40,8 +40,7 @@ use codex_thread_store::ThreadStoreError;
 
 use super::TurnRequestProcessor;
 use super::config_load_error;
-use super::thread_input::DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR;
-use super::thread_input::can_accept_direct_input;
+use super::thread_input::ensure_human_input_allowed;
 use super::thread_processor::THREAD_LIST_DEFAULT_LIMIT;
 use super::thread_processor::THREAD_LIST_MAX_LIMIT;
 use super::turn_processor::validate_user_input_image_urls;
@@ -80,7 +79,7 @@ impl ThreadQueueRequestProcessor {
     ) -> Result<ThreadQueueAddResponse, JSONRPCErrorError> {
         validate_user_input_image_urls(&params.input)?;
         let (thread_id, loaded_thread, source) = self.require_thread(&params.thread_id).await?;
-        ensure_direct_input_allowed(loaded_thread.as_deref(), &source)?;
+        ensure_direct_input_allowed(loaded_thread.as_deref(), &source).await?;
         let queued_item = self
             .service()?
             .enqueue_with_metadata(
@@ -138,7 +137,7 @@ impl ThreadQueueRequestProcessor {
     ) -> Result<ThreadQueueUpdateResponse, JSONRPCErrorError> {
         validate_user_input_image_urls(&params.input)?;
         let (thread_id, loaded_thread, source) = self.require_thread(&params.thread_id).await?;
-        ensure_direct_input_allowed(loaded_thread.as_deref(), &source)?;
+        ensure_direct_input_allowed(loaded_thread.as_deref(), &source).await?;
         let queued_item = self
             .service()?
             .update_with_metadata(
@@ -191,7 +190,7 @@ impl ThreadQueueRequestProcessor {
         params: ThreadQueueStartParams,
     ) -> Result<ThreadQueueStartResponse, JSONRPCErrorError> {
         let (_, loaded_thread, source) = self.require_thread(&params.thread_id).await?;
-        ensure_direct_input_allowed(loaded_thread.as_deref(), &source)?;
+        ensure_direct_input_allowed(loaded_thread.as_deref(), &source).await?;
         let thread = loaded_thread
             .ok_or_else(|| invalid_request("resume the thread before starting a queued message"))?;
         self.config_manager
@@ -295,14 +294,12 @@ impl ThreadQueueRequestProcessor {
     }
 }
 
-fn ensure_direct_input_allowed(
+async fn ensure_direct_input_allowed(
     loaded_thread: Option<&CodexThread>,
     source: &SessionSource,
 ) -> Result<(), JSONRPCErrorError> {
     match loaded_thread {
-        Some(thread) if !can_accept_direct_input(thread.multi_agent_version(), source) => Err(
-            invalid_request(DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR),
-        ),
+        Some(thread) => ensure_human_input_allowed(thread).await,
         None if matches!(
             source,
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })

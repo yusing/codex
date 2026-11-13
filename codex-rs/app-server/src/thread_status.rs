@@ -9,6 +9,7 @@ use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadStatusChangedNotification;
 use codex_protocol::ThreadId;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 #[cfg(test)]
@@ -20,6 +21,7 @@ pub(crate) struct ThreadWatchManager {
     state: Arc<Mutex<ThreadWatchState>>,
     outgoing: Option<Arc<OutgoingMessageSender>>,
     running_turn_count_tx: watch::Sender<usize>,
+    observation_shutdown: tokio_util::sync::CancellationToken,
 }
 
 pub(crate) struct ThreadWatchActiveGuard {
@@ -70,12 +72,63 @@ impl Default for ThreadWatchManager {
 }
 
 impl ThreadWatchManager {
+    pub(crate) fn stop_observations(&self) {
+        self.observation_shutdown.cancel();
+    }
+
+    pub(crate) async fn watch_agent_tree(
+        &self,
+        root: ThreadId,
+        mut changes: watch::Receiver<u64>,
+        shutdown: tokio_util::sync::CancellationToken,
+        tasks: &tokio_util::task::TaskTracker,
+    ) {
+        let root = root.to_string();
+        if !self
+            .state
+            .lock()
+            .await
+            .observation_roots
+            .insert(root.clone())
+        {
+            return;
+        }
+        let manager = self.clone();
+        tasks.spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = manager.observation_shutdown.cancelled() => break,
+                    _ = shutdown.cancelled() => break,
+                    result = changes.changed() => if result.is_err() { break; },
+                }
+                let revision = *changes.borrow_and_update();
+                if let Some(outgoing) = &manager.outgoing {
+                    let notification = ServerNotification::AgentTreeChanged(
+                        codex_app_server_protocol::AgentTreeChangedNotification {
+                            root_thread_id: root.clone(),
+                            observation_revision: revision,
+                        },
+                    );
+                    tokio::select! {
+                        biased;
+                        _ = manager.observation_shutdown.cancelled() => break,
+                        _ = shutdown.cancelled() => break,
+                        _ = outgoing.send_server_notification(notification) => {},
+                    }
+                }
+            }
+            manager.state.lock().await.observation_roots.remove(&root);
+        });
+    }
+
     pub(crate) fn new() -> Self {
         let (running_turn_count_tx, _running_turn_count_rx) = watch::channel(0);
         Self {
             state: Arc::new(Mutex::new(ThreadWatchState::default())),
             outgoing: None,
             running_turn_count_tx,
+            observation_shutdown: tokio_util::sync::CancellationToken::new(),
         }
     }
 
@@ -85,6 +138,7 @@ impl ThreadWatchManager {
             state: Arc::new(Mutex::new(ThreadWatchState::default())),
             outgoing: Some(outgoing),
             running_turn_count_tx,
+            observation_shutdown: tokio_util::sync::CancellationToken::new(),
         }
     }
 
@@ -302,6 +356,7 @@ pub(crate) fn resolve_thread_status(
 
 #[derive(Default)]
 struct ThreadWatchState {
+    observation_roots: HashSet<String>,
     runtime_by_thread_id: HashMap<String, RuntimeFacts>,
     status_watcher_by_thread_id: HashMap<String, watch::Sender<ThreadStatus>>,
     running_turn_count: usize,
@@ -471,6 +526,64 @@ mod tests {
 
     const INTERACTIVE_THREAD_ID: &str = "00000000-0000-0000-0000-000000000001";
     const NON_INTERACTIVE_THREAD_ID: &str = "00000000-0000-0000-0000-000000000002";
+
+    #[tokio::test]
+    async fn observation_watch_coalesces_and_joins_on_tree_shutdown() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(8);
+        let manager = ThreadWatchManager::new_with_outgoing(Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        )));
+        let root = ThreadId::new();
+        let (sender, receiver) = watch::channel(0);
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let tasks = tokio_util::task::TaskTracker::new();
+        // A mutation after subscription but before snapshot/watch installation
+        // must not vanish. Repeated reads must not install duplicate tasks.
+        sender.send_replace(1);
+        manager
+            .watch_agent_tree(root, receiver, shutdown.clone(), &tasks)
+            .await;
+        manager
+            .watch_agent_tree(root, sender.subscribe(), shutdown.clone(), &tasks)
+            .await;
+        assert_eq!(tasks.len(), 1);
+        let envelope = timeout(Duration::from_secs(1), outgoing_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let OutgoingEnvelope::Broadcast { message } = envelope else {
+            panic!("expected broadcast");
+        };
+        let OutgoingMessage::AppServerNotification(envelope) = message else {
+            panic!("expected notification");
+        };
+        let ServerNotification::AgentTreeChanged(notification) = envelope.notification else {
+            panic!("expected tree invalidation");
+        };
+        assert_eq!(notification.root_thread_id, root.to_string());
+        assert_eq!(notification.observation_revision, 1);
+        shutdown.cancel();
+        tasks.close();
+        timeout(Duration::from_secs(1), tasks.wait()).await.unwrap();
+        assert!(manager.state.lock().await.observation_roots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn server_observation_drain_does_not_wait_for_or_cancel_tree_execution() {
+        let manager = ThreadWatchManager::new();
+        let (_sender, receiver) = watch::channel(0);
+        let tree_shutdown = tokio_util::sync::CancellationToken::new();
+        let tasks = tokio_util::task::TaskTracker::new();
+        manager
+            .watch_agent_tree(ThreadId::new(), receiver, tree_shutdown.clone(), &tasks)
+            .await;
+        manager.stop_observations();
+        tasks.close();
+        timeout(Duration::from_secs(1), tasks.wait()).await.unwrap();
+        assert!(!tree_shutdown.is_cancelled());
+        assert!(manager.state.lock().await.observation_roots.is_empty());
+    }
 
     #[tokio::test]
     async fn loaded_status_defaults_to_not_loaded_for_untracked_threads() {

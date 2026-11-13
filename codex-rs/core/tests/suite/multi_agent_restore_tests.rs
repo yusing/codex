@@ -184,7 +184,7 @@ async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_o
                 .features
                 .enable(Feature::Sqlite)
                 .expect("enable SQLite");
-            config.multi_agent_v2.max_concurrent_threads_per_session = 4;
+            config.multi_agent_v2.max_concurrent_threads_per_session = Some(4);
         })
         .build_with_auto_env(&server)
         .await?;
@@ -266,7 +266,7 @@ async fn cold_root_resume_overlaps_child_reads_and_applies_identities_in_graph_o
                 .features
                 .enable(Feature::Sqlite)
                 .expect("enable SQLite");
-            config.multi_agent_v2.max_concurrent_threads_per_session = 4;
+            config.multi_agent_v2.max_concurrent_threads_per_session = Some(4);
         });
 
     let (resumed, ()) = tokio::try_join!(resume_builder.restart(&server, &initial), async {

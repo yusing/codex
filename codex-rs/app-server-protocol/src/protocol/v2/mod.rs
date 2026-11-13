@@ -1,10 +1,16 @@
 mod shared;
+pub use codex_protocol::agent_coordination::*;
 pub use codex_protocol::context_reset::ContextReset;
-pub use codex_protocol::compound_wait::CompoundWaitDisposition;
-pub use codex_protocol::compound_wait::CompoundWaitReset;
-pub use codex_protocol::compound_wait::CompoundWaitSettlement;
 
 mod account;
+mod agent_host;
+pub use agent_host::*;
+mod agent_observation;
+pub use agent_observation::*;
+mod agent_control;
+pub use agent_control::*;
+mod agent_foreign;
+pub use agent_foreign::*;
 mod application;
 mod apps;
 mod attestation;
@@ -19,8 +25,6 @@ mod diagnostics;
 mod environment;
 mod experimental_feature;
 mod feedback;
-mod feature_use;
-pub use feature_use::*;
 mod fs;
 mod gcp;
 mod hook;

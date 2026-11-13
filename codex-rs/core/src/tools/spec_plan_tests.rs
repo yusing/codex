@@ -2804,7 +2804,7 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
     let v2 = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
         update_config(turn, |config| {
-            config.multi_agent_v2.max_concurrent_threads_per_session = 17;
+            config.multi_agent_v2.max_concurrent_threads_per_session = Some(17);
         });
     })
     .await;

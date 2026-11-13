@@ -1,4 +1,5 @@
 mod archive_thread;
+mod compaction_metrics;
 mod create_thread;
 mod delete_thread;
 mod helpers;
@@ -628,6 +629,10 @@ impl ThreadStore for LocalThreadStore {
         request: crate::OriginalHistoryRequest,
     ) -> ThreadStoreFuture<'_, crate::OriginalHistoryRead> {
         Box::pin(original_history::read(self, thread_id, request))
+    }
+
+    fn completed_compactions(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, Option<u64>> {
+        Box::pin(thread_history::completed_compactions(self, thread_id))
     }
 
     fn is_model_context_current(

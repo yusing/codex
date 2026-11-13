@@ -14,6 +14,33 @@ use serde_json::json;
 
 use super::*;
 
+#[test]
+fn authenticated_coordination_metadata_round_trips_and_shortening_revokes_complete_proof()
+-> Result<()> {
+    let delivery = uuid::Uuid::now_v7();
+    let claim = uuid::Uuid::now_v7();
+    let metadata = CodexHarnessMetadata {
+        coordination_delivery_ids: vec![delivery],
+        coordination_wait_claim_id: Some(claim),
+        ..Default::default()
+    };
+    let original = RolloutItem::ResponseItem(ResponseItemEnvelope {
+        item: response_message("user"),
+        metadata: Some(metadata.clone()),
+    });
+    let restored: RolloutItem = serde_json::from_value(serde_json::to_value(&original)?)?;
+    assert_eq!(
+        serde_json::to_value(restored)?,
+        serde_json::to_value(original)?
+    );
+    let mut shortened = metadata;
+    shortened.mark_retained_sources_incomplete();
+    let encoded = serde_json::to_value(shortened)?;
+    assert!(encoded.get("coordination_delivery_ids").is_none());
+    assert!(encoded.get("coordination_wait_claim_id").is_none());
+    Ok(())
+}
+
 fn thread_settings_snapshot(disabled_plugin_ids: Vec<String>) -> Result<ThreadSettingsSnapshot> {
     Ok(serde_json::from_value(json!({
         "model": "gpt-5",

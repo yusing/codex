@@ -98,6 +98,7 @@ fn is_unsupported_untrusted_approval_policy_error(err: &std::io::Error) -> bool 
 pub use codex_agent_message_board_host::delete_agent_message_boards;
 pub use codex_agent_message_board_host::install_agent_message_board;
 
+mod agent_host;
 mod analytics_utils;
 mod app_info;
 mod app_server_tracing;
@@ -122,7 +123,6 @@ mod dynamic_tools;
 mod effective_plugin_change;
 mod error_code;
 mod extensions;
-mod feature_use;
 mod external_agent_migration;
 mod external_auth;
 mod filters;
@@ -1301,9 +1301,7 @@ pub async fn run_main_with_transport_options(
                                             processor
                                                 .connection_initialized(
                                                     connection_id,
-                                                    connection_state
-                                                        .session
-                                                        .request_attestation(),
+                                                    &connection_state.session,
                                                 )
                                                 .await;
                                             connection_state
@@ -1368,11 +1366,15 @@ pub async fn run_main_with_transport_options(
                                 });
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                // TODO(jif) handle lag.
-                                // Assumes thread creation volume is low enough that lag never happens.
-                                // If it does, we log and continue without resyncing to avoid attaching
-                                // listeners for threads that should remain unsubscribed.
-                                warn!("thread_created receiver lagged; skipping resync");
+                                let connection_ids = connections.iter()
+                                    .filter(|(_, state)| state.session.initialized())
+                                    .map(|(id, _)| *id)
+                                    .collect();
+                                let processor = Arc::clone(&processor);
+                                // Reuse exact-runtime/idempotent attachment; never add an event reader.
+                                thread_listener_tasks.spawn(async move {
+                                    processor.resync_created_thread_listeners(connection_ids).await;
+                                });
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                                 listen_for_threads = false;

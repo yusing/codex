@@ -632,7 +632,7 @@ fn tool_exposure_with_namespace_override(
 /// Run after namespace overrides so eligible third-party tools always remain deferred.
 fn enforce_strict_3p_tools(
     turn_context: &TurnContext,
-    model_info: &ModelInfo,
+    _model_info: &ModelInfo,
     registry: &mut ToolRegistry,
 ) {
     if !code_mode_only_strict_3p_tools(turn_context) {
@@ -691,7 +691,7 @@ fn build_model_visible_specs(
 
 fn spec_for_model_request(
     turn_context: &TurnContext,
-    model_info: &ModelInfo,
+    _model_info: &ModelInfo,
     exposure: ToolExposure,
     tool_name: &ToolName,
     code_mode_tool_names: &BTreeMap<String, ToolName>,
@@ -882,8 +882,8 @@ fn agent_type_description(
 }
 
 fn is_hidden_by_code_mode_only(
-    turn_context: &TurnContext,
-    model_info: &ModelInfo,
+    _turn_context: &TurnContext,
+    _model_info: &ModelInfo,
     tool_name: &ToolName,
     exposure: ToolExposure,
 ) -> bool {
@@ -982,7 +982,7 @@ fn prepare_function_description_prefixes(
 /// A registered tool alone is not reachable when policy disallows the exec wrapper.
 fn code_mode_tools<'a>(
     turn_context: &'a TurnContext,
-    model_info: &'a ModelInfo,
+    _model_info: &'a ModelInfo,
     registry: &'a ToolRegistry,
 ) -> impl Iterator<Item = (String, Arc<ToolSpec>, &'a RegisteredTool)> {
     let tool_mode = TOOL_MODE;

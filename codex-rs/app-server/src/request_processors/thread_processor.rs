@@ -16,6 +16,9 @@ use super::thread_enrichment::enrich_loaded_threads;
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
 use super::thread_input::can_accept_direct_input;
 use super::thread_input::ensure_direct_input_allowed;
+use super::thread_input::ensure_human_input_allowed;
+use super::thread_input::is_parent_owned_v2_child;
+use super::thread_input::loaded_can_accept_direct_input;
 use super::thread_lifecycle::thread_closing_for_resume;
 use super::*;
 use crate::connection_rpc_gate::ConnectionRpcGate;
@@ -505,7 +508,6 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
     pub(crate) thread_manager: Arc<ThreadManager>,
-    pub(super) feature_use: Arc<std::sync::Mutex<crate::feature_use::FeatureUse>>,
     pub(super) outgoing: Arc<OutgoingMessageSender>,
     pub(super) arg0_paths: Arg0DispatchPaths,
     pub(super) config: Arc<Config>,
@@ -567,7 +569,6 @@ impl ThreadRequestProcessor {
         Self {
             auth_manager,
             thread_manager,
-            feature_use: Arc::default(),
             outgoing,
             arg0_paths,
             config,
@@ -887,34 +888,6 @@ impl ThreadRequestProcessor {
         }
     }
 
-    pub(crate) fn feature_use_record(
-        &self,
-        fact: codex_app_server_protocol::FeatureUseFact,
-    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        if fact.thread_id.is_empty() || fact.operation.is_empty() {
-            return Err(invalid_params(
-                "feature use requires an actor and operation identity",
-            ));
-        }
-        self.feature_use.lock().unwrap().record(fact);
-        Ok(Some(codex_app_server_protocol::FeatureUseRecordResponse {}.into()))
-    }
-
-    pub(crate) fn feature_use_read(
-        &self,
-        params: codex_app_server_protocol::FeatureUseReadParams,
-    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        if params.threads.is_empty() || params.threads.iter().any(String::is_empty) {
-            return Err(invalid_params(
-                "feature use requires nonempty actor identities",
-            ));
-        }
-        let threads = self.feature_use.lock().unwrap().read(params.threads);
-        Ok(Some(
-            codex_app_server_protocol::FeatureUseReadResponse { threads }.into(),
-        ))
-    }
-
     pub(crate) async fn thread_compact_start(
         &self,
         request_id: &ConnectionRequestId,
@@ -934,9 +907,16 @@ impl ThreadRequestProcessor {
             return Err(invalid_params("contextResetRequestId must not be empty"));
         }
         let (_, thread) = self.load_thread(&params.thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
-        self.submit_core_op(request_id, thread.as_ref(), Op::CancelCompact { request_id: params.context_reset_request_id })
-            .await.map_err(|err| internal_error(format!("failed to cancel compaction: {err}")))?;
+        ensure_human_input_allowed(thread.as_ref()).await?;
+        self.submit_core_op(
+            request_id,
+            thread.as_ref(),
+            Op::CancelCompact {
+                request_id: params.context_reset_request_id,
+            },
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to cancel compaction: {err}")))?;
         Ok(Some(ThreadCompactCancelResponse {}.into()))
     }
 
@@ -1265,7 +1245,7 @@ impl ThreadRequestProcessor {
         } else {
             true
         };
-        // Core termination can precede delivery of its buffered terminal facts.
+        // Core termination can precede publication of its buffered terminal receipts.
         // Join the existing producer receipt before teardown cancels its listener.
         let drained = if shutdown_complete {
             match shutdown_drain {
@@ -1281,16 +1261,7 @@ impl ThreadRequestProcessor {
             false
         };
         if !drained {
-            self.outgoing
-                .send_server_notification(ServerNotification::FeatureUseUnavailable(
-                    codex_app_server_protocol::FeatureUseUnavailableNotification {
-                        thread_id: thread_id.to_string(),
-                        message: format!(
-                            "native feature producer did not drain before thread {operation}"
-                        ),
-                    },
-                ))
-                .await;
+            warn!("native event producer did not drain before thread {operation}");
         }
         self.finalize_thread_teardown(thread_id).await;
         Ok(())
@@ -1481,6 +1452,8 @@ impl ThreadRequestProcessor {
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
+        // Notification borrows stop before the task drain; tree shutdown follows it.
+        self.thread_watch_manager.stop_observations();
         self.background_tasks.close();
         if tokio::time::timeout(Duration::from_secs(10), self.background_tasks.wait())
             .await
@@ -2678,25 +2651,45 @@ impl ThreadRequestProcessor {
         request_id: &ConnectionRequestId,
         params: ThreadCompactStartParams,
     ) -> Result<ThreadCompactStartResponse, JSONRPCErrorError> {
-        let ThreadCompactStartParams { thread_id, reload, context_reset_request_id } = params;
+        let ThreadCompactStartParams {
+            thread_id,
+            reload,
+            context_reset_request_id,
+        } = params;
 
         let (_, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
+        ensure_human_input_allowed(thread.as_ref()).await?;
         self.config_manager
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
             .map_err(|error| config_load_error(&error))?;
-        if context_reset_request_id.as_ref().is_some_and(String::is_empty) {
+        if context_reset_request_id
+            .as_ref()
+            .is_some_and(String::is_empty)
+        {
             return Err(invalid_params("contextResetRequestId must not be empty"));
         }
         if context_reset_request_id.is_some()
-            && !thread.config().await.features.enabled(codex_features::Feature::TokenBudget)
+            && !thread
+                .config()
+                .await
+                .features
+                .enabled(codex_features::Feature::TokenBudget)
         {
-            return Err(invalid_params("correlated context reset requires token_budget"));
+            return Err(invalid_params(
+                "correlated context reset requires token_budget",
+            ));
         }
-        self.submit_core_op(request_id, thread.as_ref(), Op::Compact { reload, context_reset_request_id })
-            .await
-            .map_err(|err| internal_error(format!("failed to start compaction: {err}")))?;
+        self.submit_core_op(
+            request_id,
+            thread.as_ref(),
+            Op::Compact {
+                reload,
+                context_reset_request_id,
+            },
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to start compaction: {err}")))?;
         Ok(ThreadCompactStartResponse {})
     }
 
@@ -2803,16 +2796,17 @@ impl ThreadRequestProcessor {
             return Err(internal_error("local environment is not configured"));
         }
 
-        self.submit_core_op(
-            request_id,
-            thread.as_ref(),
-            Op::RunUserShellCommand {
+        thread
+            .start_user_shell_command(
                 command,
                 timeout_ms,
-            },
-        )
-        .await
-        .map_err(|err| internal_error(format!("failed to start shell command: {err}")))?;
+                self.request_trace_context(request_id).await,
+            )
+            .await
+            .map_err(|err| match err.details() {
+                CodexErrorDetails::InvalidRequest(_) => invalid_request(err.to_string()),
+                _ => internal_error(format!("failed to start shell command: {err}")),
+            })?;
         Ok(ThreadShellCommandResponse {})
     }
 
@@ -4044,6 +4038,18 @@ impl ThreadRequestProcessor {
         self.thread_watch_manager.subscribe_running_turn_count()
     }
 
+    pub(crate) async fn resync_created_thread_listeners(&self, connection_ids: Vec<ConnectionId>) {
+        for thread_id in self.thread_manager.list_thread_ids().await {
+            let Ok(thread) = self.thread_manager.get_thread(thread_id).await else {
+                continue;
+            };
+            if thread.has_pending_created_notification() {
+                self.try_attach_thread_listener(thread_id, thread, connection_ids.clone())
+                    .await;
+            }
+        }
+    }
+
     pub(crate) async fn try_attach_thread_listener(
         &self,
         thread_id: ThreadId,
@@ -4228,7 +4234,7 @@ impl ThreadRequestProcessor {
         // Parent-owned V2 children must resume through their owner, not caller configuration.
         if let InitialHistory::Resumed(resumed_history) = &thread_history
             && let Some((source, _)) = thread_history.get_resumed_session_sources()
-            && !can_accept_direct_input(thread_history.get_multi_agent_version(), &source)
+            && is_parent_owned_v2_child(thread_history.get_multi_agent_version(), &source)
         {
             let ThreadResumeTarget::Client(request_id) = target else {
                 return Ok(ControlFlow::Break(()));
@@ -4863,7 +4869,7 @@ impl ThreadRequestProcessor {
                     matches!(existing_thread.agent_status().await, AgentStatus::Running);
 
                 // Parent-owned V2 children must not be rebuilt from public resume overrides.
-                if can_accept_direct_input(
+                if !is_parent_owned_v2_child(
                     existing_thread.multi_agent_version(),
                     &config_snapshot.session_source,
                 ) && !has_subscribers
@@ -4977,8 +4983,8 @@ impl ThreadRequestProcessor {
             thread_summary.session_id = existing_thread.startup_metadata().session_id.to_string();
             thread_summary.thread_source = config_snapshot.thread_source.clone().map(Into::into);
             apply_live_thread_settings(&mut thread_summary, &config_snapshot);
-            thread_summary.can_accept_direct_input = Some(can_accept_direct_input(
-                existing_thread.multi_agent_version(),
+            thread_summary.can_accept_direct_input = Some(loaded_can_accept_direct_input(
+                &existing_thread,
                 &config_snapshot.session_source,
             ));
             let instruction_sources = existing_thread.legacy_instruction_sources().await;
@@ -5280,10 +5286,8 @@ impl ThreadRequestProcessor {
     ) -> std::result::Result<Thread, String> {
         let config_snapshot = thread.config_snapshot().await;
         let session_id = thread.startup_metadata().session_id.to_string();
-        let can_accept_direct_input = can_accept_direct_input(
-            thread.multi_agent_version(),
-            &config_snapshot.session_source,
-        );
+        let can_accept_direct_input =
+            loaded_can_accept_direct_input(thread, &config_snapshot.session_source);
         let thread = match thread_history {
             InitialHistory::Resumed(resumed) => {
                 let fallback_provider = config_snapshot.model_provider_id.as_str();
@@ -6021,8 +6025,8 @@ impl ThreadRequestProcessor {
         if let Some(name) = source_thread_name {
             set_thread_name_from_title(&mut thread, name);
         }
-        thread.can_accept_direct_input = Some(can_accept_direct_input(
-            forked_thread.multi_agent_version(),
+        thread.can_accept_direct_input = Some(loaded_can_accept_direct_input(
+            &forked_thread,
             &config_snapshot.session_source,
         ));
         thread.session_id = session_configured.session_id.to_string();
@@ -7125,13 +7129,18 @@ fn build_thread_from_loaded_snapshot(
     config_snapshot: &ThreadConfigSnapshot,
     loaded_thread: &CodexThread,
 ) -> Thread {
-    build_thread_from_snapshot(
+    let mut thread = build_thread_from_snapshot(
         thread_id,
         loaded_thread.startup_metadata().session_id.to_string(),
         loaded_thread.multi_agent_version(),
         config_snapshot,
         loaded_thread.rollout_path(),
-    )
+    );
+    thread.can_accept_direct_input = Some(loaded_can_accept_direct_input(
+        loaded_thread,
+        &config_snapshot.session_source,
+    ));
+    thread
 }
 
 #[cfg(test)]

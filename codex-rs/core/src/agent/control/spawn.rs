@@ -7,6 +7,7 @@ use super::*;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::history::load_agent_model_context;
 use crate::agent::history::prepare_forked_history;
+use crate::agent::history::prepare_initial_sources;
 use crate::agent::role::apply_role_to_config;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
@@ -236,9 +237,54 @@ impl LocalAgentControl {
     /// Keep the returned residency pin until the caller has submitted its input.
     pub(crate) async fn ensure_v2_agent_loaded(
         &self,
+        config: Config,
+        thread_id: ThreadId,
+        parent: Option<Arc<CodexThread>>,
+    ) -> CodexResult<Option<tokio::sync::OwnedRwLockReadGuard<()>>> {
+        self.runtime.ensure_agent_known(thread_id)?;
+        let stored_thread = if self.runtime.for_actor(thread_id).is_err() {
+            let _reading = self.runtime.admit_start()?;
+            let state = self.runtime.upgrade()?;
+            Some(tokio::select! {
+                biased;
+                _ = self.runtime.shutdown.cancelled() => return Err(super::runtime_shutting_down()),
+                stored = state.read_stored_thread(ReadThreadParams {
+                    thread_id,
+                    include_archived: true,
+                    include_history: false,
+                }) => stored?,
+            })
+        } else {
+            None
+        };
+        // A cold actor may have no path. Its retained startup record, not a
+        // missing display path, establishes the same immutable lifetime parent.
+        let parent_id = stored_thread.as_ref().map_or_else(
+            || self.runtime.registered_parent(thread_id),
+            |stored| {
+                stored
+                    .parent_thread_id
+                    .or_else(|| stored.source.parent_thread_id())
+            },
+        );
+        let runtime = self.runtime.for_actor_start(thread_id, parent_id)?;
+        let control = Self {
+            runtime: runtime.clone(),
+            ..self.clone()
+        };
+        tokio::select! {
+            biased;
+            _ = runtime.shutdown.cancelled() => Err(super::runtime_shutting_down()),
+            result = Box::pin(control.ensure_v2_agent_loaded_inner(config, thread_id, parent, stored_thread)) => result,
+        }
+    }
+
+    async fn ensure_v2_agent_loaded_inner(
+        &self,
         mut config: Config,
         thread_id: ThreadId,
         parent: Option<Arc<CodexThread>>,
+        stored_thread: Option<codex_thread_store::StoredThread>,
     ) -> CodexResult<Option<tokio::sync::OwnedRwLockReadGuard<()>>> {
         let membership = self.runtime.admit_start()?;
         let state = self.runtime.upgrade()?;
@@ -292,13 +338,19 @@ impl LocalAgentControl {
             .map(|evicted| evicted.config.service_tier.clone());
         let evicted_environments = evicted_environments.map(|environments| environments.bindings);
 
-        let stored_thread = state
-            .read_stored_thread(ReadThreadParams {
-                thread_id,
-                include_archived: true,
-                include_history: false,
-            })
-            .await?;
+        let stored_thread = match stored_thread {
+            Some(stored) => stored,
+            None => {
+                state
+                    .read_stored_thread(ReadThreadParams {
+                        thread_id,
+                        include_archived: true,
+                        include_history: false,
+                    })
+                    .await?
+            }
+        };
+        let stored_cwd = stored_thread.cwd.clone();
         let stored_model = stored_thread.model.clone();
         let stored_model_provider = stored_thread.model_provider.clone();
         let stored_reasoning_effort = stored_thread.reasoning_effort.clone();
@@ -351,7 +403,6 @@ impl LocalAgentControl {
         } else {
             None
         };
-        config.model_reasoning_effort = stored_reasoning_effort;
         if let Some(role_name) = session_source.get_agent_role() {
             let runtime_approval_policy = config.permissions.approval_policy.value();
             let runtime_approvals_reviewer = config.approvals_reviewer;
@@ -388,6 +439,7 @@ impl LocalAgentControl {
                     CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
                 })?;
         }
+        config.model_reasoning_effort = stored_reasoning_effort;
         config.service_tier = independent_service_tier.unwrap_or_else(|| self.root_service_tier());
         if let Some(model) = stored_model {
             config.model = Some(model);
@@ -407,129 +459,147 @@ impl LocalAgentControl {
         let parent_thread_id = owner_thread_id
             .or_else(|| initial_history.get_resumed_parent_thread_id())
             .or(stored_parent_thread_id);
-        let (inherited_environments, inherited_exec_policy, client_mcp_extensions) = if let Some(
-            (parent, parent_environments),
-        ) =
-            parent.as_ref()
-        {
-            let parent_config = parent.session.get_config().await;
-            if !crate::exec_policy::child_uses_parent_exec_policy(&parent_config, &config) {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "cannot resume multi-agent v2 child {thread_id}: parent execution policy has changed; retry through the parent"
-                )));
-            }
-            if let Some(selections) = environment_selections.as_mut() {
-                let parent_selections = parent_environments.all_selections();
-                let ready_parent = parent_environments.refresh_readiness();
-                let ready_evicted = evicted_environments
-                    .as_ref()
-                    .map(TurnEnvironmentSnapshot::refresh_readiness);
-                for selection in selections {
-                    let environment_id = &selection.environment_id;
-                    let invalid_environment = |reason: &str| {
-                        CodexErr::InvalidRequest(format!(
-                            "cannot resume multi-agent v2 child {thread_id}: cached environment {environment_id} {reason}"
-                        ))
-                    };
-                    // A changed parent selection does not revoke the child's retained binding.
-                    // If the parent still configures this workspace, keep enforcing its current
-                    // roots and permissions rather than restoring superseded authority.
-                    let owner_environments = if parent_selections.iter().any(|parent_selection| {
-                        parent_selection.environment_id == selection.environment_id
-                            && parent_selection.cwd == selection.cwd
-                    }) {
-                        &ready_parent
-                    } else {
-                        ready_evicted.as_ref().unwrap_or(&ready_parent)
-                    };
-                    let owner_environment = owner_environments
-                        .turn_environments()
-                        .find(|environment| environment.selection.has_same_workspace(selection))
-                        .ok_or_else(|| {
-                            invalid_environment("has no matching ready environment binding")
-                        })?;
-                    let owner_config = owner_environment.config();
-                    let child_config = match &selection.config {
-                        EnvironmentConfigState::FromThread => {
-                            // Pin current owner authority instead of re-inferring child settings.
-                            selection.config = EnvironmentConfigState::Ready(owner_config.clone());
+        let (mut inherited_environments, inherited_exec_policy, client_mcp_extensions) =
+            if let Some((parent, parent_environments)) = parent.as_ref() {
+                let parent_config = parent.session.get_config().await;
+                if !crate::exec_policy::child_uses_parent_exec_policy(&parent_config, &config) {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "cannot resume multi-agent v2 child {thread_id}: parent execution policy has changed; retry through the parent"
+                    )));
+                }
+                if let Some(selections) = environment_selections.as_mut() {
+                    let parent_selections = parent_environments.all_selections();
+                    let ready_parent = parent_environments.refresh_readiness();
+                    let ready_evicted = evicted_environments
+                        .as_ref()
+                        .map(TurnEnvironmentSnapshot::refresh_readiness);
+                    for selection in selections {
+                        let environment_id = &selection.environment_id;
+                        let invalid_environment = |reason: &str| {
+                            CodexErr::InvalidRequest(format!(
+                                "cannot resume multi-agent v2 child {thread_id}: cached environment {environment_id} {reason}"
+                            ))
+                        };
+                        // A changed parent selection does not revoke the child's retained binding.
+                        // If the parent still configures this workspace, keep enforcing its current
+                        // roots and permissions rather than restoring superseded authority.
+                        let owner_environments =
+                            if parent_selections.iter().any(|parent_selection| {
+                                parent_selection.environment_id == selection.environment_id
+                                    && parent_selection.cwd == selection.cwd
+                            }) {
+                                &ready_parent
+                            } else {
+                                ready_evicted.as_ref().unwrap_or(&ready_parent)
+                            };
+                        let owner_environment = owner_environments
+                            .turn_environments()
+                            .find(|environment| environment.selection.has_same_workspace(selection))
+                            .ok_or_else(|| {
+                                invalid_environment("has no matching ready environment binding")
+                            })?;
+                        let owner_config = owner_environment.config();
+                        let child_config = match &selection.config {
+                            EnvironmentConfigState::FromThread => {
+                                // Pin current owner authority instead of re-inferring child settings.
+                                selection.config =
+                                    EnvironmentConfigState::Ready(owner_config.clone());
+                                continue;
+                            }
+                            EnvironmentConfigState::Ready(config) => config,
+                            EnvironmentConfigState::Pending | EnvironmentConfigState::Failed(_) => {
+                                return Err(invalid_environment("configuration is not ready"));
+                            }
+                        };
+                        let mut bounded_config = child_config.clone();
+                        bounded_config.permission_profile = owner_config.permission_profile.clone();
+                        if bounded_config != *owner_config {
+                            return Err(invalid_environment(
+                                "configuration differs from the current parent",
+                            ));
+                        }
+                        if child_config.permission_profile == owner_config.permission_profile {
                             continue;
                         }
-                        EnvironmentConfigState::Ready(config) => config,
-                        EnvironmentConfigState::Pending | EnvironmentConfigState::Failed(_) => {
-                            return Err(invalid_environment("configuration is not ready"));
+                        if owner_environment.environment().is_remote() {
+                            return Err(invalid_environment(
+                                "permissions changed on a remote executor",
+                            ));
                         }
-                    };
-                    let mut bounded_config = child_config.clone();
-                    bounded_config.permission_profile = owner_config.permission_profile.clone();
-                    if bounded_config != *owner_config {
-                        return Err(invalid_environment(
-                            "configuration differs from the current parent",
-                        ));
-                    }
-                    if child_config.permission_profile == owner_config.permission_profile {
-                        continue;
-                    }
-                    if owner_environment.environment().is_remote() {
-                        return Err(invalid_environment(
-                            "permissions changed on a remote executor",
-                        ));
-                    }
-                    let cwd = selection.cwd.to_abs_path().map_err(|_| {
-                        invalid_environment("working directory is not a local absolute path")
-                    })?;
-                    let roots = owner_environment
-                        .workspace_roots()
-                        .iter()
-                        .map(PathUri::to_abs_path)
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|_| {
-                            invalid_environment("workspace roots are not local absolute paths")
+                        let cwd = selection.cwd.to_abs_path().map_err(|_| {
+                            invalid_environment("working directory is not a local absolute path")
                         })?;
-                    let authority = owner_environment
-                        .permission_profile()
-                        .clone()
-                        .materialize_project_roots_with_workspace_roots(&roots);
-                    let requested = child_config
-                        .permission_profile
-                        .permission_profile()
-                        .clone()
-                        .materialize_project_roots_with_workspace_roots(&roots);
-                    let permissions =
-                        intersect_effective_permission_profiles(&authority, &requested, &cwd)
-                            .map_err(|err| {
+                        let roots = owner_environment
+                            .workspace_roots()
+                            .iter()
+                            .map(PathUri::to_abs_path)
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(|_| {
+                                invalid_environment("workspace roots are not local absolute paths")
+                            })?;
+                        let authority = owner_environment
+                            .permission_profile()
+                            .clone()
+                            .materialize_project_roots_with_workspace_roots(&roots);
+                        let requested = child_config
+                            .permission_profile
+                            .permission_profile()
+                            .clone()
+                            .materialize_project_roots_with_workspace_roots(&roots);
+                        let permissions =
+                            intersect_effective_permission_profiles(&authority, &requested, &cwd)
+                                .map_err(|err| {
                                 invalid_environment(&format!(
                                     "permissions cannot be intersected safely: {err}"
                                 ))
                             })?;
-                    bounded_config.permission_profile =
-                        PermissionProfileSnapshot::legacy(permissions);
-                    selection.config = EnvironmentConfigState::Ready(bounded_config);
-                }
-            }
-            (
-                Some(
-                    evicted_environments
-                        .as_ref()
-                        .unwrap_or(parent_environments)
-                        .clone(),
-                ),
-                Some(Arc::clone(&parent.session.services.exec_policy)),
-                Some(parent.client_mcp_extensions()),
-            )
-        } else {
-            (
-                match &evicted_environments {
-                    Some(environments) => Some(environments.clone()),
-                    None => {
-                        self.inherited_environments_for_source(&state, Some(&session_source))
-                            .await
+                        bounded_config.permission_profile =
+                            PermissionProfileSnapshot::legacy(permissions);
+                        selection.config = EnvironmentConfigState::Ready(bounded_config);
                     }
-                },
-                inherited_exec_policy_for_source(&state, Some(&session_source), &config).await,
-                None,
-            )
-        };
+                }
+                (
+                    Some(
+                        evicted_environments
+                            .as_ref()
+                            .unwrap_or(parent_environments)
+                            .clone(),
+                    ),
+                    Some(Arc::clone(&parent.session.services.exec_policy)),
+                    Some(parent.client_mcp_extensions()),
+                )
+            } else {
+                (
+                    match &evicted_environments {
+                        Some(environments) => Some(environments.clone()),
+                        None => {
+                            self.inherited_environments_for_source(&state, Some(&session_source))
+                                .await
+                        }
+                    },
+                    inherited_exec_policy_for_source(&state, Some(&session_source), &config).await,
+                    None,
+                )
+            };
+        if environment_selections.is_none() {
+            config.cwd =
+                codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&stored_cwd)
+                    .map_err(|error| {
+                        CodexErr::InvalidRequest(format!("cannot restore child cwd: {error}"))
+                    })?;
+            if let Some(environments) = inherited_environments.as_ref() {
+                inherited_environments = Some(
+                    crate::agent::child_config::prepare_spawn_environments_from_caller(
+                        environments,
+                        environments,
+                        Some(&stored_cwd.to_string_lossy()),
+                        &mut config,
+                    )
+                    .await
+                    .map_err(CodexErr::InvalidRequest)?,
+                );
+            }
+        }
         let inherited_parent = if let Some((parent, _)) = parent.as_ref() {
             Some(Arc::clone(parent))
         } else if let Some(parent_thread_id) = parent_thread_id {
@@ -607,7 +677,7 @@ impl LocalAgentControl {
                             )
                             .await;
                     }
-                    state.notify_thread_created(reloaded_thread.thread_id);
+                    state.notify_thread_created(&reloaded_thread.thread);
                     Ok(residency_pin)
                 })
                 .await?
@@ -633,6 +703,43 @@ impl LocalAgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
+        let parent = session_source
+            .as_ref()
+            .and_then(SessionSource::parent_thread_id)
+            .or(options.parent_thread_id);
+        let runtime = match parent {
+            Some(parent) => match self.runtime.for_actor(parent) {
+                Ok(runtime) => runtime,
+                Err(_) => self
+                    .runtime
+                    .for_actor_start(parent, self.runtime.registered_parent(parent))?,
+            },
+            None => self.runtime.clone(),
+        };
+        let control = Self {
+            runtime: runtime.clone(),
+            ..self.clone()
+        };
+        tokio::select! {
+            biased;
+            _ = runtime.shutdown.cancelled() => Err(super::runtime_shutting_down()),
+            result = Box::pin(control.spawn_agent_internal_inner(config, initial_input, session_source, options)) => result,
+        }
+    }
+
+    async fn spawn_agent_internal_inner(
+        &self,
+        config: Config,
+        mut initial_input: SpawnInitialInput,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+    ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
+        if options.fork_mode.is_some() && options.preload.is_some() {
+            return Err(CodexErr::InvalidRequest(
+                "Full-history forks cannot preload sources; omit preload or start fresh."
+                    .to_string(),
+            ));
+        }
         let membership = self.runtime.admit_start()?;
         let spawn_started_at = Instant::now();
         let state = self.runtime.upgrade()?;
@@ -789,6 +896,12 @@ impl LocalAgentControl {
             membership,
             SpawnOwner::Local,
         );
+        if let Some(parent) = parent_thread_id {
+            pending_spawn.bind_child_runtime(
+                self.runtime
+                    .for_actor_start(child_thread_id, Some(parent))?,
+            )?;
+        }
         let edge_write_started_at = Instant::now();
         let control = self.clone();
         let source = notification_source.clone();
@@ -849,6 +962,44 @@ impl LocalAgentControl {
             None
         };
 
+        // Validated reserved identity must be discoverable before source acquisition
+        // can prompt. The guard rolls it back on refusal; no work is admitted yet.
+        pending_spawn.retain_registry_membership(Arc::clone(&self.runtime.registry));
+        reservation.commit_provisional(agent_metadata.clone());
+        // The recipient's event reader must exist before a source reader can request approval.
+        state.notify_thread_created(&new_thread.thread);
+        if multi_agent_version == MultiAgentVersion::V2 {
+            let cancellation = new_thread
+                .thread
+                .session
+                .services
+                .local_agent_runtime
+                .shutdown
+                .child_token();
+            let _cancel_on_drop = cancellation.clone().drop_guard();
+            let communication = match &mut initial_input {
+                SpawnInitialInput::InterAgentCommunication(communication, _) => Some(communication),
+                SpawnInitialInput::UserInput(_) => None,
+            };
+            if let Err(error) = prepare_initial_sources(
+                &new_thread.thread,
+                communication,
+                options.preload.as_ref(),
+                &cancellation,
+            )
+            .await
+            {
+                pending_spawn.reject().await;
+                if options
+                    .preload
+                    .as_ref()
+                    .is_some_and(|selection| !selection.sources.is_empty())
+                    && let Some(parent) = parent_thread_id
+                {
+                }
+                return Err(error.with_agent_context(AgentErrorContext::InputAdmission));
+            }
+        }
         let start_options = TurnStartOptions {
             parent_turn_id: options.parent_turn_id,
             turn_trigger: options.turn_trigger,
@@ -857,6 +1008,8 @@ impl LocalAgentControl {
             ..Default::default()
         };
         let input_admission_started_at = Instant::now();
+        // Input admission authenticates the provisional identity. Ordinary human
+        // controls remain fenced until the guard disarms after accepted return.
         match initial_input {
             SpawnInitialInput::UserInput(input) => {
                 self.send_input(new_thread.thread_id, input, start_options)
@@ -883,16 +1036,11 @@ impl LocalAgentControl {
             Some(config) => config,
             None => new_thread.thread.config_snapshot().await,
         };
-        reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(new_thread.thread_id);
         }
         let _membership = pending_spawn.disarm();
 
-        // Notify a new thread has been created. This notification will be processed by clients
-        // to subscribe or drain this newly created thread.
-        // TODO(jif) add helper for drain
-        state.notify_thread_created(new_thread.thread_id);
         if multi_agent_version != MultiAgentVersion::V2 {
             let child_reference = agent_metadata
                 .agent_path
@@ -1101,7 +1249,7 @@ impl LocalAgentControl {
         reservation.commit(agent_metadata.clone());
         // Resumed threads are re-registered in-memory and need the same listener
         // attachment path as freshly spawned threads.
-        state.notify_thread_created(resumed_thread.thread_id);
+        state.notify_thread_created(&resumed_thread.thread);
         if multi_agent_version != MultiAgentVersion::V2 {
             let child_reference = agent_metadata
                 .agent_path
@@ -1124,5 +1272,37 @@ impl LocalAgentControl {
             .await;
 
         Ok((resumed_thread.thread_id, multi_agent_version))
+    }
+}
+
+impl LocalAgentControl {
+    pub(crate) async fn spawn_prepared_actor(
+        &self,
+        identity: &crate::thread_spawn::SpawnCallerIdentity,
+        settings: crate::thread_spawn::ChildSpawnSettings,
+        path: AgentPath,
+        message: crate::agent::types::AgentMessage,
+    ) -> CodexResult<crate::thread_spawn::ThreadSpawnResult> {
+        use crate::agent::api::AgentControl;
+        use crate::agent::api::AgentInput;
+        use crate::agent::api::SpawnRequest;
+        use crate::agent::types::MessageDeliveryMode;
+        let (agent, config) = self
+            .spawn(SpawnRequest {
+                caller: identity.actor_id,
+                config: settings.config,
+                input: AgentInput::Message {
+                    message,
+                    mode: MessageDeliveryMode::TriggerTurn,
+                },
+                source: settings.source,
+                options: settings.options,
+            })
+            .await?;
+        Ok(crate::thread_spawn::ThreadSpawnResult {
+            agent,
+            config,
+            task_name: path,
+        })
     }
 }

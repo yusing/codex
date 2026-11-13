@@ -1,3 +1,4 @@
+use anyhow::Context;
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
@@ -117,6 +118,10 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
 
     let server = responses::start_mock_server().await;
     let mut spawn_args = json!({"message": CHILD_PROMPT, "task_name": "worker"});
+    if case == "no history" {
+        // An unavailable fragment is retained source evidence, not a rejected preload.
+        spawn_args["preload"] = json!({"sources": ["@missing-preload.txt"]});
+    }
     if let Some(fork_turns) = fork_turns {
         spawn_args["fork_turns"] = json!(fork_turns);
     }
@@ -217,6 +222,46 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
             },
         })
         .await?;
+    if case == "no history" {
+        let source: serde_json::Value = timeout(
+            READ_TIMEOUT,
+            app_server.read_notification("rawResponseItem/completed"),
+        )
+        .await??;
+        let fact = &source["sourceAcquisition"];
+        assert_eq!(fact["purpose"], "preload");
+        assert!(!fact["id"].as_str().unwrap().is_empty());
+        assert_eq!(fact["sources"][0]["kind"], "file");
+        assert_eq!(fact["sources"][0]["success"], false);
+        assert_eq!(fact["sources"][0]["reference"], "@missing-preload.txt");
+    }
+    let directed: serde_json::Value = timeout(
+        READ_TIMEOUT,
+        app_server.read_notification("rawResponseItem/completed"),
+    )
+    .await??;
+    assert_eq!(directed["item"]["type"], "agent_message");
+    assert_eq!(directed["item"]["author"], "/root");
+    assert_eq!(directed["item"]["recipient"], "/root/worker");
+    assert!(
+        directed["item"]["content"]
+            .to_string()
+            .contains(CHILD_PROMPT)
+    );
+    timeout(
+        READ_TIMEOUT,
+        app_server.read_stream_until_matching_notification(
+            "parent completion after child admission",
+            |notification| {
+                notification.method == "turn/completed"
+                    && notification
+                        .params
+                        .as_ref()
+                        .is_some_and(|params| params["threadId"] == thread.id)
+            },
+        ),
+    )
+    .await??;
     let child_request = timeout(READ_TIMEOUT, async {
         loop {
             if let Some(request) = child_request
@@ -288,16 +333,16 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     Ok(())
 }
 
-/// Compacted full forks preserve the prefix by default and support explicit instruction filtering.
+/// Compacted full forks preserve the complete prefix despite legacy filtering settings.
 #[test_case("preserved"; "preserved")]
-#[test_case("filtered"; "filtered")]
+#[test_case("legacy filtering disabled"; "complete prefix despite legacy filtering setting")]
 #[tokio::test]
 async fn compacted_full_history_fork_applies_child_developer_instructions(
     case: &str,
 ) -> Result<()> {
     const COMPACT_SETUP_PROMPT: &str = "prepare the parent for compaction";
     const COMPACT_PROMPT: &str = "summarize the compacted parent";
-    const COMPACTED_SUMMARY: &str = "preserved compacted parent summary";
+    const HISTORY_AFTER_RESET: &str = "parent history after native reset";
     const SPAWN_PROMPT: &str = "spawn the compacted-history worker";
     const CHILD_PROMPT: &str = "inspect the compacted parent history";
     const SETUP_CALL_ID: &str = "trigger-parent-compaction";
@@ -316,13 +361,8 @@ async fn compacted_full_history_fork_applies_child_developer_instructions(
                 ),
             ]),
             responses::sse(vec![
-                responses::ev_response_created("parent-compaction"),
-                responses::ev_assistant_message("parent-summary", COMPACTED_SUMMARY),
-                responses::ev_completed_with_tokens("parent-compaction", /*total_tokens*/ 10),
-            ]),
-            responses::sse(vec![
                 responses::ev_response_created("parent-after-compaction"),
-                responses::ev_assistant_message("parent-ready", "parent history compacted"),
+                responses::ev_assistant_message("parent-ready", HISTORY_AFTER_RESET),
                 responses::ev_completed_with_tokens(
                     "parent-after-compaction",
                     /*total_tokens*/ 10,
@@ -381,7 +421,7 @@ async fn compacted_full_history_fork_applies_child_developer_instructions(
     let mut feature_config = format!(
         "[features.multi_agent_v2]\nenabled = true\nsubagent_developer_instructions = {CHILD_INSTRUCTIONS:?}"
     );
-    if case == "filtered" {
+    if case == "legacy filtering disabled" {
         feature_config.push_str("\npreserve_fork_prefix = false");
     }
     MockResponsesConfig::new(&server.uri())
@@ -414,16 +454,30 @@ async fn compacted_full_history_fork_applies_child_developer_instructions(
             ..Default::default()
         }),
     )
-    .await??;
+    .await
+    .context("parent native-reset turn deadline")??;
 
+    timeout(
+        READ_TIMEOUT,
+        app_server.read_stream_until_matching_notification("native inline reset", |notification| {
+            notification.method == "thread/contextReset"
+                && notification.params.as_ref().is_some_and(|params| {
+                    params["threadId"] == thread.id
+                        && params["status"] == "completed"
+                        && params["inline"] == true
+                })
+        }),
+    )
+    .await
+    .context("native inline reset receipt deadline")??;
     let compaction_requests = compaction_requests.requests();
-    assert_eq!(compaction_requests.len(), 3);
+    assert_eq!(compaction_requests.len(), 2);
     assert!(
-        compaction_requests[1].body_contains_text(COMPACT_PROMPT),
-        "the setup turn should perform actual mid-turn compaction"
+        !compaction_requests[1].body_contains_text(COMPACT_PROMPT),
+        "native reset must not request a summary"
     );
     assert!(
-        compaction_requests[2]
+        compaction_requests[1]
             .message_input_texts("developer")
             .iter()
             .any(|text| text == PARENT_INSTRUCTIONS),
@@ -443,6 +497,26 @@ async fn compacted_full_history_fork_applies_child_developer_instructions(
             },
         })
         .await?;
+    let assignment = timeout(
+        READ_TIMEOUT,
+        app_server.read_stream_until_matching_notification(
+            "post-reset child assignment",
+            |notification| {
+                notification.method == "error"
+                    || (notification.method == "rawResponseItem/completed"
+                        && notification.params.as_ref().is_some_and(|params| {
+                            params["item"]["type"] == "agent_message"
+                                && params["item"]["recipient"] == "/root/compacted_worker"
+                        }))
+            },
+        ),
+    )
+    .await
+    .context("post-reset child assignment deadline")??;
+    assert_eq!(
+        assignment.method, "rawResponseItem/completed",
+        "{assignment:?}"
+    );
     let child_request = timeout(READ_TIMEOUT, async {
         loop {
             if let Some(request) = child_request
@@ -455,7 +529,8 @@ async fn compacted_full_history_fork_applies_child_developer_instructions(
             tokio::task::yield_now().await;
         }
     })
-    .await?;
+    .await
+    .context("post-reset full-history child provider request deadline")?;
 
     assert!(
         parent_request
@@ -466,8 +541,8 @@ async fn compacted_full_history_fork_applies_child_developer_instructions(
         "the parent should retain its own developer instructions after compaction"
     );
     assert!(
-        child_request.body_contains_text(COMPACTED_SUMMARY),
-        "the full-history child should inherit the compacted parent summary"
+        child_request.body_contains_text(HISTORY_AFTER_RESET),
+        "the full-history child should inherit the parent's post-reset history"
     );
     let child_developer_texts = child_request.message_input_texts("developer");
     let instructions = child_developer_texts
@@ -477,11 +552,7 @@ async fn compacted_full_history_fork_applies_child_developer_instructions(
         .collect::<Vec<_>>();
     assert_eq!(
         instructions,
-        if case == "filtered" {
-            vec![CHILD_INSTRUCTIONS]
-        } else {
-            vec![PARENT_INSTRUCTIONS, CHILD_INSTRUCTIONS]
-        }
+        vec![PARENT_INSTRUCTIONS, CHILD_INSTRUCTIONS]
     );
 
     Ok(())
@@ -707,7 +778,7 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
             .await?;
         assert_eq!(baseline.thread.id, child_thread_id);
         assert_eq!(baseline.thread.status, ThreadStatus::Idle);
-        assert_eq!(baseline.thread.can_accept_direct_input, Some(false));
+        assert_eq!(baseline.thread.can_accept_direct_input, Some(true));
         assert_eq!(baseline.thread.agent_role.as_deref(), agent_type);
         assert_eq!(baseline.model_provider, "mock_provider");
         assert!(matches!(&baseline.sandbox, SandboxPolicy::ReadOnly { .. }));
@@ -997,6 +1068,20 @@ features.shell_tool = false
             },
         })
         .await?;
+    let directed: serde_json::Value = timeout(
+        READ_TIMEOUT,
+        app_server.read_notification("rawResponseItem/completed"),
+    )
+    .await??;
+    assert_eq!(directed["threadId"], child_thread_id);
+    assert_eq!(directed["item"]["type"], "agent_message");
+    assert_eq!(directed["item"]["author"], "/root");
+    assert_eq!(directed["item"]["recipient"], "/root/worker");
+    assert!(
+        directed["item"]["content"]
+            .to_string()
+            .contains(FOLLOWUP_TASK)
+    );
     let resumed_child_request = timeout(READ_TIMEOUT, async {
         loop {
             if let Some(request) = resumed_child_request

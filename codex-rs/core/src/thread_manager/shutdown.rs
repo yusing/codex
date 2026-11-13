@@ -129,6 +129,118 @@ impl AgentTreeShutdown {
 }
 
 impl ThreadManager {
+    /// End the selected native-owned child generation and its subtree, without
+    /// archiving history or deleting admitted graph identity. Once accepted, the
+    /// tree owns cleanup even if the request/view disconnects.
+    pub async fn end_agent_subtree(
+        &self,
+        root_id: ThreadId,
+        target_id: ThreadId,
+    ) -> CodexResult<Vec<ThreadId>> {
+        let runtime = self.observation_runtime(root_id).await?;
+        runtime.validate_child_target(root_id, target_id)?;
+        let mut selected = runtime.registered_subtree(target_id)?;
+        if runtime.for_actor(target_id).is_err() {
+            runtime.for_actor_start(target_id, runtime.registered_parent(target_id))?;
+        }
+        let teardown = runtime
+            .admit_actor_teardown(target_id)?
+            .into_teardown_guard("actor_end", Some(target_id));
+        let scope = runtime.request_actor_shutdown(target_id)?;
+        let manager = Arc::clone(&self.state);
+        tokio::spawn(async move {
+            // Repeated requests join one generation's teardown. A late waiter
+            // must not settle work belonging to an explicitly restored generation.
+            let _ending = scope.ending.lock().await;
+            if scope.shutdown_completed() {
+                let result = scope.wait().await;
+                teardown.complete();
+                return result.map(|_| selected);
+            }
+            // Session loops, pending starts/restores, cleanup and auxiliaries all
+            // carry this generation's membership. Cancellation is not completion.
+            let mut result = scope.wait().await;
+            for actor in runtime.actors_in_scope(&scope) {
+                if runtime.ensure_agent_known(actor).is_ok() && !selected.contains(&actor) {
+                    selected.push(actor);
+                }
+            }
+            let threads = manager
+                .threads
+                .read()
+                .await
+                .values()
+                .filter(|thread| {
+                    thread
+                        .session
+                        .services
+                        .local_agent_runtime
+                        .actor_scope()
+                        .is_some_and(|actor| scope.contains(actor))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for thread in threads {
+                runtime.retain_ended_thread(&thread).await;
+                let mut threads = manager.threads.write().await;
+                let id = thread.session.thread_id;
+                if threads
+                    .get(&id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &thread))
+                {
+                    threads.remove(&id);
+                    thread.session.services.mcp_runtime.revoke_ema();
+                }
+            }
+            // Physical shutdown can leave an idle logical wait. Reuse its owner;
+            // uncertain external execution deliberately refuses fake interruption.
+            if let Some(ledger) = runtime.work.as_ref() {
+                for actor in selected.iter().rev() {
+                    let settled = async {
+                        if let Some(work) =
+                            ledger.observe_current(*actor).await.map_err(|error| {
+                                CodexErr::Fatal(format!("failed to observe ended work: {error}"))
+                            })?
+                        {
+                            runtime.interrupt_idle_work(work.stamp).await?;
+                        }
+                        Ok::<(), CodexErr>(())
+                    }
+                    .await;
+                    if result.is_ok() {
+                        result = settled;
+                    }
+                }
+            }
+            if let Err(error) = &result {
+                scope.record_failure(AgentTreeShutdownFailure::operation_failed(
+                    "actor_end",
+                    "settle_subtree",
+                    Some(target_id),
+                    codex_protocol::error::CodexErrKind::from(error).into(),
+                ));
+            }
+            runtime.complete_actor_shutdown(&scope);
+            teardown.complete();
+            result.map(|_| selected)
+        })
+        .await?
+    }
+
+    /// Interrupt logical work even when no host turn is active. The response is
+    /// an acknowledgement; terminal state comes from the native work owner.
+    pub async fn interrupt_agent(&self, root_id: ThreadId, target_id: ThreadId) -> CodexResult<()> {
+        let runtime = self.observation_runtime(root_id).await?;
+        if runtime.observation_root(root_id) != Some(root_id)
+            || runtime.observation_root(target_id) != Some(root_id)
+        {
+            return Err(CodexErr::InvalidRequest(
+                "target is not admitted to the requested agent tree".to_owned(),
+            ));
+        }
+        runtime.interrupt_owned_actor(target_id).await
+    }
+
     /// Unloads this exact idle MAv2 child using the manager's local controller backend,
     /// preserving mail and environments for reloading. Host controllers own their eviction
     /// and recovery; managers configured with a host controller factory are rejected.

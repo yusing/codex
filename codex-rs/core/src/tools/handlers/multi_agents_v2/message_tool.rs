@@ -12,6 +12,7 @@ use crate::agent::api::SendRequest;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::types::MessageDeliveryMode;
 use crate::tools::context::FunctionToolOutput;
+use codex_protocol::agent_metrics::AgentMetrics;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,7 +46,7 @@ pub(super) async fn handle_message_string_tool(
     target: String,
     message: String,
     analytics: &mut ToolCallAnalytics,
-) -> Result<FunctionToolOutput, FunctionCallError> {
+) -> Result<MessageToolResult, FunctionCallError> {
     let message = message_content(message)?;
     let ToolInvocation {
         session,
@@ -80,22 +81,89 @@ pub(super) async fn handle_message_string_tool(
         })
         .await
         .map_err(|err| collab_v2_agent_error(receiver_thread_id, err))?;
-    let receiver_agent_path = receipt.metadata.agent_path.ok_or_else(|| {
-        FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
-    })?;
-    emit_sub_agent_activity(
-        &session,
-        &turn,
-        SubAgentActivityItem {
-            model: None,
-            reasoning_effort: None,
-            id: call_id,
-            agent_thread_id: receiver_thread_id,
-            agent_path: receiver_agent_path,
-            kind: SubAgentActivityKind::Interacted,
-        },
-    )
-    .await;
+    if let Some(receiver_agent_path) = receipt.metadata.agent_path.clone() {
+        emit_sub_agent_activity(
+            &session,
+            &turn,
+            SubAgentActivityItem {
+                model: None,
+                reasoning_effort: None,
+                id: call_id,
+                agent_thread_id: receiver_thread_id,
+                agent_path: receiver_agent_path,
+                kind: SubAgentActivityKind::Interacted,
+            },
+        )
+        .await;
+    }
 
-    Ok(FunctionToolOutput::from_text(String::new(), Some(true)))
+    if mode == MessageDeliveryMode::TriggerTurn {
+        // Admission has succeeded. A passive measurement failure must not turn
+        // this receipt into a rejection or invite the caller to resend work.
+        let (metrics, observation_error) = match session
+            .services
+            .local_agent_runtime
+            .observe_agent(receipt.thread_id)
+            .await
+        {
+            Ok(agent) => (agent.metrics, None),
+            Err(error) => (AgentMetrics::default(), Some(error.to_string())),
+        };
+        return Ok(MessageToolResult::Followup(FollowupTaskResult {
+            accepted: true,
+            agent_id: receipt.thread_id.to_string(),
+            agent_name: receipt.metadata.agent_path.map(|path| path.to_string()),
+            submission_id: receipt.submission_id,
+            metrics,
+            observation_error,
+        }));
+    }
+
+    Ok(MessageToolResult::Queued)
+}
+
+#[derive(Serialize)]
+pub(super) struct FollowupTaskResult {
+    accepted: bool,
+    agent_id: String,
+    agent_name: Option<String>,
+    submission_id: String,
+    metrics: AgentMetrics,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation_error: Option<String>,
+}
+
+pub(super) enum MessageToolResult {
+    Queued,
+    Followup(FollowupTaskResult),
+}
+
+impl ToolOutput for MessageToolResult {
+    fn log_output(&self) -> String {
+        match self {
+            Self::Queued => String::new(),
+            Self::Followup(result) => tool_output_json_text(result, "followup_task"),
+        }
+    }
+
+    fn success_for_logging(&self) -> bool {
+        true
+    }
+
+    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        match self {
+            Self::Queued => FunctionToolOutput::from_text(String::new(), Some(true))
+                .to_response_item(call_id, payload),
+            Self::Followup(result) => {
+                tool_output_response_item(call_id, payload, result, Some(true), "followup_task")
+            }
+        }
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
+        match self {
+            Self::Queued => serde_json::json!({}),
+            Self::Followup(result) => tool_output_code_mode_result(result, "followup_task"),
+        }
+    }
 }

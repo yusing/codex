@@ -915,12 +915,6 @@ pub enum Op {
         response: DynamicToolResponse,
     },
 
-    /// Resolve the exact native compound checkpoint admission.
-    CompoundWaitResponse {
-        cell_id: String,
-        response: crate::compound_wait::CompoundWaitDisposition,
-    },
-
     /// Request MCP servers to reinitialize and refresh cached tool lists.
     RefreshMcpServers,
 
@@ -1175,7 +1169,6 @@ impl Op {
             Self::UserInputAnswer { .. } => "user_input_answer",
             Self::RequestPermissionsResponse { .. } => "request_permissions_response",
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
-            Self::CompoundWaitResponse { .. } => "compound_wait_response",
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact { .. } => "compact",
@@ -1582,9 +1575,6 @@ pub struct EnvironmentConnectionEvent {
 #[strum(serialize_all = "snake_case")]
 pub enum EventMsg {
     ContextReset(crate::context_reset::ContextReset),
-    FeatureUse(crate::feature_use::FeatureUseFact),
-    CompoundWaitSettlement(crate::compound_wait::CompoundWaitSettlement),
-    CompoundWaitReset(crate::compound_wait::CompoundWaitReset),
     /// Error while executing a submission
     Error(ErrorEvent),
 
@@ -1645,6 +1635,12 @@ pub enum EventMsg {
     /// v1 wire format uses `task_complete`; accept `turn_complete` for v2 interop.
     #[serde(rename = "task_complete", alias = "turn_complete")]
     TurnComplete(TurnCompleteEvent),
+
+    /// Execution stopped at a committed coordination checkpoint; logical work remains open.
+    TurnCheckpointed(TurnCheckpointedEvent),
+
+    /// Retained native coordination facts without primary model input.
+    AgentCoordination(crate::agent_coordination::AgentCoordinationEvent),
 
     /// Usage update for the current session, including totals and last turn.
     /// Optional means unknown — UIs should not display when `None`.
@@ -1719,6 +1715,20 @@ pub enum EventMsg {
     #[schemars(skip)]
     #[ts(skip)]
     NetworkApprovalResolved {
+        approval_id: String,
+    },
+
+    /// The provisional spawn owner rejected this exact runtime; it will not be retained.
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    ProvisionalSpawnRejected,
+
+    /// Retires an in-process preparation command prompt without ending a model turn.
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    CommandApprovalResolved {
         approval_id: String,
     },
 
@@ -2209,7 +2219,13 @@ impl CodexErrorInfo {
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 pub struct RawResponseItemEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub source_acquisition: Option<crate::source_acquisition::SourceAcquisition>,
     pub item: ResponseItem,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub coordination: Option<crate::agent_coordination::CoordinationProjection>,
 }
 
 /// Observer events that a private session forwards without modifying its parent's history.
@@ -2471,6 +2487,36 @@ pub struct SafetyBufferingEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ContextCompactedEvent;
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct TurnCheckpointedEvent {
+    pub turn_id: String,
+    pub work_id: String,
+    pub checkpoint: TurnCheckpoint,
+    pub targets: Vec<ThreadId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnCheckpoint {
+    Wait {
+        wait_id: String,
+        reason: WaitCheckpointReason,
+        deadline_unix_ms: Option<i64>,
+    },
+    CompletionPending {
+        delivery_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitCheckpointReason {
+    Explicit,
+    DescendantRecovery,
+    ProviderCapacity,
+    ProviderUsageLimit,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TurnCompleteEvent {

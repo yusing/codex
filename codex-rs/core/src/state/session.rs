@@ -84,6 +84,8 @@ pub(crate) struct SessionState {
     /// Persisted origin of the session base instructions, when known.
     pub(crate) base_instructions_provenance: Option<BaseInstructionsProvenance>,
     pub(crate) history: ContextManager,
+    /// Live receiving context, never restored from rollout or inherited by fork.
+    pub(crate) delivery_context_id: uuid::Uuid,
     /// Newly recorded files awaiting best-effort lookup after the input batch is durable.
     pub(crate) pending_audio_duration_ids: BTreeSet<String>,
     /// Cancels work bound to discarded history or a superseded Guardian evidence policy.
@@ -152,6 +154,7 @@ impl SessionState {
             service_tier_acceptance: None,
             base_instructions_provenance: None,
             history,
+            delivery_context_id: uuid::Uuid::now_v7(),
             pending_audio_duration_ids: BTreeSet::new(),
             history_reset: CancellationToken::new(),
             latest_rate_limits: None,
@@ -229,6 +232,7 @@ impl SessionState {
         reference_context_item: Option<TurnContextItem>,
         replacement: HistoryReplacement,
     ) {
+        self.delivery_context_id = uuid::Uuid::now_v7();
         let invalidate_reviews = match replacement {
             HistoryReplacement::Compaction {
                 reviewer_compaction_hash,

@@ -12,6 +12,7 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::ConnectionFailedError;
 use codex_protocol::error::ProviderRejection;
+use codex_protocol::error::ProviderWaitKind;
 use codex_protocol::error::RetryLimitReachedError;
 use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::error::UsageLimitReachedError;
@@ -50,6 +51,21 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         | ApiError::MisalignmentPolicyViolation { .. } => None,
     };
     let error = map_api_error_details(err);
+    // Keep structured rejection provenance through retry exhaustion. A native
+    // host overload without this producer evidence remains descendant recovery.
+    let error = match error.details() {
+        CodexErrorDetails::ServerOverloaded
+        | CodexErrorDetails::PolicyCapacityUnavailable
+        | CodexErrorDetails::FlexUnavailable => {
+            error.with_provider_wait_kind(ProviderWaitKind::Capacity)
+        }
+        CodexErrorDetails::UsageLimitReached(_)
+        | CodexErrorDetails::QuotaExceeded
+        | CodexErrorDetails::UsageNotIncluded => {
+            error.with_provider_wait_kind(ProviderWaitKind::UsageLimit)
+        }
+        _ => error,
+    };
     match retry_after {
         Some(retry_after) => error.with_retry_after(retry_after),
         None => error,

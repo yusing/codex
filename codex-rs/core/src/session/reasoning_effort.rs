@@ -23,6 +23,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 pub(crate) enum RequestEffortUsage {
     Sampling,
     Compaction,
+    Auxiliary,
 }
 
 impl Session {
@@ -125,7 +126,7 @@ impl Session {
                 if usage == RequestEffortUsage::Sampling {
                     state.reasoning_effort_pin = ReasoningEffortPin::Unset;
                 }
-            } else if usage == RequestEffortUsage::Compaction {
+            } else if usage != RequestEffortUsage::Sampling {
                 return Some(pinned);
             }
         }
@@ -140,7 +141,7 @@ impl Session {
                 .reasoning_effort_pin
                 .pin(&settings.model_info.slug, effort),
             // Failed compaction and fallback-model lookups must not mutate the live pin.
-            RequestEffortUsage::Compaction => effort,
+            RequestEffortUsage::Compaction | RequestEffortUsage::Auxiliary => effort,
         })
     }
 

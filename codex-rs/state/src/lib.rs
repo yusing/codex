@@ -1,8 +1,9 @@
-//! SQLite-backed state for rollout metadata.
+//! SQLite-backed state for rollout metadata and durable coordination facts.
 //!
 //! This crate is intentionally small and focused: it extracts rollout metadata
 //! from JSONL rollouts and mirrors it into a local SQLite database. Backfill
 //! orchestration and rollout scanning live in `codex-core`.
+//! Accepted work and delivery receipts are independent of conversation replay.
 
 const MIN_SQLITE_VERSION_NUMBER: i32 = 3_054_000;
 const _: () = assert!(
@@ -11,6 +12,9 @@ const _: () = assert!(
 );
 
 mod audit;
+pub mod coordination;
+pub mod coordination_progress;
+pub mod coordination_wait;
 mod delegated_preview;
 mod extract;
 pub mod log_db;

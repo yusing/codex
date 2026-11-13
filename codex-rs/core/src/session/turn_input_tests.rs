@@ -922,6 +922,102 @@ async fn steer_only_requires_active_turn() {
 }
 
 #[tokio::test]
+async fn pending_scheduler_never_replaces_an_awaited_invocation() -> anyhow::Result<()> {
+    use crate::agent::control::LocalAgentControl;
+    use codex_state::coordination::DeliveryKind;
+    use codex_state::coordination::PublishDelivery;
+    use codex_state::coordination::WorkDisposition;
+    use codex_state::coordination::WorkStamp;
+    use codex_state::coordination_wait::WaitCell;
+    use codex_state::coordination_wait::WaitMode;
+    use codex_utils_absolute_path::test_support::PathExt;
+
+    let directory = tempfile::tempdir()?;
+    let state = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(directory.path().abs()),
+        "test-provider".to_owned(),
+    )
+    .await?;
+    let (mut session, context) = make_session_and_context().await;
+    session.multi_agent_version =
+        std::sync::OnceLock::from(codex_protocol::protocol::MultiAgentVersion::V2);
+    let control = LocalAgentControl::new(
+        std::sync::Weak::default(),
+        crate::thread_manager::default_thread_id_generator(),
+        None,
+        Some(state),
+    );
+    control
+        .runtime
+        .register_session_root(session.thread_id, None);
+    session.services.local_agent_runtime = control.runtime.clone();
+    let ledger = session.services.local_agent_runtime.work_ledger()?;
+    let caller = WorkStamp {
+        root_id: session.thread_id,
+        actor_id: session.thread_id,
+        work_id: Uuid::now_v7(),
+    };
+    let initial = PublishDelivery {
+        id: caller.work_id,
+        root_id: caller.root_id,
+        sender_id: None,
+        recipient_id: caller.actor_id,
+        work: Some(caller),
+        kind: DeliveryKind::Message,
+        payload: "initial accepted input".to_owned(),
+    };
+    let admitted = ledger.admit_work(caller, None, &initial).await?;
+    ledger
+        .transition_work(caller, admitted.revision, WorkDisposition::Running)
+        .await?;
+    assert!(!session.input_queue.has_pending_mailbox_items().await);
+    session
+        .features
+        .disable(Feature::WakeOnAgentMessages)
+        .expect("disable idle message wakes");
+    assert!(session.reserve_pending_work_turn().await.is_none());
+    session
+        .features
+        .enable(Feature::WakeOnAgentMessages)
+        .expect("enable idle message wakes");
+    {
+        let mut state = session.state.lock().await;
+        Arc::make_mut(&mut state.session_configuration.step_settings)
+            .collaboration_mode
+            .mode = ModeKind::Plan;
+    }
+    assert!(session.reserve_pending_work_turn().await.is_none());
+    {
+        let mut state = session.state.lock().await;
+        Arc::make_mut(&mut state.session_configuration.step_settings)
+            .collaboration_mode
+            .mode = ModeKind::Default;
+    }
+    let (ordinary, _, ordinary_wait) = session
+        .reserve_pending_work_turn()
+        .await
+        .expect("enabled ordinary wake sees durable mail without a legacy payload");
+    assert!(ordinary_wait.is_none());
+    session.clear_reserved_idle_turn(&ordinary).await;
+    let cell = WaitCell {
+        turn_id: context.sub_id.clone(),
+        item_id: "original-item".to_owned(),
+        window_id: "original-window".to_owned(),
+        cell_id: "original-cell".to_owned(),
+    };
+    let ticket = ledger.register_wait(caller, &cell, WaitMode::Any).await?;
+    // A native wait stays with its original invocation, even when mail is ready.
+    // The idle scheduler must neither claim it nor create a replacement turn.
+    assert!(session.reserve_pending_work_turn().await.is_none());
+    assert!(session.active_turn.lock().await.is_none());
+    let retained = ledger.current_wait(session.thread_id).await?.unwrap();
+    assert_eq!(retained.id, ticket.id);
+    assert_eq!(retained.caller, caller);
+    assert!(retained.claim.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn steer_only_enforces_expected_turn_id() {
     let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
     turn_context

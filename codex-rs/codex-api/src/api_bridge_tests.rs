@@ -9,6 +9,15 @@ use pretty_assertions::assert_eq;
 fn map_api_error_maps_server_overloaded() {
     let err = map_api_error(ApiError::ServerOverloaded { retry_after: None });
     assert!(matches!(err.details(), CodexErrorDetails::ServerOverloaded));
+    assert_eq!(err.provider_wait_kind(), Some(ProviderWaitKind::Capacity));
+    assert_eq!(
+        map_api_error(ApiError::Stream("server overloaded".into())).provider_wait_kind(),
+        None
+    );
+    assert_eq!(
+        map_api_error(ApiError::QuotaExceeded).provider_wait_kind(),
+        Some(ProviderWaitKind::UsageLimit)
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -34,6 +43,7 @@ async fn http_policy_capacity_preserves_retry_advice_and_terminal_behavior() {
                 ),
                 retry_after: advice,
             }));
+            assert_eq!(error.provider_wait_kind(), Some(ProviderWaitKind::Capacity));
             assert_eq!(
                 (
                     error.to_codex_protocol_error(),

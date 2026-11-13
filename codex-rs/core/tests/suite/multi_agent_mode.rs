@@ -218,10 +218,9 @@ async fn mode_hints_override_reasoning_effort(
     let second_texts = developer_texts(&second_input);
     let (expected_hint, suppressed_hint) = match source {
         ModeHintSource::ConfiguredHint => (CUSTOM_MODE_HINT_TEXT, CATALOG_MODE_HINT_TEXT),
-        ModeHintSource::CatalogHint if disable_native_tools => (
-            "read the full multi-agent skill using its listed package locator",
-            CATALOG_MODE_HINT_TEXT,
-        ),
+        ModeHintSource::CatalogHint if disable_native_tools => {
+            (NO_SPAWN_TEXT, CATALOG_MODE_HINT_TEXT)
+        }
         ModeHintSource::CatalogHint => (CATALOG_MODE_HINT_TEXT, CATALOG_EXPLICIT_TEXT),
     };
     let hosted_default = disable_native_tools && matches!(source, ModeHintSource::CatalogHint);
@@ -236,16 +235,13 @@ async fn mode_hints_override_reasoning_effort(
                 count_containing(texts, "using collaboration tools"),
                 count_containing(texts, CATALOG_PROACTIVE_TEXT),
             ),
-            (
-                1 + proactive,
-                usize::from(hosted_default),
-                proactive,
-                proactive,
-                0,
-                0
-            )
+            (1, usize::from(hosted_default), proactive, proactive, 0, 0)
         );
         assert_eq!(count_containing(texts, suppressed_hint), 0);
+        assert_eq!(
+            count_containing(texts, "read the full multi-agent skill"),
+            0
+        );
     }
 
     Ok(())

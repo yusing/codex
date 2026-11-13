@@ -25,6 +25,29 @@ pub(super) async fn submit(
     let TurnInput::InterAgentCommunication(mut communication) = input else {
         unreachable!("agent submission requires an agent message");
     };
+    if session.services.local_agent_runtime.work.is_some()
+        && session.multi_agent_version() == Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    {
+        communication.trigger_turn = true;
+        let sources = communication.encrypted_content.is_none()
+            && !crate::compact_token_budget::reload::message_selection(&communication.content)
+                .sources
+                .is_empty();
+        if communication.encrypted_content.is_none() {
+            communication.content =
+                AgentMessage::Plaintext(std::mem::take(&mut communication.content))
+                    .into_communication(
+                        communication.author.clone(),
+                        communication.recipient.clone(),
+                        MessageDeliveryMode::TriggerTurn,
+                    )
+                    .content;
+        }
+        session
+            .accept_coordination_message(PendingAgentMessage::from(communication), start, sources)
+            .await?;
+        return Ok(TurnInputSubmission::Accepted);
+    }
     // CodexThread already checks local agent capacity before submitting this operation.
     // Preserve the host's drain gate when accepting work for an idle recipient.
     let _admission = if session.active_turn.lock().await.is_none() {

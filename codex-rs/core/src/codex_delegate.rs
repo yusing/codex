@@ -4,6 +4,7 @@ use crate::session::Submission;
 use async_channel::Receiver;
 use async_channel::Sender;
 use codex_async_utils::OrCancelExt;
+use codex_extension_api::ToolPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -13,6 +14,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::user_input::UserInput;
+use futures::FutureExt;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -63,6 +65,7 @@ pub(crate) async fn run_codex_thread_interactive(
     initial_history: Option<InitialHistory>,
     git_enrichment_policy: GitEnrichmentPolicy,
     windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
+    tool_policy: Option<ToolPolicy>,
 ) -> Result<(Arc<Session>, SessionIo), CodexErr> {
     if config.permissions.approval_policy.value() != AskForApproval::Never {
         return Err(CodexErr::InvalidRequest(
@@ -102,6 +105,9 @@ pub(crate) async fn run_codex_thread_interactive(
     };
     let mut thread_extension_init = codex_extension_api::ExtensionDataInit::default();
     thread_extension_init.insert(isolation);
+    if let Some(tool_policy) = tool_policy {
+        thread_extension_init.insert(tool_policy);
+    }
     let spawn_result = Session::spawn(SessionSpawnArgs {
         attached_thread: false,
         startup: Some(Arc::clone(&startup)),
@@ -207,25 +213,33 @@ pub(crate) fn forward_session_io(io: Arc<SessionIo>, cancel_token: CancellationT
     let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (tx_ops, rx_ops) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     // Use a child token so parent cancel cascades but we can scope it to this task
-    let cancel_token_events = cancel_token.child_token();
-    let cancel_token_ops = cancel_token.child_token();
+    let forwarding_cancel = cancel_token.child_token();
+    let cancel_token_events = forwarding_cancel.child_token();
+    let cancel_token_ops = forwarding_cancel.child_token();
 
     // Forward public events from the sub-agent to the consumer.
-    let caller_io = SessionIo {
+    let mut caller_io = SessionIo {
         tx_sub: tx_ops,
         rx_event: rx_sub,
         agent_status: io.agent_status.clone(),
         session_loop_termination: io.session_loop_termination.clone(),
     };
     let io_for_events = Arc::clone(&io);
-    tokio::spawn(async move {
+    let events = tokio::spawn(async move {
         forward_events(io_for_events, tx_sub, cancel_token_events).await;
+        forwarding_cancel.cancel();
     });
 
     // Forward ops from the caller to the sub-agent.
-    tokio::spawn(async move {
+    let ops = tokio::spawn(async move {
         forward_ops(io, rx_ops, cancel_token_ops).await;
     });
+    let session_loop_termination = caller_io.session_loop_termination;
+    caller_io.session_loop_termination = async move {
+        let (_, _, _) = tokio::join!(session_loop_termination, events, ops);
+    }
+    .boxed()
+    .shared();
 
     caller_io
 }
@@ -246,6 +260,37 @@ pub(crate) async fn run_codex_thread_one_shot(
     final_output_json_schema: Option<Value>,
     initial_history: Option<InitialHistory>,
 ) -> Result<(Arc<Session>, SessionIo), CodexErr> {
+    run_codex_thread_one_shot_with_tool_policy(
+        config,
+        auth_manager,
+        models_manager,
+        input,
+        parent_session,
+        parent_ctx,
+        cancel_token,
+        subagent_source,
+        final_output_json_schema,
+        initial_history,
+        None,
+    )
+    .await
+}
+
+/// Apply a startup tool ceiling without changing retained delegates' default policy.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_codex_thread_one_shot_with_tool_policy(
+    config: Config,
+    auth_manager: Arc<AuthManager>,
+    models_manager: SharedModelsManager,
+    input: Vec<UserInput>,
+    parent_session: Arc<Session>,
+    parent_ctx: Arc<TurnContext>,
+    cancel_token: CancellationToken,
+    subagent_source: SubAgentSource,
+    final_output_json_schema: Option<Value>,
+    initial_history: Option<InitialHistory>,
+    tool_policy: Option<ToolPolicy>,
+) -> Result<(Arc<Session>, SessionIo), CodexErr> {
     // Use a child token so we can stop the delegate after completion without
     // requiring the caller to cancel the parent token.
     let child_cancel = cancel_token.child_token();
@@ -265,6 +310,7 @@ pub(crate) async fn run_codex_thread_one_shot(
         initial_history,
         GitEnrichmentPolicy::Fresh,
         codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
+        tool_policy,
     ))
     .await?;
 
@@ -280,47 +326,47 @@ pub(crate) async fn run_codex_thread_one_shot(
             }),
             TurnInputMode::StartIfIdle,
         )
-        .await?;
-    match submission {
-        TurnInputSubmission::Started { .. } => {}
-        submission => {
-            return Err(CodexErr::InvalidRequest(format!(
-                "delegate turn input was not started: {submission:?}"
-            )));
-        }
+        .await;
+    let start_error = match submission {
+        Ok(TurnInputSubmission::Started { .. }) => None,
+        Ok(submission) => Some(CodexErr::InvalidRequest(format!(
+            "delegate turn input was not started: {submission:?}"
+        ))),
+        Err(error) => Some(error),
+    };
+    if let Some(error) = start_error {
+        child_cancel.cancel();
+        io.session_loop_termination.clone().await;
+        return Err(error);
     }
 
+    Ok((session, one_shot_io(io, child_cancel)))
+}
+
+fn one_shot_io(io: SessionIo, child_cancel: CancellationToken) -> SessionIo {
     // Bridge events so we can observe completion and shut down automatically.
     let (tx_bridge, rx_bridge) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
-    let ops_tx = io.tx_sub.clone();
     let agent_status = io.agent_status.clone();
     let session_loop_termination = io.session_loop_termination.clone();
     let io_for_bridge = io;
-    tokio::spawn(async move {
+    let bridge = tokio::spawn(async move {
         while let Ok(event) = io_for_bridge.next_event().await {
             let should_shutdown = matches!(
                 event.msg,
                 EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
             );
-            let _ = tx_bridge.send(event).await;
-            if should_shutdown {
-                let _ = ops_tx
-                    .send(Submission {
-                        id: "shutdown".to_string(),
-                        op: Op::Shutdown {},
-                        turn_extension_init: None,
-                        trace: None,
-                        parent_turn_id: None,
-                        root_turn_id: None,
-                        residency_guard: None,
-                        message_delivery: None,
-                    })
-                    .await;
-                child_cancel.cancel();
+            let forwarded = tx_bridge.send(event).or_cancel(&child_cancel).await;
+            if should_shutdown || !matches!(forwarded, Ok(Ok(()))) {
                 break;
             }
         }
+        child_cancel.cancel();
     });
+    let session_loop_termination = async move {
+        let (_, _) = tokio::join!(session_loop_termination, bridge);
+    }
+    .boxed()
+    .shared();
 
     // For one-shot usage, return a closed `tx_sub` so callers cannot submit
     // additional ops after the initial request. Create a channel and drop the
@@ -328,15 +374,12 @@ pub(crate) async fn run_codex_thread_one_shot(
     let (tx_closed, rx_closed) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     drop(rx_closed);
 
-    Ok((
-        session,
-        SessionIo {
-            rx_event: rx_bridge,
-            tx_sub: tx_closed,
-            agent_status,
-            session_loop_termination,
-        },
-    ))
+    SessionIo {
+        rx_event: rx_bridge,
+        tx_sub: tx_closed,
+        agent_status,
+        session_loop_termination,
+    }
 }
 
 async fn forward_events(
@@ -349,6 +392,7 @@ async fn forward_events(
 
     loop {
         tokio::select! {
+            _ = io.session_loop_termination.clone() => break,
             _ = &mut cancelled => {
                 shutdown_delegate(&io).await;
                 break;
@@ -423,7 +467,14 @@ async fn forward_ops(
             Ok(Ok(submission)) => submission,
             Ok(Err(_)) | Err(_) => break,
         };
-        let _ = io.submit_with_id(submission).await;
+        if !matches!(
+            io.submit_with_id(submission)
+                .or_cancel(&cancel_token_ops)
+                .await,
+            Ok(Ok(_))
+        ) {
+            break;
+        }
     }
 }
 

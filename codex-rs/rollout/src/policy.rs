@@ -131,12 +131,24 @@ fn persisted_event_msg(
 ) -> Option<Cow<'_, EventMsg>> {
     match ev {
         EventMsg::ItemCompleted(event) => persisted_item_completed_event(ev, event, history_mode),
+        EventMsg::ContextReset(reset) => {
+            use codex_protocol::context_reset::ContextResetStatus;
+            matches!(
+                reset.status,
+                ContextResetStatus::Completed
+                    | ContextResetStatus::Failed
+                    | ContextResetStatus::Canceled
+            )
+            .then_some(Cow::Borrowed(ev))
+        }
         EventMsg::TokenCount(_)
         | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::TurnAborted(_)
         | EventMsg::TurnStarted(_)
         | EventMsg::TurnComplete(_)
+        | EventMsg::TurnCheckpointed(_)
+        | EventMsg::AgentCoordination(_)
         | EventMsg::ThreadSettingsApplied(_) => Some(Cow::Borrowed(ev)),
 
         // Only persist these legacy events when the thread's history mode is Legacy.
@@ -169,10 +181,6 @@ fn persisted_event_msg(
         | EventMsg::CollabWaitingEnd(_)
         | EventMsg::CollabCloseEnd(_)
         | EventMsg::CollabResumeEnd(_)
-        | EventMsg::CompoundWaitSettlement(_)
-        | EventMsg::FeatureUse(_)
-        | EventMsg::ContextReset(_)
-        | EventMsg::CompoundWaitReset(_)
         | EventMsg::DynamicToolCallRequest(_)
         | EventMsg::DynamicToolCallResponse(_)
         | EventMsg::Warning(_)
@@ -204,6 +212,8 @@ fn persisted_event_msg(
         | EventMsg::ElicitationRequest(_)
         | EventMsg::ElicitationAbandoned(_)
         | EventMsg::NetworkApprovalResolved { .. }
+        | EventMsg::CommandApprovalResolved { .. }
+        | EventMsg::ProvisionalSpawnRejected
         | EventMsg::ApplyPatchApprovalRequest(_)
         | EventMsg::StreamError(_)
         | EventMsg::PatchApplyBegin(_)
