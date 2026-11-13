@@ -3219,6 +3219,22 @@
         }
       ]
     },
+    "ReloadSelection": {
+      "additionalProperties": false,
+      "description": "Sources reacquired before the first inference in a replacement context window.",
+      "properties": {
+        "sources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sources"
+      ],
+      "type": "object"
+    },
     "RemoteControlDisableParams": {
       "properties": {
         "ephemeral": {
@@ -4732,7 +4748,11 @@
       "type": "object"
     },
     "ThreadCompactStartParams": {
+      "additionalProperties": false,
       "properties": {
+        "reload": {
+          "$ref": "#/definitions/ReloadSelection"
+        },
         "threadId": {
           "type": "string"
         }

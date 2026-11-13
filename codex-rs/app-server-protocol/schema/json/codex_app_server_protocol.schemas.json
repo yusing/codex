@@ -20021,6 +20021,22 @@
         "title": "ReasoningTextDeltaNotification",
         "type": "object"
       },
+      "ReloadSelection": {
+        "additionalProperties": false,
+        "description": "Sources reacquired before the first inference in a replacement context window.",
+        "properties": {
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sources"
+        ],
+        "type": "object"
+      },
       "RemoteControlConnectionStatus": {
         "enum": [
           "disabled",
@@ -23016,7 +23032,11 @@
       },
       "ThreadCompactStartParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
         "properties": {
+          "reload": {
+            "$ref": "#/definitions/v2/ReloadSelection"
+          },
           "threadId": {
             "type": "string"
           }

@@ -1,6 +1,28 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ReloadSelection": {
+      "additionalProperties": false,
+      "description": "Sources reacquired before the first inference in a replacement context window.",
+      "properties": {
+        "sources": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sources"
+      ],
+      "type": "object"
+    }
+  },
   "properties": {
+    "reload": {
+      "$ref": "#/definitions/ReloadSelection"
+    },
     "threadId": {
       "type": "string"
     }
