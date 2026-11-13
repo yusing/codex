@@ -895,6 +895,21 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_compact_cancel(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: ThreadCompactCancelParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if params.context_reset_request_id.is_empty() {
+            return Err(invalid_params("contextResetRequestId must not be empty"));
+        }
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        ensure_direct_input_allowed(thread.as_ref()).await?;
+        self.submit_core_op(request_id, thread.as_ref(), Op::CancelCompact { request_id: params.context_reset_request_id })
+            .await.map_err(|err| internal_error(format!("failed to cancel compaction: {err}")))?;
+        Ok(Some(ThreadCompactCancelResponse {}.into()))
+    }
+
     pub(crate) async fn thread_background_terminals_clean(
         &self,
         request_id: &ConnectionRequestId,
@@ -2598,7 +2613,7 @@ impl ThreadRequestProcessor {
         request_id: &ConnectionRequestId,
         params: ThreadCompactStartParams,
     ) -> Result<ThreadCompactStartResponse, JSONRPCErrorError> {
-        let ThreadCompactStartParams { thread_id, reload } = params;
+        let ThreadCompactStartParams { thread_id, reload, context_reset_request_id } = params;
 
         let (_, thread) = self.load_thread(&thread_id).await?;
         ensure_direct_input_allowed(thread.as_ref()).await?;
@@ -2606,7 +2621,15 @@ impl ThreadRequestProcessor {
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
             .map_err(|error| config_load_error(&error))?;
-        self.submit_core_op(request_id, thread.as_ref(), Op::Compact { reload })
+        if context_reset_request_id.as_ref().is_some_and(String::is_empty) {
+            return Err(invalid_params("contextResetRequestId must not be empty"));
+        }
+        if context_reset_request_id.is_some()
+            && !thread.config().await.features.enabled(codex_features::Feature::TokenBudget)
+        {
+            return Err(invalid_params("correlated context reset requires token_budget"));
+        }
+        self.submit_core_op(request_id, thread.as_ref(), Op::Compact { reload, context_reset_request_id })
             .await
             .map_err(|err| internal_error(format!("failed to start compaction: {err}")))?;
         Ok(ThreadCompactStartResponse {})

@@ -347,7 +347,7 @@ async fn compaction_checkpoints_settings_changed_during_its_model_request() -> R
         .build_with_streaming_server(&server)
         .await?;
     test.submit_text_turn("before compaction").await?;
-    test.codex.submit(Op::Compact { reload: None }).await?;
+    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     timeout(TIMEOUT, server.wait_for_request_count(/*count*/ 2)).await?;
 
     let request: serde_json::Value = serde_json::from_slice(&server.requests().await[1])?;

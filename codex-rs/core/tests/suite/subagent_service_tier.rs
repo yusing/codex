@@ -272,7 +272,7 @@ async fn root_service_tier_change_updates_existing_subagent(
         ]),
     )
     .await;
-    child.submit(Op::Compact { reload: None }).await?;
+    child.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_turn_complete(&child).await;
     assert_request_service_tier(&child_compaction_request, updated_request_service_tier);
 

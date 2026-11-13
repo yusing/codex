@@ -1,5 +1,6 @@
 mod additional_context;
 mod auto_compact_window;
+mod manual_reset;
 mod service;
 mod session;
 mod turn;
@@ -11,6 +12,8 @@ pub(crate) use additional_context::AdditionalContextStore;
 pub(crate) use auto_compact_window::AutoCompactWindowIds;
 pub(crate) use auto_compact_window::AutoCompactWindowSnapshot;
 pub(crate) use auto_compact_window::ContextWindowIdGenerator;
+pub(crate) use manual_reset::ManualResets;
+pub(crate) use manual_reset::ManualResetLease;
 pub(crate) use service::SessionServices;
 pub(crate) use session::ReasoningEffortPin;
 pub(crate) use session::SessionState;

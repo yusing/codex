@@ -334,7 +334,7 @@ async fn remote_compact_v2_retains_metadata_from_resumed_history() -> Result<()>
     let resumed = builder()
         .resume(&server, home, rollout_path.clone())
         .await?;
-    resumed.codex.submit(Op::Compact { reload: None }).await?;
+    resumed.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_turn_complete(&resumed.codex).await;
     resumed.submit_turn("continue after compaction").await?;
     resumed.codex.shutdown_and_wait().await?;
@@ -413,7 +413,7 @@ async fn remote_compact_v2_retains_only_client_developer_messages_when_enabled(
     .await;
 
     harness.test().submit_turn("before compact").await?;
-    codex.submit(Op::Compact { reload: None }).await?;
+    codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_turn_complete(codex).await;
     harness.test().submit_turn("after compact").await?;
 
@@ -773,7 +773,7 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
             ]),
         )
         .await;
-        codex.submit(Op::Compact { reload: None }).await?;
+        codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
         wait_for_turn_complete(codex).await;
         let compact_request = compact_mock.single_request();
         assert_eq!(compact_request.path(), "/v1/responses");
@@ -977,7 +977,7 @@ async fn remote_compact_v2_budgets_persisted_file_audio_atomically(
         }]))
         .await?;
     wait_for_turn_complete(&codex).await;
-    codex.submit(Op::Compact { reload: None }).await?;
+    codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_turn_complete(&codex).await;
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -1188,7 +1188,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
         .await?;
     wait_for_turn_complete(&codex).await;
 
-    let compact_turn_id = codex.submit(Op::Compact { reload: None }).await?;
+    let compact_turn_id = codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_turn_complete(&codex).await;
 
     codex
@@ -1450,7 +1450,7 @@ async fn remote_compact_v2_retries_failures_with_stream_retry_budget() -> Result
         .await?;
     wait_for_turn_complete(&codex).await;
 
-    codex.submit(Op::Compact { reload: None }).await?;
+    codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_turn_complete(&codex).await;
 
     codex
@@ -1570,7 +1570,7 @@ async fn remote_compact_v2_rewrites_multiple_trailing_function_call_outputs(
     if automatic {
         harness.test().submit_text_turn("after compact").await?;
     } else {
-        codex.submit(Op::Compact { reload: None }).await?;
+        codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
         wait_for_turn_complete(&codex).await;
     }
 
@@ -1705,7 +1705,7 @@ async fn active_realtime_refreshes_changed_start_instructions_only_after_compact
 
     start_realtime_conversation(resumed.codex.as_ref()).await?;
     resumed.submit_turn("USER_TWO").await?;
-    resumed.codex.submit(Op::Compact { reload: None }).await?;
+    resumed.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_turn_complete(&resumed.codex).await;
     resumed.submit_turn("USER_THREE").await?;
 

@@ -123,7 +123,7 @@ async fn turn_error_details_preserve_usage_reset_and_compaction_outcomes() -> an
             });
         let test = builder.build_with_auto_env(&server).await?;
         if phase == Phase::ManualCompaction {
-            test.codex.submit(Op::Compact { reload: None }).await?;
+            test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
         } else {
             test.codex
                 .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {

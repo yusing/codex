@@ -773,6 +773,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadUnarchiveResponse,
     },
+    ThreadCompactCancel => "thread/compact/cancel" {
+        params: v2::ThreadCompactCancelParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadCompactCancelResponse,
+    },
     ThreadCompactStart => "thread/compact/start" {
         params: v2::ThreadCompactStartParams,
         serialization: thread_id(params.thread_id),
@@ -1887,6 +1892,10 @@ impl TryFrom<JSONRPCRequest> for ServerRequest {
 }
 
 server_request_definitions! {
+    CompoundWaitSettle => "thread/compoundWait/settle" {
+        params: v2::CompoundWaitSettlement,
+        response: v2::CompoundWaitDisposition,
+    },
     /// NEW APIs
     /// Sent when approval is requested for a specific command execution.
     /// This request is used for Turns started via turn/start.
@@ -2042,6 +2051,8 @@ pub struct FuzzyFileSearchSessionCompletedNotification {
 }
 
 server_notification_definitions! {
+    ContextReset => "thread/contextReset" (v2::ContextReset),
+    CompoundWaitReset => "thread/compoundWait/reset" (v2::CompoundWaitReset),
     /// NEW NOTIFICATIONS
     Error => "error" (v2::ErrorNotification),
     ThreadStarted => "thread/started" (v2::ThreadStartedNotification),

@@ -798,7 +798,7 @@ async fn response_item_ids_are_sent_for_all_remote_v2_compaction_requests() -> a
         .await?;
 
     test.submit_turn("before compaction").await?;
-    test.codex.submit(Op::Compact { reload: None }).await?;
+    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

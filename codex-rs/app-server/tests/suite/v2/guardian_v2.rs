@@ -1900,6 +1900,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                 assert_eq!(completed.thread_id, thread_id);
                 let id = app_server
                     .send_thread_compact_start_request(ThreadCompactStartParams {
+                        context_reset_request_id: None,
                         reload: None,
                         thread_id: thread_id.clone(),
                     })

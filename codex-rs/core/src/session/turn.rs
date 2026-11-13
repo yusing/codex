@@ -439,6 +439,7 @@ pub(crate) async fn run_turn(
             &mut client_session,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
+            true,
             /*candidate*/ None,
             &cancellation_token,
         )
@@ -542,6 +543,36 @@ pub(crate) async fn run_turn(
     let mut next_step_context = Some(first_step_context);
     let mut guardian_budget_compacted = false;
     loop {
+        // Acquisition can admit a later manual request after the previous reset
+        // captured its lease. Drain that owner before another model request.
+        while auto_compaction_enabled && sess.has_pending_manual_reset().await {
+            let reset_step = match next_step_context.as_ref() {
+                Some(step) => Arc::clone(step),
+                None => {
+                    sess.capture_step_context(Arc::clone(&turn_context), &cancellation_token)
+                        .await?
+                }
+            };
+            if !run_auto_compact(
+                &sess,
+                Arc::clone(&reset_step),
+                reset_step,
+                &mut client_session,
+                CompactionReason::ContextLimit,
+                CompactionPhase::MidTurn,
+                false,
+                None,
+                &cancellation_token,
+            )
+            .await?
+            {
+                break; // Existing admission retains unresolved compound work.
+            }
+            next_step_context = None;
+            if run_pending_session_start_hooks(&sess, &turn_context).await {
+                return Ok(None);
+            }
+        }
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
@@ -659,6 +690,12 @@ pub(crate) async fn run_turn(
         .await;
         match sampling_request_result {
             Ok((sampling_request_output, notify_messages)) => {
+                if sess
+                    .settle_compound_waits(&step_context, &cancellation_token)
+                    .await?
+                {
+                    return Ok(None);
+                }
                 guardian_budget_compacted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
@@ -744,8 +781,13 @@ pub(crate) async fn run_turn(
                     None
                 };
                 let should_roll_over = auto_compaction_enabled
+                    && !sess
+                        .services
+                        .code_mode_service
+                        .dispatch_broker
+                        .compound_pending()
                     && needs_follow_up
-                    && (sess.take_new_context_window_request().await
+                    && (sess.has_new_context_window_request().await
                         || token_limit_reached
                         || candidate.is_some());
                 if auto_compaction_enabled {
@@ -768,6 +810,7 @@ pub(crate) async fn run_turn(
                         &mut client_session,
                         CompactionReason::ContextLimit,
                         CompactionPhase::MidTurn,
+                        token_limit_reached || candidate.is_some(),
                         candidate,
                         &cancellation_token,
                     )
@@ -889,6 +932,7 @@ pub(crate) async fn run_turn(
                                 &mut client_session,
                                 CompactionReason::ContextLimit,
                                 CompactionPhase::PostTurn,
+                                true,
                                 candidate,
                                 &cancellation_token,
                             )
@@ -942,6 +986,7 @@ pub(crate) async fn run_turn(
                     &mut client_session,
                     CompactionReason::ContextLimit,
                     CompactionPhase::MidTurn,
+                    true,
                     /*candidate*/ None,
                     &cancellation_token,
                 )
@@ -1562,7 +1607,10 @@ async fn run_pre_sampling_compact(
             .await;
     let candidate = super::async_compaction::take_ready(sess, turn_context).await;
     // Compact if the configured auto-compaction budget or usable context window is exhausted.
-    if token_status.token_limit_reached || candidate.is_some() {
+    if token_status.token_limit_reached
+        || candidate.is_some()
+        || sess.has_new_context_window_request().await
+    {
         // Pre-turn compaction runs before run_turn creates the normal sampling step.
         let step_context = sess
             .capture_step_context(Arc::clone(turn_context), cancellation_token)
@@ -1574,6 +1622,7 @@ async fn run_pre_sampling_compact(
             client_session,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
+            token_status.token_limit_reached || candidate.is_some(),
             candidate,
             cancellation_token,
         )
@@ -1672,6 +1721,7 @@ async fn maybe_run_previous_model_inline_compact(
         client_session,
         reason,
         CompactionPhase::PreTurn,
+        true,
         /*candidate*/ None,
         cancellation_token,
     )
@@ -1693,20 +1743,25 @@ async fn run_auto_compact(
     client_session: &mut ModelClientSession,
     reason: CompactionReason,
     phase: CompactionPhase,
+    required_without_manual: bool,
     candidate: Option<Box<BackgroundCompactionCandidate>>,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
     let turn_context = &step_context.turn;
+    let Some(_admission) = sess
+        .services
+        .code_mode_service
+        .dispatch_broker
+        .admit_reset(None)
+    else {
+        return Ok(false);
+    };
     if matches!(phase, CompactionPhase::PreTurn)
         && crate::guardian::is_basic_session_source(&turn_context.session_source)
         && !crate::guardian::should_compact_guardian_input(sess)?
     {
         return Ok(false);
     }
-    let world_state = Arc::new(
-        sess.build_world_state_for_step(&replacement_step_context, /*new_window*/ true)
-            .await?,
-    );
     let _profile_guard = turn_context.turn_timing_state.begin_compaction();
     let _compaction_span = trace_span!(
         "codex.compaction",
@@ -1717,15 +1772,21 @@ async fn run_auto_compact(
     if turn_context.config.features.enabled(Feature::TokenBudget) {
         // Compaction is the reset request, so force a new context window
         // instead of consuming a pending `new_context` tool request.
-        crate::compact_token_budget::run_inline_auto_compact_task(
+        crate::compact_token_budget::run_inline_compact_task(
             Arc::clone(sess),
             replacement_step_context,
-            world_state,
+            codex_analytics::CompactionTrigger::Auto,
+            required_without_manual,
             cancellation_token,
         )
         .await?;
         return Ok(true);
     }
+
+    let world_state = Arc::new(
+        sess.build_world_state_for_step(&replacement_step_context, /*new_window*/ true)
+            .await?,
+    );
 
     match turn_context.provider.capabilities().remote_compaction {
         RemoteCompactionSupport::V2 => {
@@ -2516,6 +2577,9 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::ImageGenerationBegin(_)
         | EventMsg::ImageGenerationEnd(_)
         | EventMsg::ViewImageToolCall(_)
+        | EventMsg::CompoundWaitSettlement(_)
+        | EventMsg::ContextReset(_)
+        | EventMsg::CompoundWaitReset(_)
         | EventMsg::DynamicToolCallRequest(_)
         | EventMsg::DynamicToolCallResponse(_)
         | EventMsg::GuardianAssessment(_)

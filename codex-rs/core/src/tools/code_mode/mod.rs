@@ -1,3 +1,5 @@
+mod compound;
+pub(crate) use compound::ResetAdmission;
 mod delegate;
 mod execute_handler;
 pub(crate) mod execute_spec;
@@ -77,7 +79,7 @@ pub(crate) struct CodeModeService {
     session: OnceCell<Arc<dyn CodeModeSession>>,
     session_provider: Arc<dyn CodeModeSessionProvider>,
     availability: Result<(), String>,
-    dispatch_broker: Arc<CodeModeDispatchBroker>,
+    pub(crate) dispatch_broker: Arc<CodeModeDispatchBroker>,
     default_exec_yield_time_ms: u64,
     shutdown_token: CancellationToken,
     unavailable_warning_emitted: AtomicBool,

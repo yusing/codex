@@ -272,20 +272,69 @@ pub async fn compact(
     sess: &Arc<Session>,
     sub_id: String,
     reload: Option<codex_protocol::protocol::ReloadSelection>,
+    context_reset_request_id: Option<String>,
 ) {
-    // Stop the old turn before the compact task picks up the next turn's environments.
-    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
-    let turn_context = sess
-        .new_turn_with_default_settings(sub_id, Default::default())
-        .await;
-
+    let token_budget = sess.enabled(Feature::TokenBudget);
     if let Some(selection) = reload {
         sess.record_retained_context(codex_history::RetainedContextEvent::ReloadSelection {
             selection,
         })
         .await;
     }
-    sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
+    if token_budget {
+        let requests = Arc::clone(&sess.state.lock().await.manual_resets);
+        let generation = requests.reserve();
+        // Publish acceptance before making its generation eligible for a reset.
+        // The event stream therefore always identifies a request before a reset
+        // can claim it. The native request owner also admits cancellation.
+        sess.send_event_raw(Event {
+            id: sub_id.clone(),
+            msg: EventMsg::ContextReset(codex_protocol::context_reset::ContextReset {
+                thread_id: sess.thread_id.to_string(),
+                turn_id: sub_id.clone(),
+                request_id: context_reset_request_id.clone(),
+                generation,
+                reset_id: None,
+                status: codex_protocol::context_reset::ContextResetStatus::Accepted,
+                inline: false,
+                diagnostic: None,
+            }),
+        })
+        .await;
+        requests.publish(generation, context_reset_request_id);
+    }
+    let Some(admission) = sess
+        .services
+        .code_mode_service
+        .dispatch_broker
+        .admit_reset(None)
+    else {
+        if !token_budget {
+            sess.request_new_context_window().await;
+        }
+        return;
+    };
+    // Stop the old turn before the compact task picks up the next turn's environments.
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+    let turn_context = sess
+        .new_turn_with_default_settings(sub_id, Default::default())
+        .await;
+
+    let manual = if token_budget {
+        Some(sess.state.lock().await.manual_resets.begin(
+            &sess.thread_id.to_string(),
+            &turn_context.sub_id,
+            false,
+        ))
+    } else {
+        None
+    };
+    sess.spawn_task(
+        turn_context,
+        Vec::new(),
+        CompactTask::new(admission, manual),
+    )
+    .await;
 }
 
 pub(super) async fn persist_thread_memory_mode_update(
@@ -808,8 +857,18 @@ pub(super) async fn submission_loop(
                     reload_user_config(&sess).await;
                     false
                 }
-                Op::Compact { reload } => {
-                    compact(&sess, sub.id.clone(), reload).await;
+                Op::Compact { reload, context_reset_request_id } => {
+                    compact(&sess, sub.id.clone(), reload, context_reset_request_id).await;
+                    false
+                }
+                Op::CancelCompact { request_id } => {
+                    sess.cancel_manual_reset(request_id).await;
+                    false
+                }
+                Op::CompoundWaitResponse { cell_id, response } => {
+                    sess.services.code_mode_service.dispatch_broker.compound_response(
+                        &codex_code_mode::CellId::new(cell_id), response,
+                    );
                     false
                 }
                 Op::SetThreadMemoryMode { mode } => {

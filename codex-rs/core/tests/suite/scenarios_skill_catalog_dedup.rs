@@ -288,7 +288,7 @@ async fn skill_catalog_deltas_survive_resume_and_rebuild_after_compaction() -> R
 
     let resumed = builder().restart_with_auto_env(&server, &test).await?;
     resumed.submit_turn("Resume with the same skills.").await?;
-    resumed.codex.submit(Op::Compact { reload: None }).await?;
+    resumed.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&resumed.codex, |event| {
         assert!(!matches!(event, EventMsg::Error(_)), "{event:?}");
         matches!(event, EventMsg::TurnComplete(_))
@@ -319,7 +319,7 @@ async fn skill_catalog_deltas_survive_resume_and_rebuild_after_compaction() -> R
     )?;
     limited.thread_manager.skills_service().clear_cache();
     limited.submit_turn("Check the translation skill.").await?;
-    limited.codex.submit(Op::Compact { reload: None }).await?;
+    limited.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&limited.codex, |event| {
         assert!(!matches!(event, EventMsg::Error(_)), "{event:?}");
         matches!(event, EventMsg::TurnComplete(_))
@@ -375,7 +375,7 @@ async fn skill_catalog_deltas_survive_resume_and_rebuild_after_compaction() -> R
     limited
         .submit_turn("Check the documentation skill.")
         .await?;
-    limited.codex.submit(Op::Compact { reload: None }).await?;
+    limited.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&limited.codex, |event| {
         assert!(!matches!(event, EventMsg::Error(_)), "{event:?}");
         matches!(event, EventMsg::TurnComplete(_))

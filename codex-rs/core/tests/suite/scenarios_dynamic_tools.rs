@@ -239,7 +239,7 @@ async fn dynamic_tools_resume_override_stays_local_after_compaction() -> Result<
         .await?
         .thread;
     check_tools(&overridden, "deployment", "release").await?;
-    overridden.submit(Op::Compact { reload: None }).await?;
+    overridden.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&overridden, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

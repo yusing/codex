@@ -553,7 +553,7 @@ async fn compaction_accounting_errors_fail_without_retry(
     } else {
         CodexErrorInfo::SessionBudgetExceeded
     };
-    test.codex.submit(Op::Compact { reload: None }).await?;
+    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&test.codex, |event| {
         assert!(
             !matches!(event, EventMsg::StreamError(_)),
@@ -618,7 +618,7 @@ async fn restates_the_current_remainder_after_compaction() -> Result<()> {
         .await?;
 
     test.submit_turn("first turn").await?;
-    test.codex.submit(Op::Compact { reload: None }).await?;
+    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

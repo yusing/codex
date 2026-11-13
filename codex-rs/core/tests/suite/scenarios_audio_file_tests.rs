@@ -167,7 +167,7 @@ async fn uploaded_audio_survives_compaction_and_cold_resume(
                 AttachmentStoreErrorKind::NotFound,
             );
     }
-    test.codex.submit(Op::Compact { reload: None }).await?;
+    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -293,7 +293,7 @@ async fn expired_audio_during_required_compaction_after_a_text_only_checkpoint()
         .build_with_auto_env(&server)
         .await?;
     test.submit_text_turn("Begin with text only.").await?;
-    test.codex.submit(Op::Compact { reload: None }).await?;
+    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -810,7 +810,7 @@ async fn persistently_invalid_recording_is_removed_on_follow_up_and_resume(
     })
     .await;
     if compact_text {
-        test.codex.submit(Op::Compact { reload: None }).await?;
+        test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
         let compacted = wait_for_event_match(&test.codex, |event| match event {
             EventMsg::TurnComplete(done) => Some(done.clone()),
             _ => None,
@@ -913,7 +913,7 @@ async fn paginated_resume_filters_audio_rejected_before_and_after_compaction() -
         .await;
         assert_eq!(error.rejected_audio_file_ids, [id]);
         if id == "file_A" {
-            test.codex.submit(Op::Compact { reload: None }).await?;
+            test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
             wait_for_event(&test.codex, |event| {
                 matches!(event, EventMsg::TurnComplete(_))
             })

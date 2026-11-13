@@ -150,10 +150,13 @@ impl CodeModeWaitHandler {
                         .await
                 }
                 .map_err(|error| {
+                    exec.session.services.code_mode_service.dispatch_broker.compound_uncertain(&cell_id);
                     telemetry.finish(/*success*/ false);
                     FunctionCallError::RespondToModel(error)
                 })?;
                 if let codex_code_mode::WaitOutcome::LiveCell(response) = &wait_response {
+                    exec.session.services.code_mode_service.dispatch_broker
+                        .record_compound_evidence(&cell_id, response);
                     let runtime_cell_id = match response {
                         RuntimeResponse::Yielded { cell_id, .. }
                         | RuntimeResponse::Terminated { cell_id, .. }
@@ -198,6 +201,7 @@ impl CodeModeWaitHandler {
                             );
                     }
                 } else {
+                    exec.session.services.code_mode_service.dispatch_broker.compound_uncertain(&cell_id);
                     telemetry.record_cell_timing(&cell_id, CodeModeCellTiming::CellUnavailable);
                 }
                 if let Some(code_mode_host_duration) = wait_response.code_mode_host_duration() {

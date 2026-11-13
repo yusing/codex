@@ -200,7 +200,7 @@ async fn catalog_refresh_replaces_instructions_and_compaction_installs_latest_ba
         .await?;
     test.submit_turn("Continue without further changes.")
         .await?;
-    test.codex.submit(Op::Compact { reload: None }).await?;
+    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&test.codex, |event| {
         assert!(!matches!(event, EventMsg::Error(_)), "{event:?}");
         matches!(event, EventMsg::TurnComplete(_))

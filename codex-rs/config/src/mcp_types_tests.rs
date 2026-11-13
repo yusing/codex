@@ -573,6 +573,7 @@ fn deserialize_server_config_with_default_tool_approval_mode() {
         Some(&McpServerToolConfig {
             approval_mode: Some(AppToolApproval::Prompt),
             output_token_limit: std::num::NonZeroUsize::new(30_000),
+            compound_wait: false,
         })
     );
 

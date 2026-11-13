@@ -892,6 +892,36 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
             });
         }
+        EventMsg::CompoundWaitSettlement(request) => {
+            let cell_id = request.cell_id.clone();
+            let ticket = request.ticket.clone();
+            let (request_id, rx) = outgoing.send_request(
+                ServerRequestPayload::CompoundWaitSettle(request),
+            ).await;
+            tokio::spawn(async move {
+                let result = match rx.await {
+                    Ok(Ok(value)) => serde_json::from_value(value).map_err(|err| err.to_string()),
+                    Ok(Err(err)) => Err(format!("{err:?}")),
+                    Err(err) => Err(err.to_string()),
+                };
+                resolve_server_request_on_thread_listener(&thread_state, request_id).await;
+                let response = result.and_then(|response: codex_protocol::compound_wait::CompoundWaitDisposition| {
+                    if response.ticket == ticket { Ok(response) } else { Err("compound wait response ticket mismatch".into()) }
+                }).unwrap_or_else(|diagnostic| codex_protocol::compound_wait::CompoundWaitDisposition {
+                    action: codex_protocol::compound_wait::CompoundWaitAction::Uncertain,
+                    ticket, reload: None, diagnostic: Some(diagnostic),
+                });
+                if let Err(err) = conversation.submit(Op::CompoundWaitResponse { cell_id, response }).await {
+                    error!("failed to settle compound wait: {err}");
+                }
+            });
+        }
+        EventMsg::CompoundWaitReset(receipt) => {
+            outgoing.send_server_notification(ServerNotification::CompoundWaitReset(receipt)).await;
+        }
+        EventMsg::ContextReset(receipt) => {
+            outgoing.send_server_notification(ServerNotification::ContextReset(receipt)).await;
+        }
         EventMsg::ElicitationRequest(request) => {
             let mcp_tool_approval = matches!(
                 &request.request,

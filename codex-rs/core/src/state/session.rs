@@ -105,6 +105,7 @@ pub(crate) struct SessionState {
     pub(crate) restored_turn_routing: Option<(String, Vec<String>)>,
     /// Runtime accounting state for the active auto-compaction window.
     auto_compact_window: AutoCompactWindow,
+    pub(crate) manual_resets: Arc<super::ManualResets>,
     context_window_id_generator: ContextWindowIdGenerator,
     pub(crate) async_compaction: crate::session::async_compaction::AsyncCompactionState,
     /// Original request effort for the current model while configuration updates remain active.
@@ -161,6 +162,7 @@ impl SessionState {
             turn_attribution: None,
             restored_turn_routing: None,
             auto_compact_window: AutoCompactWindow::new_with_ids(auto_compact_window_ids),
+            manual_resets: Arc::new(super::ManualResets::default()),
             context_window_id_generator,
             async_compaction: crate::session::async_compaction::AsyncCompactionState::default(),
             reasoning_effort_pin: ReasoningEffortPin::Unset,
@@ -383,8 +385,16 @@ impl SessionState {
         self.auto_compact_window.request_new_context_window();
     }
 
+    pub(crate) fn has_pending_manual_reset(&self) -> bool {
+        self.manual_resets.pending()
+    }
+
     pub(crate) fn take_new_context_window_request(&mut self) -> bool {
         self.auto_compact_window.take_new_context_window_request()
+    }
+
+    pub(crate) fn has_new_context_window_request(&self) -> bool {
+        self.auto_compact_window.has_new_context_window_request() || self.manual_resets.pending()
     }
 
     pub(crate) fn start_new_context_window(&mut self) -> (u64, AutoCompactWindowIds) {

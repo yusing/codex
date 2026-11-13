@@ -195,7 +195,7 @@ async fn host_budget_context_refreshes_after_remote_compaction() -> Result<()> {
         .expect(1)
         .mount(&server)
         .await;
-    test.codex.submit(Op::Compact { reload: None }).await?;
+    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&test.codex, |event| {
         assert!(!matches!(event, EventMsg::Error(_)), "{event:?}");
         matches!(event, EventMsg::TurnComplete(_))

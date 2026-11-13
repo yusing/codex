@@ -287,7 +287,7 @@ async fn incremental_tools_append_changed_catalog_without_rewriting_history(
     test.submit_text_turn("Continue with the same updated tools.")
         .await?;
     if incremental_tools {
-        test.codex.submit(Op::Compact { reload: None }).await?;
+        test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
         wait_for_event(&test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })

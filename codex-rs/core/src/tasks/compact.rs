@@ -14,8 +14,25 @@ use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Copy, Default)]
-pub(crate) struct CompactTask;
+pub(crate) struct CompactTask {
+    admission: std::sync::Mutex<
+        Option<(
+            crate::tools::code_mode::ResetAdmission,
+            Option<crate::state::ManualResetLease>,
+        )>,
+    >,
+}
+
+impl CompactTask {
+    pub(crate) fn new(
+        admission: crate::tools::code_mode::ResetAdmission,
+        manual: Option<crate::state::ManualResetLease>,
+    ) -> Self {
+        Self {
+            admission: std::sync::Mutex::new(Some((admission, manual))),
+        }
+    }
+}
 
 impl SessionTask for CompactTask {
     fn kind(&self) -> TaskKind {
@@ -33,6 +50,14 @@ impl SessionTask for CompactTask {
         _input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
     ) -> SessionTaskResult {
+        // Release admission when reset execution ends, before task finalization
+        // can start an independently pending manual reset.
+        let (_admission, manual) = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("compact task runs once");
         let _profile_guard = ctx.turn_timing_state.begin_compaction();
         let _compaction_span = tracing::trace_span!(
             "codex.compaction",
@@ -42,6 +67,16 @@ impl SessionTask for CompactTask {
         );
         // Preparation errors must reach the task runner, which reports them to the client.
         session.emit_turn_started(&ctx, TaskKind::Compact).await;
+        if ctx.config.features.enabled(Feature::TokenBudget) {
+            crate::compact_token_budget::run_manual_compact_task(
+                session,
+                ctx,
+                manual.expect("token-budget reset owns its manual requests"),
+                &cancellation_token,
+            )
+            .await?;
+            return Ok(None);
+        }
         let step_context = session
             .capture_step_context(Arc::clone(&ctx), &cancellation_token)
             .await?;
@@ -50,17 +85,6 @@ impl SessionTask for CompactTask {
                 .build_world_state_for_step(&step_context, /*new_window*/ true)
                 .await?,
         );
-        if ctx.config.features.enabled(Feature::TokenBudget) {
-            crate::compact_token_budget::run_manual_compact_task(
-                session,
-                step_context,
-                world_state,
-                &cancellation_token,
-            )
-            .await?;
-            return Ok(None);
-        }
-
         let result = match ctx.provider.capabilities().remote_compaction {
             RemoteCompactionSupport::V2 => {
                 emit_compact_metric(

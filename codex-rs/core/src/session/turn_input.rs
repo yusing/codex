@@ -811,6 +811,7 @@ impl Session {
         }
         let has_trigger_turn = self.input_queue.has_trigger_turn_mailbox_items().await;
         if !has_trigger_turn
+            && !self.has_pending_manual_reset().await
             && !self.has_outstanding_durable_sleep()
             && !self.should_wake_on_agent_messages().await
         {
@@ -929,7 +930,7 @@ impl Session {
         Ok(())
     }
 
-    async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {
+    pub(crate) async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {
         let mut active_turn_guard = self.active_turn.lock().await;
         if let Some(active_turn) = active_turn_guard.as_ref()
             && active_turn.task.is_none()

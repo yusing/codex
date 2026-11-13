@@ -1,4 +1,8 @@
 mod shared;
+pub use codex_protocol::context_reset::ContextReset;
+pub use codex_protocol::compound_wait::CompoundWaitDisposition;
+pub use codex_protocol::compound_wait::CompoundWaitReset;
+pub use codex_protocol::compound_wait::CompoundWaitSettlement;
 
 mod account;
 mod application;

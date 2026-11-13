@@ -320,6 +320,7 @@ impl SampleTask {
                     | EventMsg::ApplyPatchApprovalRequest(_)
                     | EventMsg::RequestPermissions(_)
                     | EventMsg::RequestUserInput(_)
+                    | EventMsg::CompoundWaitSettlement(_)
                     | EventMsg::DynamicToolCallRequest(_)
                     | EventMsg::ElicitationRequest(_) => {
                         return Err(internal_error("sample turn requires client interaction"));

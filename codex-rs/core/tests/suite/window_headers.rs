@@ -148,7 +148,7 @@ async fn submit_user_turn(codex: &Arc<CodexThread>, text: &str) -> Result<()> {
 }
 
 async fn submit_compact_turn(codex: &Arc<CodexThread>) -> Result<()> {
-    codex.submit(Op::Compact { reload: None }).await?;
+    codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     Ok(())
 }

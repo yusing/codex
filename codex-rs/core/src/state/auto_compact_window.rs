@@ -80,7 +80,6 @@ impl AutoCompactWindow {
     pub(super) fn advance(&mut self, window_id: ContextWindowId) -> (u64, AutoCompactWindowIds) {
         self.window_number = self.window_number.saturating_add(1);
         self.ids.previous_window_id = Some(std::mem::replace(&mut self.ids.window_id, window_id));
-        self.new_context_window_requested = false;
         self.token_budget_reminder_delivered = false;
         self.auto_compact_fallback_delivered = false;
         (self.window_number, self.ids.clone())
@@ -102,6 +101,10 @@ impl AutoCompactWindow {
         let requested = self.new_context_window_requested;
         self.new_context_window_requested = false;
         requested
+    }
+
+    pub(super) fn has_new_context_window_request(&self) -> bool {
+        self.new_context_window_requested
     }
 
     /// Records the request-input side of the first server usage sample. The
@@ -200,7 +203,7 @@ mod tests {
         assert_eq!(ids.previous_window_id.as_ref(), Some(&restored_window_id));
         assert_eq!(ids.window_id, next_window_id);
         assert_ne!(ids.window_id, restored_window_id);
-        assert!(!window.take_new_context_window_request());
+        assert!(window.take_new_context_window_request());
         assert!(window.claim_token_budget_reminder());
         assert!(window.claim_auto_compact_fallback());
 

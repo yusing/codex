@@ -570,6 +570,7 @@ default_tools_approval_mode = "auto"
                     McpServerToolConfig {
                         approval_mode: Some(AppToolApproval::Prompt),
                         output_token_limit: std::num::NonZeroUsize::new(8_000),
+                        compound_wait: false,
                     },
                 ),
                 (
@@ -577,6 +578,7 @@ default_tools_approval_mode = "auto"
                     McpServerToolConfig {
                         approval_mode: Some(AppToolApproval::Prompt),
                         output_token_limit: std::num::NonZeroUsize::new(4_000),
+                        compound_wait: false,
                     },
                 ),
                 (

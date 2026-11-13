@@ -1218,6 +1218,10 @@ pub struct ThreadUnarchiveResponse {
 #[ts(export_to = "v2/")]
 pub struct ThreadCompactStartParams {
     pub thread_id: String,
+    /// Optional invocation-owned correlation for the token-budget reset lifecycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub context_reset_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "codex_protocol::protocol::ReloadSelection::deserialize_optional")]
     #[schemars(with = "codex_protocol::protocol::ReloadSelection")]
@@ -1229,6 +1233,19 @@ pub struct ThreadCompactStartParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadCompactStartResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct ThreadCompactCancelParams {
+    pub thread_id: String,
+    pub context_reset_request_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadCompactCancelResponse {}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

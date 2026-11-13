@@ -119,7 +119,7 @@ async fn extension_window_prefix_survives_compaction(compaction: &str) -> Result
     test.submit_turn("Update the plan.").await?;
     // Capture a new policy during compaction, not only one already rendered in history.
     *instructions.current.lock().expect("current instructions") = "C";
-    test.codex.submit(Op::Compact { reload: None }).await?;
+    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&test.codex, |event| {
         assert!(!matches!(event, EventMsg::Error(_)), "{event:?}");
         matches!(event, EventMsg::TurnComplete(_))

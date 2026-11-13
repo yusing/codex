@@ -915,6 +915,12 @@ pub enum Op {
         response: DynamicToolResponse,
     },
 
+    /// Resolve the exact native compound checkpoint admission.
+    CompoundWaitResponse {
+        cell_id: String,
+        response: crate::compound_wait::CompoundWaitDisposition,
+    },
+
     /// Request MCP servers to reinitialize and refresh cached tool lists.
     RefreshMcpServers,
 
@@ -926,7 +932,13 @@ pub enum Op {
 
     /// Reset the context window, optionally replacing the retained reload selection.
     #[debug("Compact")]
-    Compact { reload: Option<ReloadSelection> },
+    Compact {
+        reload: Option<ReloadSelection>,
+        context_reset_request_id: Option<String>,
+    },
+
+    /// Cancel one manual reset request without interrupting independent work.
+    CancelCompact { request_id: String },
 
     /// Set whether the thread remains eligible for memory generation.
     ///
@@ -1163,9 +1175,11 @@ impl Op {
             Self::UserInputAnswer { .. } => "user_input_answer",
             Self::RequestPermissionsResponse { .. } => "request_permissions_response",
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
+            Self::CompoundWaitResponse { .. } => "compound_wait_response",
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact { .. } => "compact",
+            Self::CancelCompact { .. } => "cancel_compact",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",
@@ -1567,6 +1581,9 @@ pub struct EnvironmentConnectionEvent {
 #[ts(tag = "type")]
 #[strum(serialize_all = "snake_case")]
 pub enum EventMsg {
+    ContextReset(crate::context_reset::ContextReset),
+    CompoundWaitSettlement(crate::compound_wait::CompoundWaitSettlement),
+    CompoundWaitReset(crate::compound_wait::CompoundWaitReset),
     /// Error while executing a submission
     Error(ErrorEvent),
 

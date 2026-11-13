@@ -75,7 +75,7 @@ async fn retained_tool_output_survives_compaction_and_resume() -> Result<()> {
                 "output": "Transient progress update. ".repeat(1000),
             }))?])
             .await?;
-        test.codex.submit(Op::Compact { reload: None }).await?;
+        test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
         wait_for_event(&test.codex, |event| {
             matches!(event, EventMsg::TurnComplete(_))
         })

@@ -108,6 +108,8 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::RemoteControlStatusChanged(_)
         | ServerNotification::ExternalAgentConfigImportProgress(_)
         | ServerNotification::ExternalAgentConfigImportCompleted(_)
+        | ServerNotification::ContextReset(_)
+        | ServerNotification::CompoundWaitReset(_)
         | ServerNotification::FsChanged(_)
         | ServerNotification::ReasoningSummaryTextDelta(_)
         | ServerNotification::ReasoningSummaryPartAdded(_)

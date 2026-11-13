@@ -2736,7 +2736,7 @@ async fn cached_score_survives_compaction_and_internal_context_but_not_user_inpu
             ),
         )])
         .await?;
-    test.codex.submit(Op::Compact { reload: None }).await?;
+    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

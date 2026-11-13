@@ -339,6 +339,7 @@ async fn guardians_retain_evidence_after_compaction_and_resume(
         if index == 1 {
             let id = app_server
                 .send_thread_compact_start_request(ThreadCompactStartParams {
+                    context_reset_request_id: None,
                     reload: None,
                     thread_id: thread_id.clone(),
                 })

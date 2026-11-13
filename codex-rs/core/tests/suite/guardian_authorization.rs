@@ -254,7 +254,7 @@ async fn guardian_revalidates_owning_session_before_allow(
     }
     let mut completed_status = None;
     if matches!(change, PendingReviewChange::Compaction) {
-        test.codex.submit(Op::Compact { reload: None }).await?;
+        test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
         loop {
             match test.codex.next_event().await?.msg {
                 EventMsg::GuardianAssessment(assessment)
@@ -375,7 +375,7 @@ async fn guardian_authorization_revision_survives_compaction_not_user_input() ->
     expected.user_message_revision += 1;
     assert_eq!(test.codex.guardian_authorization_version().await, expected);
 
-    test.codex.submit(Op::Compact { reload: None }).await?;
+    test.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

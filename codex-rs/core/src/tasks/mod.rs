@@ -527,13 +527,60 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) {
-        if !self.input_queue.has_pending_mailbox_items().await {
+        let manual_reset = self.has_pending_manual_reset().await;
+        if !manual_reset && !self.input_queue.has_pending_mailbox_items().await {
             return;
         }
+        let reset_admission = if manual_reset {
+            let Some(admission) = self
+                .services
+                .code_mode_service
+                .dispatch_broker
+                .admit_reset(None)
+            else {
+                return;
+            };
+            Some(admission)
+        } else {
+            None
+        };
 
         let Some((turn_state, previous_options)) = self.reserve_pending_work_turn().await else {
             return;
         };
+
+        if let Some(admission) = reset_admission {
+            let manual = self.state.lock().await.manual_resets.begin(
+                &self.thread_id.to_string(),
+                &sub_id,
+                false,
+            );
+            if manual.generation == 0 {
+                self.clear_reserved_idle_turn(&turn_state).await;
+                return;
+            }
+            let turn_context = self
+                .new_turn_with_default_settings(sub_id, Default::default())
+                .await;
+            if self
+                .active_turn
+                .lock()
+                .await
+                .as_ref()
+                .is_none_or(|turn| !Arc::ptr_eq(&turn.turn_state, &turn_state))
+            {
+                self.manual_reset_canceled(manual.generation, None).await;
+                manual.finish();
+                return;
+            }
+            self.start_task(
+                turn_context,
+                Vec::new(),
+                CompactTask::new(admission, Some(manual)),
+            )
+            .await;
+            return;
+        }
 
         self.services
             .models_manager
@@ -990,6 +1037,18 @@ impl Session {
                 false
             }
         };
+        for receipt in self
+            .services
+            .code_mode_service
+            .dispatch_broker
+            .end_compound_turn(
+                &turn_context.sub_id,
+                matches!(&event, EventMsg::TurnAborted(_)),
+            )
+        {
+            self.send_event(turn_context.as_ref(), EventMsg::CompoundWaitReset(receipt))
+                .await;
+        }
         if saved_guardian_completion {
             // The parent can request another review as soon as it receives this event.
             self.send_event(turn_context.as_ref(), event).await;
@@ -1093,6 +1152,7 @@ impl Session {
         task.handle.abort();
         // Aborting schedules destruction; join before freezing the turn's timing.
         let _ = task.handle.await;
+        self.finish_aborted_manual_reset(&task.turn_context).await;
 
         if let Err(error) = self
             .record_pending_initial_input(
@@ -1172,6 +1232,18 @@ impl Session {
             duration_ms,
         });
         self.send_event(task.turn_context.as_ref(), event).await;
+        for receipt in self
+            .services
+            .code_mode_service
+            .dispatch_broker
+            .end_compound_turn(&task.turn_context.sub_id, true)
+        {
+            self.send_event(
+                task.turn_context.as_ref(),
+                EventMsg::CompoundWaitReset(receipt),
+            )
+            .await;
+        }
         // Regular items were flushed before this terminal event was appended; buffering
         // thread writers may not flush it without another explicit barrier.
         if let Err(err) = self.flush_rollout().await {

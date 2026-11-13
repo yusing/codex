@@ -5364,9 +5364,12 @@ impl Session {
         state.request_new_context_window();
     }
 
-    pub(crate) async fn take_new_context_window_request(&self) -> bool {
-        let mut state = self.state.lock().await;
-        state.take_new_context_window_request()
+    pub(crate) async fn has_pending_manual_reset(&self) -> bool {
+        self.state.lock().await.has_pending_manual_reset()
+    }
+
+    pub(crate) async fn has_new_context_window_request(&self) -> bool {
+        self.state.lock().await.has_new_context_window_request()
     }
 
     pub(crate) async fn start_new_context_window(
@@ -5942,6 +5945,18 @@ impl Session {
 
     pub async fn interrupt_task(self: &Arc<Self>) {
         info!("interrupt received: abort current task, if any");
+        let generation = self.state.lock().await.manual_resets.cancel_pending();
+        if generation != 0 {
+            self.send_event_raw(Event {
+                id: String::new(),
+                msg: EventMsg::ContextReset(codex_protocol::context_reset::ContextReset {
+                    thread_id: self.thread_id.to_string(), turn_id: String::new(),
+                    request_id: None, generation, reset_id: None,
+                    status: codex_protocol::context_reset::ContextResetStatus::Canceled,
+                    inline: true, diagnostic: None,
+                }),
+            }).await;
+        }
         let had_active_turn = self.active_turn.lock().await.is_some();
         self.abort_all_tasks(TurnAbortReason::Interrupted).await;
         if !had_active_turn {

@@ -33,11 +33,13 @@ use crate::tools::call_trace;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::parallel::ToolCallRuntime;
 
-pub(super) struct CodeModeDispatchBroker {
-    thread_id: ThreadId,
+pub(crate) struct CodeModeDispatchBroker {
+    pub(super) thread_id: ThreadId,
     dispatch_tx: async_channel::Sender<DispatchMessage>,
     dispatch_rx: async_channel::Receiver<DispatchMessage>,
-    dispatch_gates: Arc<Mutex<HashMap<CellId, CellDispatchGate>>>,
+    pub(super) dispatch_gates: Arc<Mutex<HashMap<CellId, CellDispatchGate>>>,
+    pub(super) reset_admitted: std::sync::atomic::AtomicBool,
+    pub(super) compound_changed: tokio::sync::Notify,
     executed_tool_calls: ExecutedToolCalls,
 }
 
@@ -47,12 +49,14 @@ pub(super) struct CodeModeCellDelegate {
     pub(super) step_context: Arc<StepContext>,
 }
 
-struct CellDispatchGate {
+pub(super) struct CellDispatchGate {
     ready: watch::Sender<bool>,
     // Callbacks may create the gate before exec attaches its origin. None means
     // no origin is attached; Some retains the original item and window across
     // waits, even if the best-effort item lookup found no ID.
-    originating_call: Option<ToolCallOrigin>,
+    pub(super) originating_call: Option<ToolCallOrigin>,
+    pub(super) compound: Option<super::compound::CompoundCell>,
+    pub(super) closed: bool,
 }
 
 impl CodeModeDispatchBroker {
@@ -63,6 +67,8 @@ impl CodeModeDispatchBroker {
             dispatch_tx,
             dispatch_rx,
             dispatch_gates: Arc::new(Mutex::new(HashMap::new())),
+            reset_admitted: std::sync::atomic::AtomicBool::new(false),
+            compound_changed: tokio::sync::Notify::new(),
             executed_tool_calls,
         }
     }
@@ -82,6 +88,8 @@ impl CodeModeDispatchBroker {
                 .or_insert_with(|| CellDispatchGate {
                     ready: watch::channel(false).0,
                     originating_call: None,
+                    compound: None,
+                    closed: false,
                 });
             gate.originating_call = originating_call;
             gate.ready.clone()
@@ -102,7 +110,12 @@ impl CodeModeDispatchBroker {
             .dispatch_gates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        dispatch_gates.remove(cell_id);
+        if let Some(gate) = dispatch_gates.get_mut(cell_id) {
+            gate.closed = true;
+            if gate.compound.is_none() {
+                dispatch_gates.remove(cell_id);
+            }
+        }
         self.executed_tool_calls.finish_cell_recording(cell_id);
     }
 
@@ -110,8 +123,9 @@ impl CodeModeDispatchBroker {
         self.dispatch_gates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .keys()
-            .cloned()
+            .iter()
+            .filter(|(_, gate)| !gate.closed)
+            .map(|(id, _)| id.clone())
             .collect()
     }
 
@@ -261,6 +275,8 @@ fn dispatch_gate(
         .or_insert_with(|| CellDispatchGate {
             ready: watch::channel(false).0,
             originating_call: None,
+            compound: None,
+            closed: false,
         })
         .ready
         .clone()
@@ -274,7 +290,13 @@ fn remove_dispatch_gate(
         Ok(dispatch_gates) => dispatch_gates,
         Err(poisoned) => poisoned.into_inner(),
     };
-    dispatch_gates.remove(cell_id);
+    // A canceled callback owns only an unattached placeholder, not the cell or
+    // another invocation's compound registration.
+    if dispatch_gates.get(cell_id).is_some_and(|gate| {
+        gate.originating_call.is_none() && !*gate.ready.borrow() && gate.compound.is_none()
+    }) {
+        dispatch_gates.remove(cell_id);
+    }
 }
 
 async fn wait_until_cell_ready_for_dispatch(

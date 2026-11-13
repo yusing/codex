@@ -1350,7 +1350,7 @@ async fn reasoning_effort_override_unavailable_recovers_saved_history(
         })
         .collect::<Vec<_>>();
     assert_eq!(saved_updates, vec![effort_update(ReasoningEffort::Medium)]);
-    resumed.codex.submit(Op::Compact { reload: None }).await?;
+    resumed.codex.submit(Op::Compact { reload: None, context_reset_request_id: None }).await?;
     wait_for_event(&resumed.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
