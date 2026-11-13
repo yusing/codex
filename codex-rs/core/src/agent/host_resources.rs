@@ -91,6 +91,8 @@ pub struct AgentHostCallbacks {
             + Send
             + Sync,
     >,
+    /// Borrows the app-server launch's existing reducer, independent of Session event transport.
+    pub record_feature_use: Arc<dyn Fn(codex_protocol::feature_use::FeatureUseFact) + Send + Sync>,
     pub route_foreign: Arc<
         dyn Fn(
                 codex_protocol::agent_foreign::AgentForeignRequest,

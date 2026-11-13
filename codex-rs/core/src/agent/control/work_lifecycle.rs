@@ -16,6 +16,8 @@ use codex_protocol::agent_coordination::CoordinationTarget;
 use codex_protocol::agent_coordination::CoordinationTerminalDelivery;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::feature_use::FeatureUseEvent;
+use codex_protocol::feature_use::FeatureUseFact;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
@@ -303,6 +305,21 @@ impl LocalAgentRuntime {
             .ok_or_else(|| work_error("message sender is not registered"))
     }
 
+    pub(crate) fn record_feature_use(
+        &self,
+        actor: ThreadId,
+        operation: &str,
+        event: FeatureUseEvent,
+    ) {
+        if let Some(host) = self.host_callbacks.get() {
+            (host.record_feature_use)(FeatureUseFact {
+                thread_id: actor.to_string(),
+                operation: operation.to_owned(),
+                event,
+            });
+        }
+    }
+
     pub(crate) async fn prepare_input(
         &self,
         actor: ThreadId,
@@ -493,6 +510,14 @@ impl LocalAgentRuntime {
             })
             .await
             .map_err(work_error)?;
+        self.record_feature_use(
+            sender,
+            &id.to_string(),
+            FeatureUseEvent::MessageAccepted {
+                sources,
+                btw: false,
+            },
+        );
         self.notify_coordination(actor).await;
         Ok(id.to_string())
     }

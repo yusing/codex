@@ -12,6 +12,7 @@ use codex_history::InitialHistory;
 use codex_history::RolloutItem;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::feature_use::FeatureUseEvent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
@@ -56,6 +57,11 @@ impl super::LocalAgentControl {
             Ok(answer) => Ok(answer),
             Err(failure) => {
                 if !failure.accepted {
+                    self.runtime.record_feature_use(
+                        request.caller,
+                        &operation,
+                        FeatureUseEvent::SideQuestionRejected,
+                    );
                 }
                 Err(failure.error)
             }
@@ -200,6 +206,14 @@ pub(crate) async fn start_side_question(
             .agent_metadata_for_thread(operation.caller)
             .is_some()
         {
+            runtime.record_feature_use(
+                operation.caller,
+                &operation.operation_id,
+                FeatureUseEvent::MessageAccepted {
+                    sources: has_sources,
+                    btw: true,
+                },
+            );
         }
         let execution = run_codex_thread_one_shot_with_tool_policy(
             prepared.config,
@@ -267,6 +281,11 @@ async fn finish_side_question(
             .agent_metadata_for_thread(operation.caller)
             .is_some()
     {
+        runtime.record_feature_use(
+            operation.caller,
+            &operation.operation_id,
+            FeatureUseEvent::SideQuestionFailed,
+        );
     }
     result
 }

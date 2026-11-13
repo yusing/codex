@@ -4,6 +4,7 @@ use crate::tools::context::ToolCallSource;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use codex_code_mode::CellId;
+use codex_protocol::feature_use::FeatureUseEvent;
 use codex_protocol::protocol::ReloadSelection;
 use codex_state::coordination_wait::WaitMode;
 use codex_state::coordination_wait::WaitOptions;
@@ -81,6 +82,14 @@ impl Handler {
             .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
         // Durable registration precedes publication. Repeated calls share the ticket
         // operation identity, so native feature-use reduction counts it only once.
+        runtime.record_feature_use(
+            session.thread_id,
+            &ticket.id.to_string(),
+            FeatureUseEvent::WaitRegistered {
+                all: options.mode == WaitMode::All,
+                progress: options.progress_interval_ms.is_some(),
+            },
+        );
         let item = CollabAgentToolCallItem {
             id: invocation.call_id,
             tool: CollabAgentTool::Wait,

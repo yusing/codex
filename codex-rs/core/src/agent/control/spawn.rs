@@ -996,6 +996,11 @@ impl LocalAgentControl {
                     .is_some_and(|selection| !selection.sources.is_empty())
                     && let Some(parent) = parent_thread_id
                 {
+                    self.runtime.record_feature_use(
+                        parent,
+                        &new_thread.thread_id.to_string(),
+                        codex_protocol::feature_use::FeatureUseEvent::PreloadRejected,
+                    );
                 }
                 return Err(error.with_agent_context(AgentErrorContext::InputAdmission));
             }
@@ -1287,6 +1292,13 @@ impl LocalAgentControl {
         use crate::agent::api::AgentInput;
         use crate::agent::api::SpawnRequest;
         use crate::agent::types::MessageDeliveryMode;
+        let has_sources = matches!(&message, crate::agent::types::AgentMessage::Plaintext(text)
+            if !crate::compact_token_budget::reload::message_selection(text).sources.is_empty());
+        let preload = settings
+            .options
+            .preload
+            .as_ref()
+            .is_some_and(|selection| !selection.sources.is_empty());
         let (agent, config) = self
             .spawn(SpawnRequest {
                 caller: identity.actor_id,
@@ -1299,6 +1311,14 @@ impl LocalAgentControl {
                 options: settings.options,
             })
             .await?;
+        self.runtime.record_feature_use(
+            identity.actor_id,
+            &agent.thread_id.to_string(),
+            codex_protocol::feature_use::FeatureUseEvent::ChildAdmitted {
+                preload,
+                sources: has_sources,
+            },
+        );
         Ok(crate::thread_spawn::ThreadSpawnResult {
             agent,
             config,

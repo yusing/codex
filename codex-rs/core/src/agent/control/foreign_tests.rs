@@ -553,3 +553,112 @@ fn response_must_match_original_operation_target_and_delivery_identity() {
         .is_err()
     );
 }
+
+#[tokio::test]
+async fn source_counts_known_btw_admission_and_never_invents_a_transport_receipt()
+-> anyhow::Result<()> {
+    let (_directory, runtime, root, _target) = fixture().await?;
+    let foreign = ThreadId::new();
+    let facts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    assert!(
+        runtime
+            .host_callbacks
+            .set(crate::AgentHostCallbacks {
+                host_connection_id: 17,
+                publish_coordination: Arc::new(|_| Box::pin(async {})),
+                record_feature_use: Arc::new({
+                    let facts = Arc::clone(&facts);
+                    move |fact| facts.lock().unwrap().push(fact)
+                }),
+                route_foreign: Arc::new(move |request, _| Box::pin(async move {
+                    assert_eq!(request.source.root_thread_id, root);
+                    assert_eq!(request.source.actor_id, root);
+                    assert_eq!(request.target_thread_id, foreign);
+                    let AgentForeignOperation::SideQuestion { question } = request.operation else {
+                        panic!("wrong operation");
+                    };
+                    match question.as_str() {
+                        "unknown transport" => Err(CodexErr::Fatal(
+                            "destination receipt unavailable".to_owned(),
+                        )),
+                        "known rejection" => Ok(ForeignResponse::SideQuestionFailed {
+                            target_thread_id: foreign,
+                            accepted: false,
+                            error: "recipient rejected".to_owned(),
+                        }),
+                        "known execution failure" => Ok(ForeignResponse::SideQuestionFailed {
+                            target_thread_id: foreign,
+                            accepted: true,
+                            error: "execution failed".to_owned(),
+                        }),
+                        "answer" => Ok(ForeignResponse::SideQuestionAnswered {
+                            target_thread_id: foreign,
+                            answer: "independent answer".to_owned(),
+                        }),
+                        _ => panic!("unexpected question"),
+                    }
+                })),
+                prepare_final_capture: Arc::new(|_, _| Box::pin(async {
+                    panic!("unexpected final capture")
+                })),
+                admit_child: Arc::new(|_, _| Box::pin(async {
+                    panic!("foreign actor must not be enrolled")
+                })),
+                freeze_progress: Arc::new(|_, _| Box::pin(async { panic!("unexpected progress") })),
+                prepare_progress_output: Arc::new(|_, _| Box::pin(async {
+                    panic!("unexpected progress")
+                })),
+                project_final_capture: Arc::new(|_, _| Box::pin(async {
+                    panic!("unexpected final projection")
+                })),
+            })
+            .is_ok()
+    );
+    for question in [
+        "unknown transport",
+        "known rejection",
+        "known execution failure",
+        "answer",
+    ] {
+        let result = runtime
+            .route_foreign(
+                root,
+                "turn",
+                question,
+                foreign,
+                AgentForeignOperation::SideQuestion {
+                    question: question.to_owned(),
+                },
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(result.is_ok(), question == "answer");
+    }
+    let facts = facts.lock().unwrap();
+    assert!(facts.iter().all(|fact| fact.thread_id == root.to_string()));
+    assert_eq!(
+        facts
+            .iter()
+            .map(|fact| fact.event.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            FeatureUseEvent::SideQuestionRejected,
+            FeatureUseEvent::MessageAccepted {
+                sources: false,
+                btw: true
+            },
+            FeatureUseEvent::SideQuestionFailed,
+            FeatureUseEvent::MessageAccepted {
+                sources: false,
+                btw: true
+            },
+        ]
+    );
+    assert!(
+        runtime
+            .registry
+            .agent_metadata_for_thread(foreign)
+            .is_none()
+    );
+    Ok(())
+}

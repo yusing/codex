@@ -508,6 +508,7 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
     pub(crate) thread_manager: Arc<ThreadManager>,
+    pub(crate) feature_use: Arc<std::sync::Mutex<crate::feature_use::FeatureUse>>,
     pub(super) outgoing: Arc<OutgoingMessageSender>,
     pub(super) arg0_paths: Arg0DispatchPaths,
     pub(super) config: Arc<Config>,
@@ -569,6 +570,7 @@ impl ThreadRequestProcessor {
         Self {
             auth_manager,
             thread_manager,
+            feature_use: Arc::default(),
             outgoing,
             arg0_paths,
             config,
@@ -886,6 +888,21 @@ impl ThreadRequestProcessor {
             }
             Err(error) => Err(error),
         }
+    }
+
+    pub(crate) fn feature_use_read(
+        &self,
+        params: codex_app_server_protocol::FeatureUseReadParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if params.threads.is_empty() || params.threads.iter().any(String::is_empty) {
+            return Err(invalid_params(
+                "feature use requires nonempty actor identities",
+            ));
+        }
+        let threads = self.feature_use.lock().unwrap().read(params.threads);
+        Ok(Some(
+            codex_app_server_protocol::FeatureUseReadResponse { threads }.into(),
+        ))
     }
 
     pub(crate) async fn thread_compact_start(
@@ -1269,6 +1286,7 @@ impl ThreadRequestProcessor {
 
     fn listener_task_context(&self) -> ListenerTaskContext {
         ListenerTaskContext {
+            feature_use: Arc::clone(&self.feature_use),
             thread_manager: Arc::clone(&self.thread_manager),
             thread_state_manager: self.thread_state_manager.clone(),
             outgoing: Arc::clone(&self.outgoing),
@@ -1399,6 +1417,7 @@ impl ThreadRequestProcessor {
         );
         typesafe_overrides.ephemeral = ephemeral;
         let listener_task_context = ListenerTaskContext {
+            feature_use: Arc::clone(&self.feature_use),
             thread_manager: Arc::clone(&self.thread_manager),
             thread_state_manager: self.thread_state_manager.clone(),
             outgoing: Arc::clone(&self.outgoing),

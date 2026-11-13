@@ -11,6 +11,8 @@ use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::write_chatgpt_auth;
 use codex_app_server_protocol::CodexErrorInfo;
+use codex_app_server_protocol::FeatureUseCounts;
+use codex_app_server_protocol::FeatureUseReadResponse;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
@@ -546,6 +548,18 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(started_id, completed_id);
+    let counts_id = mcp
+        .send_request("featureUse/read", Some(json!({"threads": [&thread_id]})))
+        .await?;
+    let counts: FeatureUseReadResponse = mcp.read_response(counts_id).await?;
+    assert_eq!(
+        counts.threads[&thread_id],
+        FeatureUseCounts {
+            compactions: 1,
+            ..Default::default()
+        }
+    );
+
     // A completed turn after compaction permits bounded replay. Neither this turn nor
     // resume resends settings, so restoring the updated cwd and roots depends on the
     // checkpoint; startup metadata does not contain the extra root.
@@ -574,6 +588,78 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         (updated_cwd.path(), updated_roots)
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn self_reset_feature_facts_reach_native_counts_once() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let home = TempDir::new()?;
+    let preload = home.path().join("reload.txt");
+    std::fs::write(&preload, "native reset preload marker")?;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_function_call(
+                    "reset",
+                    "new_context",
+                    &json!({
+                        "reload": {"sources": [format!("@{}", preload.display())]}
+                    })
+                    .to_string(),
+                ),
+                responses::ev_completed("reset"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("answer", "reset complete"),
+                responses::ev_completed("answer"),
+            ]),
+        ],
+    )
+    .await;
+    compaction_config(&server.uri(), 1_000_000)
+        .enable_feature(Feature::TokenBudget)
+        .write(home.path())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .build_initialized()
+        .await?;
+    let thread = mcp
+        .start_thread(ThreadStartParams::default())
+        .await?
+        .thread
+        .id;
+    send_turn_and_wait(&mut mcp, &thread, "Reset and reload").await?;
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].body_contains_text("native reset preload marker"));
+    let source: serde_json::Value = timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("rawResponseItem/completed")).await??;
+    let fact = &source["sourceAcquisition"];
+    assert_eq!(fact["purpose"], "reload");
+    assert!(!fact["id"].as_str().unwrap().is_empty());
+    assert_eq!(fact["sources"][0]["kind"], "file");
+    assert_eq!(fact["sources"][0]["success"], true);
+    assert_eq!(fact["sources"][0]["path"], preload.to_string_lossy().as_ref());
+    let expected = FeatureUseCounts {
+        compactions: 1,
+        self_compactions: 1,
+        self_compactions_completed: 1,
+        compaction_preloads: 1,
+        ..Default::default()
+    };
+    let read = mcp
+        .send_request("featureUse/read", Some(json!({"threads": [&thread]})))
+        .await?;
+    let counts: FeatureUseReadResponse = mcp.read_response(read).await?;
+    assert_eq!(counts.threads[&thread], expected);
+    // Retrieval is read-only; native owners count without host reflection.
+    let read = mcp
+        .send_request("featureUse/read", Some(json!({"threads": [&thread]})))
+        .await?;
+    let counts: FeatureUseReadResponse = mcp.read_response(read).await?;
+    assert_eq!(counts.threads[&thread], expected);
     Ok(())
 }
 

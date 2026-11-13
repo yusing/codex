@@ -798,6 +798,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::AgentInterruptResponse,
     },
+    FeatureUseRead => "featureUse/read" {
+        params: v2::FeatureUseReadParams,
+        serialization: None,
+        response: v2::FeatureUseReadResponse,
+    },
     ThreadCompactCancel => "thread/compact/cancel" {
         params: v2::ThreadCompactCancelParams,
         serialization: thread_id(params.thread_id),

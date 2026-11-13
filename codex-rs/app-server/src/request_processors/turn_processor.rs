@@ -81,6 +81,7 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
 
 #[derive(Clone)]
 pub(crate) struct TurnRequestProcessor {
+    feature_use: Arc<std::sync::Mutex<crate::feature_use::FeatureUse>>,
     thread_manager: Arc<ThreadManager>,
     outgoing: Arc<OutgoingMessageSender>,
     analytics_events_client: AnalyticsEventsClient,
@@ -149,8 +150,10 @@ impl TurnRequestProcessor {
         thread_watch_manager: ThreadWatchManager,
         skills_watcher: Arc<SkillsWatcher>,
         turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
+        feature_use: Arc<std::sync::Mutex<crate::feature_use::FeatureUse>>,
     ) -> Self {
         Self {
+            feature_use,
             thread_manager,
             outgoing,
             analytics_events_client,
@@ -1566,6 +1569,7 @@ impl TurnRequestProcessor {
 
     fn listener_task_context(&self) -> ListenerTaskContext {
         ListenerTaskContext {
+            feature_use: Arc::clone(&self.feature_use),
             thread_manager: Arc::clone(&self.thread_manager),
             thread_state_manager: self.thread_state_manager.clone(),
             outgoing: Arc::clone(&self.outgoing),

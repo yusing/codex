@@ -202,6 +202,7 @@ async fn native_model_foreign_message_list_and_inspect_use_destination_owner() {
             .install_host_callbacks(crate::AgentHostCallbacks {
                 host_connection_id: 23,
                 publish_coordination: Arc::new(|_| Box::pin(async {})),
+                record_feature_use: Arc::new(|_| {}),
                 route_foreign: Arc::new({
                     let destination = Arc::clone(&destination);
                     let routed = Arc::clone(&routed);

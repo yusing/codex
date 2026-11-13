@@ -201,6 +201,7 @@ async fn host_admission_blocks_child_start_and_refusal_leaves_no_runtime() {
                 .install_host_callbacks(crate::AgentHostCallbacks {
                     host_connection_id: 42,
                     publish_coordination: Arc::new(|_| Box::pin(async {})),
+                    record_feature_use: Arc::new(|_| {}),
                     route_foreign: Arc::new(|_, _| Box::pin(async {
                         panic!("unexpected foreign routing")
                     })),

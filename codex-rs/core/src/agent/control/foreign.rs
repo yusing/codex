@@ -14,6 +14,7 @@ use codex_protocol::agent_foreign::AgentForeignOrigin;
 use codex_protocol::agent_foreign::AgentForeignRequest;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::feature_use::FeatureUseEvent;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -91,14 +92,42 @@ impl LocalAgentRuntime {
         validate_response(&request, &response)?;
         match &response {
             ForeignResponse::MessageAccepted { .. } => {
+                self.record_feature_use(
+                    caller,
+                    &operation_id,
+                    FeatureUseEvent::MessageAccepted {
+                        sources,
+                        btw: false,
+                    },
+                );
             }
             ForeignResponse::SideQuestionAnswered { .. } => {
+                self.record_feature_use(
+                    caller,
+                    &operation_id,
+                    FeatureUseEvent::MessageAccepted { sources, btw: true },
+                );
             }
             ForeignResponse::SideQuestionFailed {
                 accepted, error, ..
             } => {
                 if *accepted {
+                    self.record_feature_use(
+                        caller,
+                        &operation_id,
+                        FeatureUseEvent::MessageAccepted { sources, btw: true },
+                    );
+                    self.record_feature_use(
+                        caller,
+                        &operation_id,
+                        FeatureUseEvent::SideQuestionFailed,
+                    );
                 } else {
+                    self.record_feature_use(
+                        caller,
+                        &operation_id,
+                        FeatureUseEvent::SideQuestionRejected,
+                    );
                 }
                 return Err(invalid(error));
             }

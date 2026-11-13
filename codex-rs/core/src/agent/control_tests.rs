@@ -287,6 +287,37 @@ fn spawn_agent_call(call_id: &str) -> ResponseItem {
     }
 }
 
+fn capture_feature_use(
+    runtime: &LocalAgentRuntime,
+) -> Arc<std::sync::Mutex<Vec<codex_protocol::feature_use::FeatureUseFact>>> {
+    let facts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut callbacks = crate::AgentHostCallbacks {
+        host_connection_id: 1,
+        publish_coordination: Arc::new(|_| Box::pin(async {})),
+        record_feature_use: Arc::new(|_| {}),
+        route_foreign: Arc::new(|_, _| {
+            Box::pin(async { Err(CodexErr::Fatal("unused route".into())) })
+        }),
+        prepare_final_capture: Arc::new(|_, _| Box::pin(async { Ok(None) })),
+        admit_child: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+        freeze_progress: Arc::new(|_, _| {
+            Box::pin(async { Err(CodexErr::Fatal("unused progress".into())) })
+        }),
+        prepare_progress_output: Arc::new(|_, _| {
+            Box::pin(async { Err(CodexErr::Fatal("unused progress".into())) })
+        }),
+        project_final_capture: Arc::new(|_, _| {
+            Box::pin(async { Err(CodexErr::Fatal("unused projection".into())) })
+        }),
+    };
+    callbacks.record_feature_use = Arc::new({
+        let facts = Arc::clone(&facts);
+        move |fact| facts.lock().unwrap().push(fact)
+    });
+    assert!(runtime.host_callbacks.set(callbacks).is_ok());
+    facts
+}
+
 struct AgentControlHarness {
     _home: TempDir,
     config: Config,
@@ -6227,6 +6258,7 @@ async fn native_spawn_freezes_assignment_sources_and_preload_in_recipient_cwd_be
     std::fs::write(child_directory.join("preload.txt"), &preload_body).unwrap();
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_id, parent) = harness.start_thread().await;
+    let facts = capture_feature_use(&parent.session.services.local_agent_runtime);
     let cancellation = CancellationToken::new();
     let step = parent
         .session
@@ -6366,6 +6398,29 @@ async fn native_spawn_freezes_assignment_sources_and_preload_in_recipient_cwd_be
     assert!(saved_preload.contains(&preload_body));
     assert!(!saved_preload.contains("LATER_PRELOAD"));
     assert!(!communication.content.contains("LATER_SOURCE"));
+    let facts = facts.lock().unwrap().clone();
+    assert!(!facts.iter().any(|fact| matches!(
+        fact.event,
+        codex_protocol::feature_use::FeatureUseEvent::PreloadRejected
+    )));
+    let fact = facts
+        .iter()
+        .find(|fact| {
+            matches!(
+                fact.event,
+                codex_protocol::feature_use::FeatureUseEvent::ChildAdmitted { .. }
+            )
+        })
+        .expect("native admission counted internally");
+    assert_eq!(fact.thread_id, parent.session.thread_id.to_string());
+    assert_eq!(fact.operation, child.session.thread_id.to_string());
+    assert_eq!(
+        fact.event,
+        codex_protocol::feature_use::FeatureUseEvent::ChildAdmitted {
+            preload: true,
+            sources: true
+        }
+    );
     persist_thread_for_tree_resume(&child, "persist child").await;
     persist_thread_for_tree_resume(&parent, "persist parent").await;
     let rollout_path = parent.rollout_path().expect("materialized parent rollout");
@@ -6618,6 +6673,7 @@ async fn native_spawn_literal_and_encrypted_assignments_do_not_need_source_envir
         })
         .await
         .unwrap();
+    let facts = capture_feature_use(&parent.thread.session.services.local_agent_runtime);
     let step = StepContext::for_test(parent.thread.session.new_default_turn().await);
     assert!(step.environments.primary().is_none());
     for (name, message) in [
@@ -6648,6 +6704,27 @@ async fn native_spawn_literal_and_encrypted_assignments_do_not_need_source_envir
             message,
         )
         .await;
+        let event = facts
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|fact| {
+                fact.operation == result.agent.thread_id.to_string()
+                    && matches!(
+                        fact.event,
+                        codex_protocol::feature_use::FeatureUseEvent::ChildAdmitted { .. }
+                    )
+            })
+            .expect("native admission counted internally")
+            .event
+            .clone();
+        assert_eq!(
+            event,
+            codex_protocol::feature_use::FeatureUseEvent::ChildAdmitted {
+                preload: false,
+                sources: false
+            }
+        );
         let child = harness
             .manager
             .get_thread(result.agent.thread_id)
@@ -6688,7 +6765,11 @@ async fn native_spawn_literal_and_encrypted_assignments_do_not_need_source_envir
             .await
             .unwrap();
     }
-    let rejected = harness.control
+    let rejected = parent
+        .thread
+        .session
+        .services
+        .agent_control
         .spawn(SpawnRequest {
             caller: parent.thread_id,
             config: harness.config.clone(),
@@ -6713,5 +6794,22 @@ async fn native_spawn_literal_and_encrypted_assignments_do_not_need_source_envir
         })
         .await;
     assert!(rejected.is_err());
+    let rejection = facts
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|fact| {
+            matches!(
+                fact.event,
+                codex_protocol::feature_use::FeatureUseEvent::PreloadRejected
+            )
+        })
+        .expect("native rejected preload counted internally")
+        .clone();
+    assert_eq!(rejection.thread_id, parent.thread_id.to_string());
+    assert_eq!(
+        rejection.event,
+        codex_protocol::feature_use::FeatureUseEvent::PreloadRejected
+    );
     parent.thread.shutdown_and_wait().await.unwrap();
 }

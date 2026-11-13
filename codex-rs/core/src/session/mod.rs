@@ -3136,6 +3136,11 @@ impl Session {
         user_input_extension_data: Option<&BTreeMap<String, Value>>,
     ) {
         if matches!(&item, TurnItem::ContextCompaction(_)) {
+            self.services.local_agent_runtime.record_feature_use(
+                self.thread_id,
+                &item.id(),
+                codex_protocol::feature_use::FeatureUseEvent::ResetCompleted,
+            );
         }
         record_turn_ttfm_metric(turn_context, &item).await;
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
@@ -4802,6 +4807,11 @@ impl Session {
         // is still held. Failure after this point remains an uncertain acceptance.
         self.confirm_coordination_input(&input, &submission).await?;
         drop(active);
+        runtime.record_feature_use(
+            sender,
+            &submission,
+            codex_protocol::feature_use::FeatureUseEvent::AssignmentDelivered { sources },
+        );
         self.maybe_start_turn_for_pending_work_with_sub_id(submission.clone())
             .await;
         Ok(submission)
@@ -4974,6 +4984,13 @@ impl Session {
                     }),
                 ) = (delivery.publication.sender_id, payload)
                 {
+                    runtime.record_feature_use(
+                        actor,
+                        &delivery.publication.id.to_string(),
+                        codex_protocol::feature_use::FeatureUseEvent::FinalDelivered {
+                            changes: capture.is_some(),
+                        },
+                    );
                 }
             }
         }

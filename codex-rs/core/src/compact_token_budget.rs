@@ -28,6 +28,7 @@ impl Session {
     }
 
     pub(crate) async fn accept_self_reset_operation(&self, operation: String) {
+        use codex_protocol::feature_use::FeatureUseEvent;
         let preload = {
             let mut state = self.state.lock().await;
             let preload = state
@@ -38,6 +39,11 @@ impl Session {
             state.accepted_self_resets.push(operation.clone());
             preload
         };
+        self.services.local_agent_runtime.record_feature_use(
+            self.thread_id,
+            &operation,
+            FeatureUseEvent::SelfResetRequested { preload },
+        );
     }
 
     pub(crate) async fn finish_aborted_reset(&self, turn: &TurnContext) {
@@ -51,6 +57,16 @@ impl Session {
             let completed = receipt.status == ContextResetStatus::Completed;
             self.send_event(turn, EventMsg::ContextReset(receipt)).await;
             for operation in self_requests {
+                use codex_protocol::feature_use::FeatureUseEvent;
+                self.services.local_agent_runtime.record_feature_use(
+                    self.thread_id,
+                    &operation,
+                    if completed {
+                        FeatureUseEvent::SelfResetCompleted
+                    } else {
+                        FeatureUseEvent::SelfResetFailed
+                    },
+                );
             }
         }
     }
@@ -236,6 +252,16 @@ async fn run_compact_task_inner(
     sess.send_event(turn_context, EventMsg::ContextReset(receipt))
         .await;
     for operation in self_requests {
+        use codex_protocol::feature_use::FeatureUseEvent;
+        sess.services.local_agent_runtime.record_feature_use(
+            sess.thread_id,
+            &operation,
+            if result.is_ok() {
+                FeatureUseEvent::SelfResetCompleted
+            } else {
+                FeatureUseEvent::SelfResetFailed
+            },
+        );
     }
     lease.finish();
     if inline && manual_canceled && !parent_cancellation.is_cancelled() {

@@ -32,6 +32,7 @@ pub mod capabilities;
 mod codex_error_info;
 pub mod config_types;
 pub mod context_reset;
+pub mod feature_use;
 mod guardian_transcript;
 pub mod source_acquisition;
 pub use guardian_transcript::TranscriptFormat;

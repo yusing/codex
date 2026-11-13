@@ -593,6 +593,7 @@ impl MessageProcessor {
             thread_watch_manager,
             Arc::clone(&skills_watcher),
             turn_cost_worker.as_ref().map(TurnCostWorker::handle),
+            Arc::clone(&thread_processor.feature_use),
         );
         if let Some(startup_config) = plugin_startup_tasks {
             let reload_config = match startup_config {
@@ -1563,6 +1564,9 @@ impl MessageProcessor {
             ClientRequest::ThreadPredictionRequest { .. } => Err(method_not_found(
                 "thread/prediction/request is not implemented yet",
             )),
+            ClientRequest::FeatureUseRead { params, .. } => {
+                self.thread_processor.feature_use_read(params)
+            }
             ClientRequest::AgentObserve { params, .. } => {
                 self.thread_processor.agent_observe(params).await
             }

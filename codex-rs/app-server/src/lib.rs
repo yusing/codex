@@ -125,6 +125,7 @@ mod error_code;
 mod extensions;
 mod external_agent_migration;
 mod external_auth;
+mod feature_use;
 mod filters;
 mod fs_watch;
 mod fuzzy_file_search;

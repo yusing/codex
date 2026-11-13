@@ -19,6 +19,7 @@ mod listener_shutdown_tests;
 
 #[derive(Clone)]
 pub(super) struct ListenerTaskContext {
+    pub(super) feature_use: Arc<std::sync::Mutex<crate::feature_use::FeatureUse>>,
     pub(super) thread_manager: Arc<ThreadManager>,
     pub(super) thread_state_manager: ThreadStateManager,
     pub(super) outgoing: Arc<OutgoingMessageSender>,
@@ -268,6 +269,7 @@ pub(super) async fn ensure_conversation_listener(
         .thread_state(conversation_id)
         .await;
     let outgoing = Arc::clone(&listener_task_context.outgoing);
+    let feature_use = Arc::clone(&listener_task_context.feature_use);
     let connection_lifetime = listener_task_context
         .thread_state_manager
         .connection_lifetime(connection_id)
@@ -291,6 +293,7 @@ pub(super) async fn ensure_conversation_listener(
             &outgoing,
             connection_id,
             disconnect,
+            feature_use,
         ));
     }
     Ok(result)

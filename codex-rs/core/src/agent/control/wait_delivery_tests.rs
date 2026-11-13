@@ -577,6 +577,7 @@ fn capture_coordination(
             events.lock().unwrap().push(event);
             Box::pin(async {})
         }),
+        record_feature_use: Arc::new(|_| {}),
         route_foreign: Arc::new(|_, _| Box::pin(async { Err(work_error("unused route")) })),
         prepare_final_capture: Arc::new(|_, _| {
             Box::pin(async { Err(work_error("unused capture")) })

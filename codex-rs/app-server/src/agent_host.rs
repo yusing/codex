@@ -21,6 +21,7 @@ pub(crate) fn host_callbacks(
     outgoing: &Arc<OutgoingMessageSender>,
     connection: ConnectionId,
     disconnect: CancellationToken,
+    feature_use: Arc<std::sync::Mutex<crate::feature_use::FeatureUse>>,
 ) -> AgentHostCallbacks {
     let host = HostRequests {
         outgoing: Arc::downgrade(outgoing),
@@ -51,6 +52,7 @@ pub(crate) fn host_callbacks(
                 }
             })
         }),
+        record_feature_use: Arc::new(move |fact| feature_use.lock().unwrap().record(fact)),
         route_foreign: Arc::new(move |request, cancellation| {
             let host = foreign.clone();
             Box::pin(async move {
@@ -355,6 +357,9 @@ mod tests {
             outgoing,
             owner,
             disconnect,
+            Arc::new(std::sync::Mutex::new(
+                crate::feature_use::FeatureUse::default(),
+            )),
         )
     }
 

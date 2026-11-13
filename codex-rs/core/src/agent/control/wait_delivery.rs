@@ -580,6 +580,11 @@ impl LocalAgentRuntime {
     ) {
         if let Some(claim) = &ticket.claim {
             if claim.wake == WaitWake::Progress {
+                self.record_feature_use(
+                    ticket.caller.actor_id,
+                    &claim.id.to_string(),
+                    codex_protocol::feature_use::FeatureUseEvent::ProgressDelivered,
+                );
             }
             for id in &claim.delivery_ids {
                 let delivery = match ledger.observe_delivery(ticket.caller.actor_id, *id).await {
@@ -601,6 +606,13 @@ impl LocalAgentRuntime {
                     delivery.publication.sender_id,
                     serde_json::from_str(&delivery.publication.payload),
                 ) {
+                    self.record_feature_use(
+                        actor,
+                        &id.to_string(),
+                        codex_protocol::feature_use::FeatureUseEvent::FinalDelivered {
+                            changes: capture.is_some(),
+                        },
+                    );
                 }
             }
         }
