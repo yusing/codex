@@ -464,7 +464,7 @@ async fn mount_remote_calendar_installed_plugins(server: &wiremock::MockServer) 
 #[test_case(Feature::RecommendedPlugins, Some(Feature::RemotePlugin); "remote plugins disabled")]
 #[test_case(Feature::RecommendedPlugins, Some(Feature::RecommendedPlugins); "recommendations disabled")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn startup_recommendations_use_developer_message(
+async fn startup_recommendations_use_explicit_discovery(
     feature: Feature,
     disabled_feature: Option<Feature>,
 ) -> Result<()> {
@@ -557,7 +557,7 @@ async fn startup_recommendations_use_developer_message(
         insta::assert_snapshot!(
             "startup_recommendations_developer_context",
             context_snapshot::format_request_history_snapshot(
-                "Startup recommendations share the developer message with other context.",
+                "Plugin candidates stay out of automatic developer context.",
                 &model_response.requests(),
                 &ContextSnapshotOptions::default().rewrite_known_segments(),
             )
@@ -566,40 +566,8 @@ async fn startup_recommendations_use_developer_message(
 
     let request = model_response.single_request();
     let developer_context = request.message_input_texts("developer").join("\n");
-    assert_eq!(
-        developer_context.contains("<recommended_plugins>"),
-        expect_recommendations,
-    );
-    assert_eq!(
-        developer_context.contains("- GitHub (github@openai-curated-remote)"),
-        expect_recommendations,
-    );
-    if expect_recommendations {
-        let developer_messages = request.message_input_text_groups("developer");
-        let recommendation_message = developer_messages
-            .iter()
-            .find(|message| {
-                message
-                    .iter()
-                    .any(|text| text.starts_with("<recommended_plugins>"))
-            })
-            .expect("developer message with recommendations");
-        assert!(
-            recommendation_message
-                .iter()
-                .any(|text| text.starts_with("<permissions instructions>")),
-            "recommendations should share the developer message with other context"
-        );
-        assert_eq!(
-            recommendation_message.last().map(String::as_str),
-            Some(concat!(
-                "<recommended_plugins>\n",
-                "Here is a list of plugins that are available but not installed.\n\n",
-                "- GitHub (github@openai-curated-remote)\n",
-                "</recommended_plugins>",
-            ))
-        );
-    }
+    assert!(!developer_context.contains("<recommended_plugins>"));
+    assert!(!developer_context.contains("- GitHub (github@openai-curated-remote)"));
     let tools = tool_names(&request.body_json());
     assert_eq!(
         tools
@@ -620,7 +588,7 @@ async fn startup_recommendations_use_developer_message(
 #[test_case("oversized"; "oversized")]
 #[test_case("disabled"; "disabled")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn catalog_plugin_recommendations_use_receiving_model(case: &str) -> Result<()> {
+async fn catalog_plugin_recommendations_do_not_inject_advertisements(case: &str) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let apps = AppsTestServer::mount(&server).await?;
@@ -701,18 +669,6 @@ async fn catalog_plugin_recommendations_use_receiving_model(case: &str) -> Resul
         .await?;
     let requests = mock.requests();
     assert_eq!(requests.len(), 2);
-    let expected_intro = if case == "custom" {
-        custom
-    } else {
-        "Here is a list of plugins that are available but not installed."
-    };
-    let expected = if enabled {
-        vec![format!(
-            "<recommended_plugins>\n{expected_intro}\n\n- GitHub (github@openai-curated-remote)\n</recommended_plugins>"
-        )]
-    } else {
-        Vec::new()
-    };
     for request in &requests {
         assert_eq!(
             request.body_json()["model"],
@@ -723,9 +679,9 @@ async fn catalog_plugin_recommendations_use_receiving_model(case: &str) -> Resul
             .into_iter()
             .filter(|text| text.starts_with("<recommended_plugins>"))
             .collect::<Vec<_>>();
-        assert_eq!(
-            actual, expected,
-            "the receiving model owns wording; runtime recommendation identities remain unchanged and appear once"
+        assert!(
+            actual.is_empty(),
+            "catalog wording must not restore advertisements"
         );
         assert!(!request.body_contains_text("Stale startup model recommendations."));
         assert!(
@@ -1209,7 +1165,7 @@ async fn local_plugin_skill_availability_reaches_tool_suggestion_candidates(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn endpoint_mode_injects_candidates_hides_list_and_rejects_invented_ids() -> Result<()> {
+async fn endpoint_mode_lists_candidates_and_rejects_invented_ids() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1269,21 +1225,12 @@ async fn endpoint_mode_injects_candidates_hides_list_and_rejects_invented_ids() 
             .into_iter()
             .filter(|text| text.starts_with("<recommended_plugins>"))
             .collect::<Vec<_>>();
-        assert_eq!(
-            recommendations,
-            vec![concat!(
-                "<recommended_plugins>\n",
-                "Here is a list of plugins that are available but not installed.\n\n",
-                "- GitHub (github@openai-curated-remote)\n",
-                "- Google Calendar (google-calendar@openai-curated-remote)\n",
-                "</recommended_plugins>",
-            )]
-        );
+        assert!(recommendations.is_empty());
     }
     let body = requests[0].body_json();
     let tools = tool_names(&body);
     assert!(
-        !tools
+        tools
             .iter()
             .any(|name| name == LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME)
     );
@@ -1295,7 +1242,7 @@ async fn endpoint_mode_injects_candidates_hides_list_and_rejects_invented_ids() 
     let output = requests[1]
         .function_call_output_text(call_id)
         .expect("request tool output");
-    assert!(output.contains("<recommended_plugins> list"));
+    assert!(output.contains("plugins returned by list_available_plugins_to_install"));
     Ok(())
 }
 

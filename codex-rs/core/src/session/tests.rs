@@ -10732,7 +10732,7 @@ async fn record_context_updates_emits_realtime_end_when_session_stops_being_live
 }
 
 #[tokio::test]
-async fn build_initial_context_reuses_in_flight_recommendation_prewarm() {
+async fn build_initial_context_does_not_wait_for_recommendation_prewarm() {
     use wiremock::Mock;
     use wiremock::ResponseTemplate;
     use wiremock::matchers::method;
@@ -10782,38 +10782,27 @@ async fn build_initial_context_reuses_in_flight_recommendation_prewarm() {
     let plugins_manager = &session.services.plugins_manager;
     let plugins_config = turn_context.config.plugins_config_input();
     let auth = session.services.auth_manager.auth().await;
-    // Cached plugin loading and auth let initial context reach the shared recommendation lookup
-    // without awaiting unrelated I/O.
+    // Initialize unrelated plugin context before holding the recommendation request pending.
     plugins_manager.plugins_for_config(&plugins_config).await;
     let prewarm =
         plugins_manager.recommended_plugins_mode_for_config(&plugins_config, auth.as_ref());
     tokio::pin!(prewarm);
     assert!(futures::poll!(prewarm.as_mut()).is_pending());
 
-    // Keep the OnceCell initializer unpolled while first-thread context joins its in-flight fetch.
-    // This does not depend on how quickly the HTTP server returns its response.
+    // Initial context no longer depends on the pending advertisement lookup.
     let world_state = WorldState::default();
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
-    let initial_context =
-        session.build_initial_context_with_world_state(&step_context, &world_state);
-    tokio::pin!(initial_context);
-    assert!(futures::poll!(initial_context.as_mut()).is_pending());
-
-    let (_, (initial_context, _)) = tokio::join!(prewarm, initial_context);
+    let (initial_context, _) = session
+        .build_initial_context_with_world_state(&step_context, &world_state)
+        .await;
     let initial_context =
         crate::context_manager::updates::merge_world_state_updates(initial_context);
-    assert_eq!(
+    assert!(
         developer_input_texts(&initial_context)
-            .into_iter()
-            .filter(|text| text.starts_with("<recommended_plugins>"))
-            .collect::<Vec<_>>(),
-        vec![concat!(
-            "<recommended_plugins>\n",
-            "Here is a list of plugins that are available but not installed.\n\n",
-            "- GitHub (github@openai-curated-remote)\n",
-            "</recommended_plugins>",
-        )]
+            .iter()
+            .all(|text| !text.contains("<recommended_plugins>"))
     );
+    prewarm.await;
     server.verify().await;
 }
 

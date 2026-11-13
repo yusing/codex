@@ -179,7 +179,9 @@ impl RequestPluginInstallHandler {
                     ),
                     ToolSuggestPresentation::RecommendationContext => (
                         "plugin_id",
-                        "the entries in the <recommended_plugins> list".to_string(),
+                        format!(
+                            "the plugins returned by {LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}"
+                        ),
                     ),
                 };
                 FunctionCallError::RespondToModel(format!(

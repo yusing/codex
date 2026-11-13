@@ -1458,11 +1458,9 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
             .tool_suggest_candidates
             .filter(|candidates| !candidates.tools.is_empty())
     {
-        if candidates.presentation == crate::tools::router::ToolSuggestPresentation::ListTool {
-            registry.add(ListAvailablePluginsToInstallHandler::new(
-                collect_request_plugin_install_entries(&candidates.tools),
-            ));
-        }
+        registry.add(ListAvailablePluginsToInstallHandler::new(
+            collect_request_plugin_install_entries(&candidates.tools),
+        ));
         registry.add(RequestPluginInstallHandler::new(
             candidates.tools.clone(),
             candidates.presentation,

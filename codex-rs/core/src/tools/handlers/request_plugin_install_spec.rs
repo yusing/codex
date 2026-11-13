@@ -53,7 +53,7 @@ pub(crate) fn create_request_plugin_install_tool(
                 (
                     "plugin_id".to_string(),
                     JsonSchema::string(Some(
-                        "The parenthesized plugin ID from the `<recommended_plugins>` list."
+                        "The `id` of a plugin returned by `list_available_plugins_to_install`."
                             .to_string(),
                     )),
                 ),
@@ -66,7 +66,7 @@ pub(crate) fn create_request_plugin_install_tool(
                 ),
             ]),
             vec!["plugin_id".to_string(), "suggest_reason".to_string()],
-            "# Suggest a recommended plugin installation\n\nUse this tool only when all of the following are true:\n- The user explicitly asks to use a specific plugin that is not already available in the current context or active `tools` list.\n- Tool search has already been exhausted and did not find or make the requested tool callable.\n- The plugin is listed in `<recommended_plugins>`.\n\nDo not use it for adjacent capabilities, broad recommendations, or plugins that merely seem useful. Briefly explain why the plugin can help with the current request in `suggest_reason`.\n\nIMPORTANT: DO NOT call this tool in parallel with other tools.".to_string(),
+            "# Suggest a recommended plugin installation\n\nUse this tool only when all of the following are true:\n- The user explicitly asks to use a specific plugin that is not already available in the current context or active `tools` list.\n- Tool search has already been exhausted and did not find or make the requested tool callable.\n- `list_available_plugins_to_install` returned a plugin that exactly matches the request. Pass its `id` as `plugin_id`.\n\nDo not use it for adjacent capabilities, broad recommendations, or plugins that merely seem useful. Briefly explain why the plugin can help with the current request in `suggest_reason`.\n\nIMPORTANT: DO NOT call this tool in parallel with other tools.".to_string(),
         ),
     };
 
@@ -150,7 +150,7 @@ mod tests {
             "Use this tool only when all of the following are true:\n",
             "- The user explicitly asks to use a specific plugin that is not already available in the current context or active `tools` list.\n",
             "- Tool search has already been exhausted and did not find or make the requested tool callable.\n",
-            "- The plugin is listed in `<recommended_plugins>`.\n\n",
+            "- `list_available_plugins_to_install` returned a plugin that exactly matches the request. Pass its `id` as `plugin_id`.\n\n",
             "Do not use it for adjacent capabilities, broad recommendations, or plugins that merely seem useful. Briefly explain why the plugin can help with the current request in `suggest_reason`.\n\n",
             "IMPORTANT: DO NOT call this tool in parallel with other tools.",
         );
@@ -167,7 +167,7 @@ mod tests {
                         (
                             "plugin_id".to_string(),
                             JsonSchema::string(Some(
-                                "The parenthesized plugin ID from the `<recommended_plugins>` list."
+                                "The `id` of a plugin returned by `list_available_plugins_to_install`."
                                     .to_string(),
                             )),
                         ),
