@@ -568,7 +568,7 @@ pub(super) async fn spawn_websocket_server_with_args(
     listen_url: &str,
     extra_args: &[String],
 ) -> Result<(Child, SocketAddr)> {
-    let program = codex_utils_cargo_bin::cargo_bin("codex-app-server")
+    let program = codex_utils_cargo_bin::cargo_bin("mekugi-app-server")
         .context("should find app-server binary")?;
     let mut cmd = Command::new(program);
     cmd.arg("--listen")
@@ -706,7 +706,7 @@ async fn run_websocket_server_to_completion_with_args(
     listen_url: &str,
     extra_args: &[String],
 ) -> Result<std::process::Output> {
-    let program = codex_utils_cargo_bin::cargo_bin("codex-app-server")
+    let program = codex_utils_cargo_bin::cargo_bin("mekugi-app-server")
         .context("should find app-server binary")?;
     let mut cmd = Command::new(program);
     cmd.arg("--listen")

@@ -28,7 +28,7 @@ const MANAGED_CONFIG_PATH_ENV_VAR: &str = "CODEX_APP_SERVER_MANAGED_CONFIG_PATH"
 const DISABLE_MANAGED_CONFIG_ENV_VAR: &str = "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG";
 
 #[derive(Debug, Parser)]
-#[command(version)]
+#[command(name = "mekugi-app-server", version)]
 struct AppServerArgs {
     /// Load frozen cloud skills from a JSON snapshot instead of a live skill service.
     #[arg(long, value_name = "PATH")]

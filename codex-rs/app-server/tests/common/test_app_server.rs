@@ -2118,8 +2118,8 @@ impl TestAppServerBuilder {
         let custom_program = program.is_some();
         let mut program = match program {
             Some(program) => program,
-            None => codex_utils_cargo_bin::cargo_bin("codex-app-server")
-                .context("should find binary for codex-app-server")?,
+            None => codex_utils_cargo_bin::cargo_bin("mekugi-app-server")
+                .context("should find binary for mekugi-app-server")?,
         };
         let mut owned_install_dir = None;
         if !custom_program
@@ -2179,7 +2179,7 @@ impl TestAppServerBuilder {
 
 impl Drop for TestAppServer {
     fn drop(&mut self) {
-        // These tests spawn a `codex-app-server` child process.
+        // These tests spawn a `mekugi-app-server` child process.
         //
         // We keep that child alive for the test and rely on Tokio's `kill_on_drop(true)` when this
         // helper is dropped. Tokio documents kill-on-drop as best-effort: dropping requests

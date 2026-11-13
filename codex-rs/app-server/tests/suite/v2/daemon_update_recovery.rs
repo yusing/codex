@@ -811,7 +811,7 @@ pub(super) async fn connect_daemon_client(
 }
 
 pub(super) fn spawn_server(home: &Path, socket_path: &Path) -> Result<Child> {
-    let binary = codex_utils_cargo_bin::cargo_bin("codex-app-server")?;
+    let binary = codex_utils_cargo_bin::cargo_bin("mekugi-app-server")?;
     Ok(Command::new(binary)
         .args(["--listen", &format!("unix://{}", socket_path.display())])
         .arg(DISABLE_PLUGIN_STARTUP_TASKS_ARG)
