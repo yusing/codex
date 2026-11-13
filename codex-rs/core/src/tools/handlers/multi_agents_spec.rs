@@ -930,6 +930,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 
 fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
     let properties = BTreeMap::from([
+        ("wait_mode".to_string(), JsonSchema::string(Some("any (default) returns on the first selected outcome; all waits for every selected work item to settle. Messages wake either mode.".to_string()))),
         ("timeout_ms".to_string(), JsonSchema::number(Some(format!(
             "Omit for an indefinite completion wait; set only for a real deadline. Values below {} clamp; values above {} reject. The deadline starts at registration.",
             options.min_timeout_ms, options.max_timeout_ms,

@@ -197,6 +197,42 @@ async fn ready_mail_returns_on_original_call_without_consuming_it() {
 }
 
 #[tokio::test]
+async fn explicit_timeout_clamps_once_and_duplicate_registration_preserves_deadline() {
+    for requested in [-1, 0, 1, 50, 1_000] {
+        let (_directory, session, turn) = fixture().await;
+        addressed_message(&session).await;
+        let args = json!({"wait_mode":"all", "timeout_ms":requested});
+        Handler::default()
+            .handle(invocation(&session, &turn, "cell", args.clone()))
+            .await
+            .unwrap();
+        let ledger = session.services.local_agent_runtime.work_ledger().unwrap();
+        let first = ledger
+            .current_wait(session.thread_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.options.mode, WaitMode::All);
+        assert_eq!(
+            first.options.timeout,
+            Some(WaitTimeout {
+                requested_ms: requested,
+                effective_ms: requested.max(50)
+            })
+        );
+        assert!(first.deadline_unix_ms.is_some());
+        Handler::default()
+            .handle(invocation(&session, &turn, "cell", args))
+            .await
+            .unwrap();
+        assert_eq!(
+            ledger.current_wait(session.thread_id).await.unwrap(),
+            Some(first)
+        );
+    }
+}
+
+#[tokio::test]
 async fn zero_effective_timeout_returns_on_original_call() {
     let (_directory, session, turn) = fixture().await;
     let mut turn = Arc::try_unwrap(turn).expect("fixture owns turn");
@@ -264,6 +300,7 @@ async fn rejected_options_and_empty_selection_leave_no_wait() {
             json!({"timeout_ms":1_001}),
             "timeout_ms must be at most 1000",
         ),
+        (json!({"wait_mode":"other"}), "wait_mode must be any or all"),
         (
             json!({"yield_time_ms":299_999}),
             "yield_time_ms must be at least 300000",

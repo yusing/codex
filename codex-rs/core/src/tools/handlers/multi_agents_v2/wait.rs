@@ -163,6 +163,7 @@ impl CoreToolRuntime for Handler {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WaitArgs {
+    wait_mode: Option<String>,
     timeout_ms: Option<i64>,
     yield_time_ms: Option<u64>,
     #[serde(default)]
@@ -176,6 +177,15 @@ impl WaitArgs {
         min_timeout_ms: i64,
         max_timeout_ms: i64,
     ) -> Result<WaitOptions, FunctionCallError> {
+        let mode = match self.wait_mode.as_deref() {
+            None | Some("any") => WaitMode::Any,
+            Some("all") => WaitMode::All,
+            Some(_) => {
+                return Err(FunctionCallError::RespondToModel(
+                    "wait_mode must be any or all".to_owned(),
+                ));
+            }
+        };
         if self.reload.is_some() && !self.compact {
             return Err(FunctionCallError::RespondToModel(
                 "reload requires compact: true".to_owned(),
@@ -204,7 +214,7 @@ impl WaitArgs {
             })
             .transpose()?;
         Ok(WaitOptions {
-            mode: WaitMode::Any,
+            mode,
             timeout,
             progress_interval_ms: self.yield_time_ms,
             compact: self.compact,

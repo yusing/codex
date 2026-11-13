@@ -358,7 +358,7 @@ fn wait_agent_tool_v2_describes_checkpoint_and_deferred_delivery() {
         .expect("wait_agent should use object params");
     assert!(!properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
-    for field in ["compact", "reload", "yield_time_ms"] {
+    for field in ["wait_mode", "compact", "reload", "yield_time_ms"] {
         assert!(properties.contains_key(field));
     }
     assert!(description.contains("stays pending"));
