@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "contextResetRequestId": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "contextResetRequestId",
+    "threadId"
+  ],
+  "title": "ThreadCompactCancelParams",
+  "type": "object"
+}

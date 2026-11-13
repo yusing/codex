@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ContextResetStatus": {
+      "enum": [
+        "accepted",
+        "started",
+        "completed",
+        "failed",
+        "canceled"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "Live manual-request correlation. A reset covers only generations captured before acquisition starts; a later request remains pending independently.",
+  "properties": {
+    "diagnostic": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "generation": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "inline": {
+      "type": "boolean"
+    },
+    "requestId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resetId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "$ref": "#/definitions/ContextResetStatus"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "generation",
+    "inline",
+    "status",
+    "threadId",
+    "turnId"
+  ],
+  "title": "ContextReset",
+  "type": "object"
+}

@@ -20,6 +20,13 @@
     }
   },
   "properties": {
+    "contextResetRequestId": {
+      "description": "Optional invocation-owned correlation for the token-budget reset lifecycle.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "reload": {
       "$ref": "#/definitions/ReloadSelection"
     },

@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "CompoundExecutionResult": {
+      "enum": [
+        "yielded",
+        "succeeded",
+        "failed",
+        "terminated"
+      ],
+      "type": "string"
+    },
+    "CompoundWaitTicket": {
+      "additionalProperties": false,
+      "properties": {
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "waitId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "waitId"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "cellId": {
+      "type": "string"
+    },
+    "itemId": {
+      "type": "string"
+    },
+    "result": {
+      "$ref": "#/definitions/CompoundExecutionResult"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "ticket": {
+      "$ref": "#/definitions/CompoundWaitTicket"
+    },
+    "turnId": {
+      "type": "string"
+    },
+    "windowId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "cellId",
+    "itemId",
+    "result",
+    "threadId",
+    "ticket",
+    "turnId",
+    "windowId"
+  ],
+  "title": "CompoundWaitSettlement",
+  "type": "object"
+}

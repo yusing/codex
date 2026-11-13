@@ -2938,6 +2938,10 @@
           ],
           "description": "Approval mode for this tool."
         },
+        "compound_wait": {
+          "description": "Invocation-owned compound wait binding; never inferred from tool output.",
+          "type": "boolean"
+        },
         "output_token_limit": {
           "description": "Token budget for this tool's output, before the standard 20% serialization allowance.",
           "format": "uint",

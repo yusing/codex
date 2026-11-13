@@ -529,6 +529,8 @@ export type { ThreadAttachmentRemoveParams } from "./ThreadAttachmentRemoveParam
 export type { ThreadAttachmentRemoveResponse } from "./ThreadAttachmentRemoveResponse";
 export type { ThreadAttachmentUpdatedNotification } from "./ThreadAttachmentUpdatedNotification";
 export type { ThreadClosedNotification } from "./ThreadClosedNotification";
+export type { ThreadCompactCancelParams } from "./ThreadCompactCancelParams";
+export type { ThreadCompactCancelResponse } from "./ThreadCompactCancelResponse";
 export type { ThreadCompactStartParams } from "./ThreadCompactStartParams";
 export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
 export type { ThreadDeleteParams } from "./ThreadDeleteParams";

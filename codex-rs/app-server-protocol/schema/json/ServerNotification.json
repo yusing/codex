@@ -1132,6 +1132,81 @@
       ],
       "type": "string"
     },
+    "CompoundResetOutcome": {
+      "enum": [
+        "completed",
+        "failed",
+        "canceled",
+        "uncertain"
+      ],
+      "type": "string"
+    },
+    "CompoundWaitReset": {
+      "additionalProperties": false,
+      "properties": {
+        "cellId": {
+          "type": "string"
+        },
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "reset": {
+          "$ref": "#/definitions/CompoundResetOutcome"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "ticket": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CompoundWaitTicket"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "windowId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cellId",
+        "itemId",
+        "reset",
+        "threadId",
+        "turnId",
+        "windowId"
+      ],
+      "type": "object"
+    },
+    "CompoundWaitTicket": {
+      "additionalProperties": false,
+      "properties": {
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "waitId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "waitId"
+      ],
+      "type": "object"
+    },
     "ConfigWarningNotification": {
       "properties": {
         "details": {
@@ -1184,6 +1259,65 @@
         "turnId"
       ],
       "type": "object"
+    },
+    "ContextReset": {
+      "additionalProperties": false,
+      "description": "Live manual-request correlation. A reset covers only generations captured before acquisition starts; a later request remains pending independently.",
+      "properties": {
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "inline": {
+          "type": "boolean"
+        },
+        "requestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resetId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ContextResetStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "inline",
+        "status",
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "ContextResetStatus": {
+      "enum": [
+        "accepted",
+        "started",
+        "completed",
+        "failed",
+        "canceled"
+      ],
+      "type": "string"
     },
     "CreditsSnapshot": {
       "properties": {
@@ -7316,6 +7450,46 @@
   },
   "description": "Notification sent from the server to the client.",
   "oneOf": [
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/contextReset"
+          ],
+          "title": "Thread/contextResetNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ContextReset"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/contextResetNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/compoundWait/reset"
+          ],
+          "title": "Thread/compoundWait/resetNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/CompoundWaitReset"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/compoundWait/resetNotification",
+      "type": "object"
+    },
     {
       "description": "NEW NOTIFICATIONS",
       "properties": {

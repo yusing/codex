@@ -4747,9 +4747,32 @@
       ],
       "type": "object"
     },
+    "ThreadCompactCancelParams": {
+      "additionalProperties": false,
+      "properties": {
+        "contextResetRequestId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contextResetRequestId",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadCompactStartParams": {
       "additionalProperties": false,
       "properties": {
+        "contextResetRequestId": {
+          "description": "Optional invocation-owned correlation for the token-budget reset lifecycle.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "reload": {
           "$ref": "#/definitions/ReloadSelection"
         },
@@ -7019,6 +7042,30 @@
         "params"
       ],
       "title": "Thread/unarchiveRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/compact/cancel"
+          ],
+          "title": "Thread/compact/cancelRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadCompactCancelParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/compact/cancelRequest",
       "type": "object"
     },
     {

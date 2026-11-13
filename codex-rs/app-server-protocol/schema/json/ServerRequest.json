@@ -472,6 +472,69 @@
       ],
       "type": "object"
     },
+    "CompoundExecutionResult": {
+      "enum": [
+        "yielded",
+        "succeeded",
+        "failed",
+        "terminated"
+      ],
+      "type": "string"
+    },
+    "CompoundWaitSettlement": {
+      "additionalProperties": false,
+      "properties": {
+        "cellId": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/definitions/CompoundExecutionResult"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "ticket": {
+          "$ref": "#/definitions/CompoundWaitTicket"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "windowId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cellId",
+        "itemId",
+        "result",
+        "threadId",
+        "ticket",
+        "turnId",
+        "windowId"
+      ],
+      "type": "object"
+    },
+    "CompoundWaitTicket": {
+      "additionalProperties": false,
+      "properties": {
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "waitId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "waitId"
+      ],
+      "type": "object"
+    },
     "DynamicToolCallParams": {
       "properties": {
         "arguments": true,
@@ -1853,6 +1916,30 @@
   },
   "description": "Request initiated from the server and sent to the client.",
   "oneOf": [
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/compoundWait/settle"
+          ],
+          "title": "Thread/compoundWait/settleRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/CompoundWaitSettlement"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/compoundWait/settleRequest",
+      "type": "object"
+    },
     {
       "description": "NEW APIs Sent when approval is requested for a specific command execution. This request is used for Turns started via turn/start.",
       "properties": {

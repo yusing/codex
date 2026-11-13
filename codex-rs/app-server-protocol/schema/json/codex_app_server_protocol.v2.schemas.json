@@ -2481,6 +2481,30 @@
             },
             "method": {
               "enum": [
+                "thread/compact/cancel"
+              ],
+              "title": "Thread/compact/cancelRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadCompactCancelParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/compact/cancelRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/compact/start"
               ],
               "title": "Thread/compact/startRequestMethod",
@@ -5412,6 +5436,83 @@
       ],
       "type": "object"
     },
+    "CompoundResetOutcome": {
+      "enum": [
+        "completed",
+        "failed",
+        "canceled",
+        "uncertain"
+      ],
+      "type": "string"
+    },
+    "CompoundWaitReset": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "cellId": {
+          "type": "string"
+        },
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "reset": {
+          "$ref": "#/definitions/CompoundResetOutcome"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "ticket": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CompoundWaitTicket"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "windowId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cellId",
+        "itemId",
+        "reset",
+        "threadId",
+        "turnId",
+        "windowId"
+      ],
+      "title": "CompoundWaitReset",
+      "type": "object"
+    },
+    "CompoundWaitTicket": {
+      "additionalProperties": false,
+      "properties": {
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "waitId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "waitId"
+      ],
+      "type": "object"
+    },
     "ComputerUseConfig": {
       "properties": {
         "default_app_access": {
@@ -7040,6 +7141,67 @@
       ],
       "title": "ContextCompactedNotification",
       "type": "object"
+    },
+    "ContextReset": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "description": "Live manual-request correlation. A reset covers only generations captured before acquisition starts; a later request remains pending independently.",
+      "properties": {
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "inline": {
+          "type": "boolean"
+        },
+        "requestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resetId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ContextResetStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "inline",
+        "status",
+        "threadId",
+        "turnId"
+      ],
+      "title": "ContextReset",
+      "type": "object"
+    },
+    "ContextResetStatus": {
+      "enum": [
+        "accepted",
+        "started",
+        "completed",
+        "failed",
+        "canceled"
+      ],
+      "type": "string"
     },
     "ConversationTextRole": {
       "enum": [
@@ -17699,6 +17861,46 @@
       "description": "Notification sent from the server to the client.",
       "oneOf": [
         {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/contextReset"
+              ],
+              "title": "Thread/contextResetNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ContextReset"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/contextResetNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/compoundWait/reset"
+              ],
+              "title": "Thread/compoundWait/resetNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/CompoundWaitReset"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/compoundWait/resetNotification",
+          "type": "object"
+        },
+        {
           "description": "NEW NOTIFICATIONS",
           "properties": {
             "method": {
@@ -20733,10 +20935,40 @@
       "title": "ThreadClosedNotification",
       "type": "object"
     },
+    "ThreadCompactCancelParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "contextResetRequestId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contextResetRequestId",
+        "threadId"
+      ],
+      "title": "ThreadCompactCancelParams",
+      "type": "object"
+    },
+    "ThreadCompactCancelResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ThreadCompactCancelResponse",
+      "type": "object"
+    },
     "ThreadCompactStartParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
       "properties": {
+        "contextResetRequestId": {
+          "description": "Optional invocation-owned correlation for the token-budget reset lifecycle.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "reload": {
           "$ref": "#/definitions/ReloadSelection"
         },
