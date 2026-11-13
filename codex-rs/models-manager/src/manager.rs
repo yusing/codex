@@ -976,6 +976,20 @@ impl OpenAiModelsManager {
         }
         let mut catalog = CatalogState::provider(entry);
         let entry = &mut catalog.entry;
+        if let CatalogSource::Default = self.catalog_source {
+            // Remote catalogs supply capabilities; Mekugi owns default instruction templates.
+            let bundled = load_remote_models_from_file().unwrap_or_default();
+            for model in &mut entry.models {
+                let source = find_model_from_candidates(&model.slug, &bundled)
+                    .unwrap_or_else(|| model_info::model_info_from_slug(&model.slug));
+                model
+                    .model_messages
+                    .get_or_insert_default()
+                    .instructions_template = source
+                    .model_messages
+                    .and_then(|messages| messages.instructions_template);
+            }
+        }
         let remote_only = entry
             .models
             .iter()
