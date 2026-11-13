@@ -204,6 +204,12 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
 pub fn create_send_message_tool() -> ToolSpec {
     let properties = BTreeMap::from([
         (
+            "btw".to_string(),
+            JsonSchema::boolean(Some(
+                "Ask an independent answer-only question from the loaded target's current context. It cannot use tools or investigate, and does not deliver primary input, steer work or satisfy waits. Defaults to false.".to_string(),
+            )),
+        ),
+        (
             "target".to_string(),
             JsonSchema::string(Some(
                 "Canonical task path, unambiguous relative name, or exact thread ID. For another active session, use its exact session/thread ID.".to_string(),
@@ -220,7 +226,7 @@ pub fn create_send_message_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Queue attributed input without starting idle work. Explicit file references are frozen under recipient cwd and permissions."
+        description: "Queue attributed input without starting idle work. Set btw=true to return an independent side answer instead. Explicit file references are frozen under recipient cwd and permissions."
             .to_string(),
         strict: false,
         defer_loading: None,

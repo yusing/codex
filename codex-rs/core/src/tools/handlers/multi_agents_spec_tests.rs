@@ -268,6 +268,10 @@ fn send_message_tool_requires_message_and_has_no_output_schema() {
     assert!(properties.contains_key("target"));
     assert!(properties.contains_key("message"));
     assert_eq!(
+        properties["btw"].schema_type,
+        Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Boolean))
+    );
+    assert_eq!(
         properties
             .get("message")
             .and_then(|schema| schema.encrypted),

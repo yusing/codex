@@ -20,6 +20,8 @@ use codex_protocol::agent_metrics::AgentMetrics;
 pub(crate) struct SendMessageArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+    #[serde(default)]
+    pub(crate) btw: bool,
 }
 
 #[derive(Debug, Deserialize)]
