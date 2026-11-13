@@ -400,3 +400,21 @@ fn list_agents_tool_includes_path_prefix_for_retained_members() {
     );
     assert_eq!(output_schema, None);
 }
+
+#[test]
+fn inspect_agent_tool_requires_a_target_and_preserves_unavailable_observations() {
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters,
+        description,
+        ..
+    }) = create_inspect_agent_tool()
+    else {
+        panic!("inspect_agent should be a function tool");
+    };
+    assert_eq!(
+        parameters.required.as_deref(),
+        Some(["target".to_string()].as_slice())
+    );
+    assert!(description.contains("without starting work"));
+    assert!(description.contains("unavailable observations are null"));
+}

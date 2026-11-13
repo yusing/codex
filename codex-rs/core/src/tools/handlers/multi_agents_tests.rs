@@ -22,6 +22,7 @@ use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::tools::context::ToolOutput;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
+use crate::tools::handlers::multi_agents_v2::InspectAgentHandler;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
@@ -3413,6 +3414,227 @@ async fn multi_agent_v2_interrupt_agent_accepts_task_name_target() {
         !ops.iter()
             .any(|(thread_id, op)| *thread_id == child_id && matches!(op, Op::Interrupt))
     );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_interrupt_agent_accepts_unloaded_task_name_target() {
+    let codex_home = tempfile::tempdir().expect("create codex home");
+    let (session, turn, _) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+    let mut session = Arc::into_inner(session).expect("unshared test session");
+    let mut turn = Arc::into_inner(turn).expect("unshared test turn");
+    let mut config = (*turn.config).clone();
+    config.multi_agent_v2.max_concurrent_threads_per_session = Some(2);
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    let state_db = init_state_db(&config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db.clone()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+    set_turn_config(&mut turn, config.clone());
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+
+    let agent_id = session
+        .services
+        .local_agent_runtime
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    use crate::agent::control::work::DeliveryKind;
+    use crate::agent::control::work::PublishDelivery;
+    use crate::agent::control::work::WorkStamp;
+    use codex_state::coordination_wait::WaitCell;
+    use codex_state::coordination_wait::WaitMode;
+    let ledger = session.services.local_agent_runtime.work_ledger().unwrap();
+    let root_work = WorkStamp {
+        root_id: root.thread_id,
+        actor_id: root.thread_id,
+        work_id: uuid::Uuid::now_v7(),
+    };
+    ledger
+        .admit_work(
+            root_work,
+            None,
+            &PublishDelivery {
+                id: root_work.work_id,
+                root_id: root.thread_id,
+                sender_id: None,
+                recipient_id: root.thread_id,
+                work: Some(root_work),
+                kind: DeliveryKind::Message,
+                payload: "coordinate worker".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    let cell = WaitCell {
+        turn_id: "turn".to_owned(),
+        item_id: "item".to_owned(),
+        window_id: "window".to_owned(),
+        cell_id: "cell".to_owned(),
+    };
+    let ticket = ledger
+        .register_wait(root_work, &cell, WaitMode::All)
+        .await
+        .unwrap();
+
+    let stale_thread = manager
+        .remove_thread(&agent_id)
+        .await
+        .expect("worker thread should be loaded before removal");
+    stale_thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("removed worker thread should still accept shutdown");
+    stale_thread.wait_until_terminated().await;
+
+    let output = InterruptAgentHandler
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "interrupt_agent",
+            function_payload(json!({"target": "worker"})),
+        ))
+        .await
+        .expect("interrupt_agent should accept unloaded v2 task names");
+    let (content, success) = expect_text_output(output);
+    let result: InterruptAgentResult =
+        serde_json::from_str(&content).expect("interrupt_agent result should be json");
+    assert_eq!(result.previous_status, AgentStatus::NotFound);
+    assert_eq!(success, Some(true));
+
+    let open_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open children should load");
+    assert_eq!(open_children, vec![agent_id]);
+    let closed_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed children should load");
+    assert_eq!(closed_children, Vec::<ThreadId>::new());
+
+    let output = ListAgentsHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "list_agents",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&content).expect("list_agents result should be json");
+    assert_eq!(result.agents.len(), 2);
+    assert_eq!(result.agents[0].agent_name, "/root");
+    assert_eq!(result.agents[1].agent_name, "/root/worker");
+    assert!(!result.agents[1].loaded);
+    assert!(result.agents[1].runtime_status.is_null());
+    assert!(
+        result.agents[1].work.is_some(),
+        "unloaded work must remain visible"
+    );
+    let root_wait = result.agents[0]
+        .wait
+        .as_ref()
+        .expect("logical wait should be listed");
+    assert_eq!(
+        root_wait.mode,
+        codex_app_server_protocol::AgentWaitMode::All
+    );
+    assert_eq!(root_wait.selected.len(), 1);
+    assert_eq!(root_wait.selected[0].thread_id, agent_id.to_string());
+    assert_eq!(
+        result.agents[0].work.as_ref().unwrap().disposition,
+        codex_app_server_protocol::AgentWorkDisposition::Waiting
+    );
+    assert_eq!(
+        ledger.current_wait(root.thread_id).await.unwrap(),
+        Some(ticket)
+    );
+    assert!(manager.get_thread(agent_id).await.is_err());
+
+    // Inspect retained identity through the model consumer, not a restore path.
+    let inspect = InspectAgentHandler
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "inspect_agent",
+            function_payload(json!({"target": "worker"})),
+        ))
+        .await
+        .expect("retained worker should be inspectable");
+    let observed = inspect.code_mode_result(&function_payload(json!({})));
+    assert_eq!(observed["threadId"], agent_id.to_string());
+    assert_eq!(observed["path"], "/root/worker");
+    assert_eq!(observed["loaded"], false);
+    assert!(manager.get_thread(agent_id).await.is_err());
+
+    SendMessageHandlerV2
+        .handle(invocation(
+            session,
+            turn,
+            "send_message",
+            function_payload(json!({"target": "worker", "message": "retained note"})),
+        ))
+        .await
+        .expect("retained-only message should be accepted");
+    if let Ok(thread) = manager.get_thread(agent_id).await {
+        assert!(
+            thread.session.active_turn.lock().await.is_none(),
+            "retained-only message must not start idle work"
+        );
+    }
+    assert!(!manager.captured_ops().iter().any(|(id, op)| {
+        *id == agent_id
+            && matches!(op, Op::InterAgentCommunication { communication, .. }
+            if communication.encrypted_content.as_deref() == Some("retained note")
+                && communication.trigger_turn)
+    }));
 }
 
 #[tokio::test]

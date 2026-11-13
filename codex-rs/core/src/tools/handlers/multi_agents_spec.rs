@@ -351,6 +351,23 @@ pub fn create_list_agents_tool() -> ToolSpec {
     })
 }
 
+pub fn create_inspect_agent_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: "inspect_agent".to_string(),
+        description: "Inspect an admitted agent's applied settings, context usage/window and completed compactions. Includes retained and completed agents without starting work; unavailable observations are null.".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            BTreeMap::from([("target".to_string(), JsonSchema::string(Some(
+                "Canonical task path, unambiguous relative name, or exact thread ID. For another active session, use its exact session/thread ID.".to_string(),
+            )))]),
+            Some(vec!["target".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })
+}
+
 pub fn create_close_agent_tool_v1() -> ToolSpec {
     let properties = BTreeMap::from([(
         "target".to_string(),

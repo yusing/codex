@@ -44,6 +44,7 @@ use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
+use crate::tools::handlers::multi_agents_v2::InspectAgentHandler;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
@@ -1597,6 +1598,10 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     model_messages.multi_agent_tool_description_override("list_agents"),
                     model_messages.multi_agent_tool_parameters_override("list_agents"),
                 ),
+                exposure,
+            );
+            registry.register_trusted_with_exposure(
+                multi_agent_v2_handler(InspectAgentHandler, tool_namespace, None, None),
                 exposure,
             );
         } else {
