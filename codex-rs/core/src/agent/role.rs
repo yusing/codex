@@ -17,7 +17,6 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Verbosity;
-use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::openai_models::ReasoningEffort;
 use serde::Deserialize;
 use serde::Serialize;
@@ -241,17 +240,6 @@ mod role_overrides {
             .is_some_and(|skills| skills.include_instructions == Some(false))
         {
             next_config.include_skill_instructions = false;
-        }
-        let strips_baked_personality =
-            |config: &Config| config.personality == Some(Personality::None);
-        if strips_baked_personality(config) != strips_baked_personality(&next_config)
-            && matches!(
-                config.base_instructions_provenance,
-                Some(BaseInstructionsProvenance::Model { .. })
-            )
-        {
-            next_config.base_instructions = None;
-            next_config.base_instructions_provenance = None;
         }
         Ok(next_config)
     }

@@ -136,69 +136,11 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
 }
 
 #[test]
-fn personality_none_strips_catalog_instruction_sources_through_the_next_h1() {
-    let config = config_with_personality(Some(Personality::None));
-    for (instructions, expected) in [
-        (
-            "Intro\n\n# Personality\n\nRemove me\n\n## Writing Style\n\nRemove me too\n\n# Safety\n\nKeep me",
-            "Intro\n\n# Safety\n\nKeep me",
-        ),
-        ("Intro\n\n# Personality\n\nRemove me", "Intro\n\n"),
-        (
-            "Intro\n\n## Personality\n\nKeep me",
-            "Intro\n\n## Personality\n\nKeep me",
-        ),
-        (
-            "Intro\n\n# Personality \n\nKeep me",
-            "Intro\n\n# Personality \n\nKeep me",
-        ),
-        (
-            "Intro\r\n\r\n# Personality\r\n\r\nRemove me\r\n\r\n## Writing Style\r\n\r\nRemove me too\r\n\r\n# General\r\n\r\nKeep me",
-            "Intro\r\n\r\n# General\r\n\r\nKeep me",
-        ),
-    ] {
-        let mut messages = ModelMessages {
-            instructions_template: Some(instructions.to_string()),
-            persistent_instructions: Some(String::new()),
-            tools: Some(ToolMessages {
-                send_user_message_async: Some(ToolMessage {
-                    description: Some(String::new()),
-                    ..Default::default()
-                }),
-                multi_agent: Some(MultiAgentToolMessages {
-                    spawn_agent: Some(ToolMessage {
-                        description: Some(String::new()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            approvals: Some(ApprovalMessages {
-                on_request: Some("user approvals".to_string()),
-                on_request_auto_review: None,
-                never: None,
-                unless_trusted: None,
-                granular: None,
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let mut model = model_info_from_slug("unknown-model");
-        model.model_messages = Some(messages.clone());
-
-        let updated = with_config_overrides(model, &config);
-
-        messages.instructions_template = Some(expected.to_string());
-        assert_eq!(updated.model_messages, Some(messages));
-    }
-}
-
-#[test]
-fn baked_personality_section_is_preserved_without_explicit_none() {
+fn personality_config_does_not_change_model_instructions() {
     let instructions = "Intro\n# Personality\nKeep me\n# General\nKeep me too";
     let configs = [
         config_with_personality(/*personality*/ None),
+        config_with_personality(Some(Personality::None)),
         config_with_personality(Some(Personality::Friendly)),
         config_with_personality(Some(Personality::Pragmatic)),
     ];
@@ -278,4 +220,18 @@ fn model_context_window_uses_model_value_without_override() {
     let updated = with_config_overrides(model.clone(), &config);
 
     assert_eq!(updated, model);
+}
+
+#[test]
+fn bundled_instructions_omit_personality_and_disabled_plan_tool() {
+    let models: codex_protocol::openai_models::ModelsResponse =
+        serde_json::from_str(include_str!("../models.json")).unwrap();
+    for instructions in std::iter::once(BASE_INSTRUCTIONS).chain(
+        models.models.iter().filter_map(|model| {
+            model.model_messages.as_ref()?.instructions_template.as_deref()
+        }),
+    ) {
+        assert!(!instructions.contains("# Personality"));
+        assert!(!instructions.contains("update_plan"));
+    }
 }

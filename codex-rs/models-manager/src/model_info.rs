@@ -1,4 +1,3 @@
-use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
@@ -14,7 +13,6 @@ use codex_utils_output_truncation::approx_bytes_for_tokens;
 use tracing::warn;
 
 pub const BASE_INSTRUCTIONS: &str = include_str!("../prompt.md");
-const PERSONALITY_SECTION_HEADER: &str = "# Personality";
 
 pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig) -> ModelInfo {
     if let Some(context_window) = config.model_context_window {
@@ -46,52 +44,9 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
     if let Some(base_instructions) = &config.base_instructions {
         let model_messages = model.model_messages.get_or_insert_default();
         model_messages.instructions_template = Some(base_instructions.clone());
-    } else if config.personality == Some(Personality::None)
-        && let Some(instructions_template) = model
-            .model_messages
-            .as_mut()
-            .and_then(|messages| messages.instructions_template.as_mut())
-    {
-        *instructions_template = strip_personality_section(std::mem::take(instructions_template));
     }
 
     model
-}
-
-fn strip_personality_section(mut instructions: String) -> String {
-    let mut section_start = None;
-    let mut section_end = None;
-    let mut offset = 0;
-
-    for line_with_ending in instructions.split_inclusive('\n') {
-        let line = match line_with_ending.strip_suffix('\n') {
-            Some(line) => line.strip_suffix('\r').unwrap_or(line),
-            None => line_with_ending,
-        };
-        if section_start.is_some() {
-            if is_h1_heading(line) {
-                section_end = Some(offset);
-                break;
-            }
-        } else if line == PERSONALITY_SECTION_HEADER {
-            section_start = Some(offset);
-        }
-        offset += line_with_ending.len();
-    }
-
-    if let Some(section_start) = section_start {
-        let section_end = section_end.unwrap_or(instructions.len());
-        instructions.replace_range(section_start..section_end, "");
-    }
-
-    instructions
-}
-
-fn is_h1_heading(line: &str) -> bool {
-    let Some(rest) = line.strip_prefix('#') else {
-        return false;
-    };
-    rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t')
 }
 
 /// Build a minimal fallback model descriptor for missing/unknown slugs.

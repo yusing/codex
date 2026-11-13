@@ -231,15 +231,14 @@ async fn apply_role_preserves_unspecified_keys() {
 }
 
 #[tokio::test]
-async fn apply_role_refreshes_model_instructions_only_when_personality_opt_out_changes() {
-    for (parent_personality, role_contents, provenance, should_refresh) in [
+async fn apply_role_personality_keeps_inherited_instructions() {
+    for (parent_personality, role_contents, provenance) in [
         (
             "friendly",
             "personality = \"none\"",
             BaseInstructionsProvenance::Model {
                 model: "parent-model".to_string(),
             },
-            true,
         ),
         (
             "friendly",
@@ -247,7 +246,6 @@ async fn apply_role_refreshes_model_instructions_only_when_personality_opt_out_c
             BaseInstructionsProvenance::Model {
                 model: "parent-model".to_string(),
             },
-            false,
         ),
         (
             "none",
@@ -255,7 +253,6 @@ async fn apply_role_refreshes_model_instructions_only_when_personality_opt_out_c
             BaseInstructionsProvenance::Model {
                 model: "parent-model".to_string(),
             },
-            false,
         ),
         (
             "friendly",
@@ -263,7 +260,6 @@ async fn apply_role_refreshes_model_instructions_only_when_personality_opt_out_c
             BaseInstructionsProvenance::Model {
                 model: "parent-model".to_string(),
             },
-            true,
         ),
         (
             "friendly",
@@ -271,7 +267,6 @@ async fn apply_role_refreshes_model_instructions_only_when_personality_opt_out_c
             BaseInstructionsProvenance::Model {
                 model: "parent-model".to_string(),
             },
-            false,
         ),
         (
             "none",
@@ -279,13 +274,11 @@ async fn apply_role_refreshes_model_instructions_only_when_personality_opt_out_c
             BaseInstructionsProvenance::Model {
                 model: "parent-model".to_string(),
             },
-            true,
         ),
         (
             "friendly",
             "personality = \"none\"",
             BaseInstructionsProvenance::Custom,
-            false,
         ),
     ] {
         let (home, mut config) = test_config_with_cli_overrides(vec![
@@ -312,11 +305,7 @@ async fn apply_role_refreshes_model_instructions_only_when_personality_opt_out_c
             .await
             .expect("custom role should apply");
 
-        let expected = if should_refresh {
-            (None, None)
-        } else {
-            (Some("inherited instructions".to_string()), Some(provenance))
-        };
+        let expected = (Some("inherited instructions".to_string()), Some(provenance));
         assert_eq!(
             (
                 config.base_instructions,

@@ -688,7 +688,7 @@ pub struct Config {
     /// Info needed to make an API request to the model.
     pub model_provider: ModelProviderInfo,
 
-    /// Deprecated: `friendly` and `pragmatic` no longer select a style.
+    /// Accepted for compatibility; personality is configured through user instructions.
     pub personality: Option<Personality>,
 
     /// Effective permission configuration for shell tool execution.
@@ -2753,7 +2753,7 @@ pub struct ConfigOverrides {
     pub main_execve_wrapper_exe: Option<PathBuf>,
     pub base_instructions: Option<String>,
     pub developer_instructions: Option<String>,
-    /// Deprecated: `friendly` and `pragmatic` no longer select a style.
+    /// Accepted for compatibility; personality is configured through user instructions.
     pub personality: Option<Personality>,
     pub compact_prompt: Option<String>,
     pub show_raw_agent_reasoning: Option<bool>,

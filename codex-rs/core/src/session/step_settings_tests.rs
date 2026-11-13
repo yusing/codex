@@ -460,7 +460,7 @@ async fn model_resolution_preserves_startup_overrides_and_instruction_provenance
             Personality::Friendly,
             "Catalog B.\n# Personality\nfixed\n# Rules\nKeep the rules.",
         ),
-        (Personality::None, "Catalog B.\n# Rules\nKeep the rules."),
+        (Personality::None, "Catalog B.\n# Personality\nfixed\n# Rules\nKeep the rules."),
     ] {
         config.personality = Some(personality);
         let mut settings = configured_settings();
