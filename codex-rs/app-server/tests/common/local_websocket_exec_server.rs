@@ -31,7 +31,7 @@ impl LocalWebsocketExecServer {
         #[cfg(target_os = "linux")]
         command.env(
             CODEX_LINUX_SANDBOX_EXE_ENV_VAR,
-            core_test_support::find_codex_linux_sandbox_exe()
+            codex_utils_cargo_bin::cargo_bin("mekugi-app-server")
                 .context("should find binary for delayed exec-server Linux sandbox helper")?,
         );
         command.kill_on_drop(true);

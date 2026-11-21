@@ -22,7 +22,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   native build; the fork uses Mekugi's release process, not upstream release CI.
 - Subprocess regression tests are in a separate
   [crate](codex-rs/app-server-subprocess-tests/Cargo.toml) and exercise the staged
-  runtime. The native development profile favors incremental rebuilds.
+  runtime, including the exec-server fixture's Linux sandbox helper so it can
+  find the bundled `bwrap` without a system installation. The native development
+  profile favors incremental rebuilds.
 
 ## Execution and model guidance
 
