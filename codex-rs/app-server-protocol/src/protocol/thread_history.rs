@@ -2034,7 +2034,9 @@ mod tests {
     use super::*;
     use crate::protocol::v2::AgentMessageDelivery;
     use crate::protocol::v2::AsyncUserInputQuestion;
+    use crate::protocol::v2::CommandDisplay;
     use crate::protocol::v2::CommandExecutionSource;
+    use crate::protocol::v2::CommandStepKind;
     use codex_extension_items::ExtensionItem as CoreExtensionItem;
     use codex_extension_items::sleep::SleepItem as CoreSleepItem;
     use codex_protocol::ThreadId;
@@ -3949,7 +3951,13 @@ mod tests {
                 process_id: Some("pid-2".into()),
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Declined,
-                display: None,
+                display: Some(CommandDisplay {
+                    script: "ls".into(),
+                    segments: Vec::new(),
+                    step_kinds: vec![CommandStepKind::List],
+                    step_subjects: vec![Some(".".into())],
+                    effective_cwd: None,
+                }),
                 command_actions: vec![CommandAction::Unknown {
                     command: "ls".into(),
                 }],

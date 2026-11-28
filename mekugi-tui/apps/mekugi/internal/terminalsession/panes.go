@@ -7,6 +7,48 @@ func (r Rect) Contains(x, y int) bool {
 	return r.W > 0 && r.H > 0 && x >= r.X && x < r.X+r.W && y >= r.Y && y < r.Y+r.H
 }
 
+func (r Rect) overlaps(other Rect) bool {
+	return r.W > 0 && r.H > 0 && other.W > 0 && other.H > 0 &&
+		r.X < other.X+other.W && other.X < r.X+r.W &&
+		r.Y < other.Y+other.H && other.Y < r.Y+r.H
+}
+
+type livePlacement uint8
+
+const (
+	liveOff livePlacement = iota
+	liveBeside
+	liveBelow
+
+	liveDiffMinRows = 15 // A file viewport needs these rows below the batch heading.
+)
+
+// regions divides only the room above Main's composer and other docks.
+func (p livePlacement) regions(width, height int) (feed, live Rect) {
+	feed = Rect{W: width, H: height}
+	const previewRows = liveDiffMinRows + 1
+	switch p {
+	case liveOff:
+		return feed, Rect{}
+	case liveBeside:
+		const paneColumns = 40
+		if width >= 2*paneColumns+1 && height >= previewRows {
+			feed.W = width / 2
+			return feed, Rect{X: feed.W + 1, W: width - feed.W - 1, H: height}
+		}
+	case liveBelow:
+		const feedRows = 6
+		if height >= previewRows+feedRows {
+			dockRows := max(previewRows, height/2)
+			feed.H = height - dockRows
+			return feed, Rect{Y: feed.H, W: width, H: dockRows}
+		}
+	}
+	// A small view can only give the Live Diff the transcript's full space.
+	feed.H = 0
+	return feed, Rect{W: width, H: height}
+}
+
 // Layout is the geometry of the last composed frame. The content painter
 // fills Live once it knows where the dock fits inside Main, and Roster with
 // the roster sheet docked at Main's bottom.

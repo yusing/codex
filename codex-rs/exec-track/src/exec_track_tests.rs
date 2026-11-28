@@ -506,6 +506,79 @@ fn linux_background_descendant_write_succeeds_after_settle() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_git_worktree_and_checkout_writes_are_vcs_diagnostic_while_sibling_edit_is_authored() {
+    use std::process::Command;
+
+    let workspace = TempDir::new().expect("workspace");
+    let store_dir = TempDir::new().expect("store");
+    let ws = workspace.path();
+
+    let run_git = |args: &[&str]| {
+        let status = Command::new("git")
+            .current_dir(ws)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .args(args)
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    run_git(&["init", "-b", "main"]);
+    fs::write(ws.join("tracked.txt"), b"v1\n").unwrap();
+    run_git(&["add", "tracked.txt"]);
+    run_git(&["commit", "-m", "init"]);
+    fs::write(ws.join("tracked.txt"), b"dirty\n").unwrap();
+
+    let obs = WriteObserverSession::start("seccomp-wt".to_string(), |_| true).unwrap();
+    let sock_path = obs.dir_path().join("observe.sock");
+    let script = "git worktree add .worktrees/wt -b wt-branch && printf 'authored\n' > sibling.txt && git checkout -- tracked.txt && git worktree remove --force .worktrees/wt";
+
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0);
+    if pid == 0 {
+        crate::linux::install_filter_and_handoff(&sock_path);
+        let status = Command::new("/bin/sh")
+            .current_dir(ws)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["-c", script])
+            .status();
+        let code = status.ok().and_then(|s| s.code()).unwrap_or(1);
+        unsafe { libc::_exit(code) };
+    }
+    let mut status: libc::c_int = 0;
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+
+    let authored = obs
+        .finish_and_persist(
+            store_dir.path(),
+            ws,
+            None,
+            sample_metadata("thread-wt", "seccomp-wt", ws.to_path_buf()),
+        )
+        .unwrap()
+        .expect("authored record for sibling edit");
+
+    assert_eq!(authored.metadata.source_kind, ChangeSourceKind::ShellWrite);
+    let authored_paths: Vec<_> = authored.files.iter().map(|f| f.rel_path.as_str()).collect();
+    assert_eq!(authored_paths, vec!["sibling.txt"]);
+
+    let store = ChangeHistoryStore::open_existing(store_dir.path()).unwrap();
+    let entries = store.list_entries().unwrap();
+    let vcs = entries
+        .iter()
+        .find(|e| e.source_kind == ChangeSourceKind::VcsDiagnostic)
+        .expect("vcs diagnostic record for worktree and checkout");
+    assert!(vcs.file_paths.iter().any(|p| p == "tracked.txt"));
+}
+
 #[test]
 fn stop_before_finish_and_persist_preserves_pre_write_baselines() {
     let workspace = TempDir::new().expect("workspace");

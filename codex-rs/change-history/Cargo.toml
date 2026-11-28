@@ -13,6 +13,7 @@ doctest = false
 workspace = true
 
 [dependencies]
+codex-shell-command = { workspace = true }
 diffy = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

@@ -4,7 +4,6 @@
   import Attachments from "./Attachments.svelte";
   import {
     activeAttachments,
-    atomicAttachmentInput,
     attachmentRanges,
     hostPathAttachment,
     labelAttachment,
@@ -17,6 +16,7 @@
   } from "./attachments";
   import Code from "./Code.svelte";
   import ComposerPresets from "./ComposerPresets.svelte";
+  import DraftField from "./DraftField.svelte";
   import type { Machine } from "./hub.svelte";
   import Path from "./Path.svelte";
   import type {
@@ -81,7 +81,7 @@
   let error = $state<string>();
   let settingsError = $state<string>();
   let tray = $state<ReturnType<typeof Attachments>>();
-  let field = $state<HTMLTextAreaElement>();
+  let field = $state<ReturnType<typeof DraftField>>();
   let syntax = $state<HTMLElement>();
   let selectedText = $state(false);
   let controller = $state<AbortController>();
@@ -475,7 +475,7 @@
     for (let number = 2; labels.has(placeholder) || text.includes(placeholder); number++) {
       placeholder = `[Selected ${description} ${number}]`;
     }
-    let at = field?.selectionStart ?? text.length;
+    let at = field?.selectionStart() ?? text.length;
     for (const { start, end } of attachmentRanges(text, items)) {
       if (start < at && at < end) at = end;
     }
@@ -666,9 +666,9 @@
     if (prediction) void rewrite(prediction);
   }
 
-  function recordSelection(target: HTMLTextAreaElement) {
-    caret = target.selectionStart;
-    selectedText = caret !== target.selectionEnd;
+  function recordSelection(start: number, end: number) {
+    caret = start;
+    selectedText = start !== end;
   }
 
   function onkeydown(event: KeyboardEvent) {
@@ -782,9 +782,6 @@
       previewTarget={{ machine, thread }}
       disabled={disabled || shell}
     />
-    <label class="sr-only" for="composer-text"
-      >{shell ? "Shell command" : `Message ${addressee}`}</label
-    >
     <div class="flex items-start touch:[&_button]:min-h-11 touch:[&_button]:min-w-11">
       <div class="relative min-w-0 flex-1">
         {#if shell && !bareShell}
@@ -814,35 +811,34 @@
             >{prediction}</span
           >
         {/if}
-        <textarea
+        <DraftField
           id="composer-text"
+          label={shell ? "Shell command" : `Message ${addressee}`}
           bind:this={field}
-          data-slot="input-group-control"
           class={[
             composerText,
             "relative min-h-14 pt-3 pb-1.5",
             shell && shellText,
+            highlightShell && "shell-highlighted",
             shell && "overflow-x-hidden overflow-y-auto",
           ]}
-          class:shell-highlighted={highlightShell}
-          style:caret-color="var(--text)"
-          aria-describedby={bareShell
+          plain={shell}
+          style="caret-color: var(--text)"
+          describedby={bareShell
             ? "composer-shell-target"
             : prediction
               ? "composer-prediction"
               : undefined}
-          aria-keyshortcuts={prediction ? "Tab ArrowRight" : undefined}
-          onscroll={() => {
-            if (syntax && field) {
-              syntax.scrollTop = field.scrollTop;
-              syntax.scrollLeft = field.scrollLeft;
+          keyshortcuts={prediction ? "Tab ArrowRight" : undefined}
+          onscroll={(target) => {
+            if (syntax) {
+              syntax.scrollTop = target.scrollTop;
+              syntax.scrollLeft = target.scrollLeft;
             }
           }}
           bind:value={text}
-          use:atomicAttachmentInput={() => ({ text, items })}
-          oninput={(event) => recordSelection(event.currentTarget)}
-          onselect={(event) => recordSelection(event.currentTarget)}
-          onselectionchange={(event) => recordSelection(event.currentTarget)}
+          {items}
+          onselection={recordSelection}
           {onkeydown}
           onpaste={(event) => {
             const files = event.clipboardData?.files;
@@ -850,7 +846,6 @@
             if (!event.clipboardData?.types.includes("text/plain")) event.preventDefault();
             tray?.add(files);
           }}
-          rows="2"
           {disabled}
           placeholder={shell || prediction
             ? ""
@@ -858,7 +853,8 @@
               ? "Answer the prompt above, or write a follow-up…"
               : stoppable
                 ? "Steer the active turn…"
-                : `Message ${addressee}`}></textarea>
+                : `Message ${addressee}`}
+        />
       </div>
       {#if prediction}
         <Button
@@ -1011,12 +1007,12 @@
 {/if}
 
 <style>
-  .shell-highlighted {
+  .relative > :global(.shell-highlighted) {
     color: transparent;
   }
 
   @media (forced-colors: active) {
-    .shell-highlighted {
+    .relative > :global(.shell-highlighted) {
       color: CanvasText;
     }
   }

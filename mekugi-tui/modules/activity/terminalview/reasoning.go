@@ -45,14 +45,15 @@ func (p *Painter) thinkingHeader(block Block, width int) (string, bool) {
 	if label == "" {
 		label = block.ReasoningLabel()
 	}
-	if !block.Live && block.Thought >= time.Second {
-		label = reasoningFor(p.Inline(label), presentation.FormatDuration(block.Thought))
-	} else if label == "" && block.Live {
-		label = "Thinking…"
-	} else if label == "" {
-		label = "Thought"
+	if label == "" && len(block.Members) > 1 {
+		label = p.MarkdownPreview(presentation.ReasoningSummaryBody(block.Body))
 	} else {
 		label = p.Inline(label)
+	}
+	if !block.Live && block.Thought >= time.Second {
+		label = reasoningFor(label, presentation.FormatDuration(block.Thought))
+	} else if label == "" && !block.Live {
+		label = "Thought"
 	}
 	header := ansi.Truncate(label, max(1, width), "…")
 	if plain := ansi.Strip(header); strings.HasSuffix(plain, " •…") || strings.HasSuffix(plain, " • …") {

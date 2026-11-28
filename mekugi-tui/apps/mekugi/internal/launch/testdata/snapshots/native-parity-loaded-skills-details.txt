@@ -1,0 +1,14 @@
+├ Skill   review-pr/references/check.md
+├ Ran     cat /installed/checker/SKILL.md
+├ Ran     skills-mgr get missing · exit 1
+└ Ran     skills-mgr run only-script/example.sh
+
+
+  ── Skills ───────────────────────────────────────────────────────────────────────────────────────── [×] ──  
+                                                                                                              
+  • review-pr                                                                                                 
+  • checker                                                                                                   
+                                                                                                              
+  ↑↓ PgUp/PgDn g/G scroll · / find · y copy · ← back · esc close                                              
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • ◐ 1 • Direct Session • /tmp/ws • 2 loaded skills • ↓ roster • → diff • ctrl+e view

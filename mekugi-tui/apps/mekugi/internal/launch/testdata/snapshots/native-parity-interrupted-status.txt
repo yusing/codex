@@ -1,0 +1,13 @@
+mekugi-app-server/test
+
+
+
+
+
+
+Interrupted
+────────────────────────────────────────────────────────────────────────────────────────
+❯  
+────────────────────────────────────────────────────────────────────────────────────────
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • ◐ 1 • Direct Session • /tmp/ws • ↓ roster • → diff • ctrl+e view

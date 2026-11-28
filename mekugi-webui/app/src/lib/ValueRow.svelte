@@ -128,7 +128,9 @@
 
   const hasOutput = $derived(!!value.tailLines || value.tail?.some((line) => line.trim()));
   const tailLines = $derived(value.tailLines ?? value.tail?.length ?? 0);
-  const outputDisclosure = $derived(hasOutput && (tailLines > 1 || !!value.tailOmitted));
+  const outputDisclosure = $derived(
+    value.kind !== "error" && hasOutput && (tailLines > 1 || !!value.tailOmitted),
+  );
   const code = $derived(value.code?.replace(/\n$/, ""));
   const multiline = $derived(
     (value.codeLines ?? 0) > 1 || (code !== undefined && code.includes("\n")),
@@ -223,7 +225,8 @@
   });
   // A Run label quotes its command as inline code.
   const commandLabel = (html: string) => (node: HTMLElement) => {
-    if (html && verb === "Run") highlightWithin(node, "code", () => "bash", true);
+    if (html && (verb === "Run" || verb === "Ran" || verb === "Running"))
+      highlightWithin(node, "code", () => "bash", true);
   };
   const verbInk: Record<string, string> = {
     run: "text-kind-run",
@@ -301,8 +304,13 @@
         >
       {/each}
     {:else if value.path}
-      <span class="font-mono text-code"><Path path={displayPath!} title={value.path} /></span>
-      {#if value.label}<span class="ml-2 text-muted">{@html label}</span>{/if}
+      <div class="flex min-w-0 items-baseline gap-2">
+        <span class="min-w-0 font-mono text-code"
+          ><Path path={displayPath!} title={value.path} /></span
+        >
+        {#if value.label}<span class="shrink-0 whitespace-nowrap text-muted">{@html label}</span
+          >{/if}
+      </div>
     {:else if headline !== undefined}
       <code
         ><Code
@@ -373,6 +381,9 @@
 
   {#if fold ? scriptOpen : value.codeLines || (code && value.fenced && headline === undefined)}
     <div class={extra}>
+      {#if value.foldSource && value.path}
+        <p class="mt-1 font-mono text-code wrap-anywhere text-muted">{value.path}</p>
+      {/if}
       {#if fold?.json}
         <pre class="{scroll} whitespace-pre-wrap wrap-anywhere"><Code
             code={json ?? ""}

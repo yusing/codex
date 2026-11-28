@@ -85,7 +85,15 @@ func paintMainStatus(theme diffrender.Theme, status sessionpresentation.MainStat
 				label += "\x1b[4m"
 			}
 		}
-		label += theme.Standing() + text + terminalui.Reset
+		ink := diffrender.RGB{R: 215, G: 135}
+		if theme == diffrender.LightTheme {
+			ink = diffrender.RGB{R: 134, G: 86, B: 16}
+		}
+		if !colors.HasBackground {
+			colors.Background, colors.HasBackground = theme.Canvas().Background, true
+		}
+		colors.Foreground, colors.HasForeground = ink, true
+		label += activityui.StatusPulse(text, now, colors) + terminalui.Reset
 	}
 	notice := PaintSessionStatus(theme, status.Feedback, now, colors)
 	if notice == "" {

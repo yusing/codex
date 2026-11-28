@@ -79,7 +79,7 @@ type composerDocument struct {
 
 // layout reserves the transcript window and paints Main's surrounding docks.
 // Source: apps/mekugi/internal/router/app_server_ui.go:1241:1455@[ce8700a8].
-func (m *Main) layout(in mainInput, painter *activityui.Painter, width, height, dock int) (out MainFrame) {
+func (m *Main) layout(in mainInput, painter *activityui.Painter, width, height int, live livePlacement) (out MainFrame) {
 	presentation, readOnly := in.Session, in.ReadOnly
 	width, height = max(1, width), max(1, height)
 	m.NoticeDetails, m.NoticeDismiss, m.ProcessCount = Rect{}, Rect{}, Rect{}
@@ -127,7 +127,7 @@ func (m *Main) layout(in mainInput, painter *activityui.Painter, width, height, 
 			draft[i] = terminalui.Dim + draft[i] + terminalui.Reset
 		}
 	}
-	if dock == 0 && in.Empty && height >= 6 && height > min(6, len(draft))+borderRows && !in.Picker {
+	if live == liveOff && in.Empty && height >= 6 && height > min(6, len(draft))+borderRows && !in.Picker {
 		welcome := []string{ansi.Truncate(in.Welcome, width, "…")}
 		if previewWelcome != "" {
 			note := painter.Markdown(previewWelcome, min(width, 80), true)
@@ -174,26 +174,26 @@ func (m *Main) layout(in mainInput, painter *activityui.Painter, width, height, 
 		}
 	}
 	if len(approvalRows) > 0 {
-		dock = 0
+		live = liveOff
 		room -= len(approvalRows)
 	}
 	if !readOnly {
 		questionRows = conversationui.Questions(presentation.Questions, &painter.Painter, in.QuestionLayout, presentation.Info.Caller, in.TurnIdle && in.Draft.Text != "", width, min(height/2, room))
 	}
 	if len(questionRows) > 0 {
-		dock = 0
+		live = liveOff
 		room -= len(questionRows)
 	}
 
 	if !readOnly && m.BTW.Open() && !in.Picker {
 		btwRows = m.BTW.Render(painter, in.Now, width, max(0, min(height/2, room))).Rows
 		if len(btwRows) > 0 {
-			dock = 0
+			live = liveOff
 			room -= len(btwRows)
 		}
 	}
 	if in.Picker {
-		dock = 0
+		live = liveOff
 	} else if !readOnly {
 		// Waiting input yields to the transcript beyond half the room.
 		pending = conversationui.Pending(presentation.Pending, width)
@@ -207,13 +207,9 @@ func (m *Main) layout(in mainInput, painter *activityui.Painter, width, height, 
 		gap = 1
 		room--
 	}
-	dock = min(dock, room)
-	room -= dock
-	m.ContentPainted = room > 1
-	out.Feed = Rect{W: width, H: room}
+	out.Feed, out.Dock = live.regions(width, room)
+	m.ContentPainted = out.Feed.H > 1
 	frame := make([]string, room)
-	dockAt := len(frame)
-	frame = append(frame, make([]string, dock)...)
 	frame = append(frame, pending...)
 
 	out.Questions = Rect{0, len(frame), width, len(questionRows)}
@@ -296,7 +292,7 @@ func (m *Main) layout(in mainInput, painter *activityui.Painter, width, height, 
 	if ruled {
 		frame = append(frame, rule)
 	}
-	out.Rows, out.Dock = frame, Rect{0, dockAt, width, dock}
+	out.Rows = frame
 	return out
 }
 

@@ -6,7 +6,7 @@
   import { matchReviewedFile, preferredScrollBehavior, workspacePath } from "./diff";
   import DiffView from "./DiffView.svelte";
   import Path from "./Path.svelte";
-  import type { CallerReview, ReviewedFile, SavedReview } from "./protocol";
+  import type { CallerReview, Counts, ReviewedFile, SavedReview } from "./protocol";
   import Alert from "./ui/Alert.svelte";
   import Button from "./ui/Button.svelte";
   import Picker from "./ui/Picker.svelte";
@@ -17,6 +17,7 @@
     review,
     caller,
     callers,
+    overview,
     callerLabel,
     oncaller,
     includeExternal = false,
@@ -32,6 +33,7 @@
     review: SavedReview | null;
     caller: string;
     callers: CallerReview[];
+    overview?: { fileCount: number; counts: SavedReview["counts"] };
     callerLabel: (caller: string) => string;
     oncaller: (caller: string) => void;
     includeExternal?: boolean;
@@ -52,12 +54,34 @@
     const match = matchReviewedFile(files, focusPath, review?.workspace ?? "");
     return match ? files.indexOf(match) : -1;
   });
-  const net = $derived(review?.counts.Net);
+  function formatSummary(count: number, counts?: Counts | null): string {
+    if (!count) return "No saved changes";
+    return [
+      counts && `+${counts.Added} −${counts.Removed}`,
+      `${count} ${count === 1 ? "file" : "files"}`,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  const selectedCaller = $derived(
+    caller ? callers.find((choice) => choice.caller === caller) : undefined,
+  );
+  const headerCount = $derived(selectedCaller ? selectedCaller.count : review?.fileCount);
+  const net = $derived(selectedCaller ? selectedCaller.counts : review?.counts.Net);
   const callerChoices = $derived([
-    { value: "all", label: "All callers" },
+    {
+      value: "all",
+      label: "All callers",
+      detail: formatSummary(
+        overview?.fileCount ?? review?.fileCount ?? 0,
+        overview?.counts.Net ?? review?.counts.Net,
+      ),
+    },
     ...callers.map((choice) => ({
       value: choice.caller,
       label: callerLabel(choice.caller),
+      detail: formatSummary(choice.count, choice.counts),
     })),
   ]);
   function sourceLabel(source: string): string {
@@ -173,8 +197,8 @@
 <div class="flex h-full min-h-0 flex-col" aria-busy={loading}>
   <div class="flex min-h-11 flex-wrap items-center gap-2 border-b border-rule px-4 py-2 text-small">
     <span class="font-semibold">
-      Saved Diff {#if review?.fileCount}<span class="font-normal text-muted tabular-nums"
-          >({review.fileCount})</span
+      Saved Diff {#if headerCount}<span class="font-normal text-muted tabular-nums"
+          >({headerCount})</span
         >{/if}
     </span>
     {#if callers.length > 0}

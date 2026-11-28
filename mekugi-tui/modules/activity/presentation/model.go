@@ -24,7 +24,7 @@ type Facts struct {
 	Question, Activity                                    uint64
 	AssignmentTo, AssignmentText                          string
 	Assignment                                            bool
-	Delivered                                             bool // Attributed completion received from another runtime.
+	Delivered                                             bool // Attributed mail received from another runtime.
 	Running, Live, Restored, Unconfirmed, ContextBoundary bool
 	Suppressed, OutputFailed, OutputComplete              bool
 	ItemComplete                                          bool

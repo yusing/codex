@@ -167,6 +167,9 @@ func (in FrameInput) skillsCaller() string {
 
 func (in FrameInput) displayedSkills() []string {
 	v := in.Main.session
+	if v.Side != nil && v.Displayed.ID == v.SideThread.ID {
+		return v.Side.Skills
+	}
 	if caller := in.skillsCaller(); v.Displayed.ID != v.Main.ID || caller != "/root" {
 		for _, row := range in.Agents.Roster() {
 			if row.Agent.Name == caller {
@@ -200,7 +203,6 @@ func (f *Frame) Render(ctx context.Context, in FrameInput) (out RenderedFrame, e
 	caller := view.Displayed.Caller
 	transcript := in.displayedTranscript()
 	transcript.ImageDemands, transcript.ImagePlacements = nil, nil
-	mainEdit := !in.LiveHidden && (slices.Contains(in.Live.Callers(), caller) || caller == "/root" && len(in.Live.Callers()) > 0)
 	in.Agents.Hits = nil
 	// The roster sheet needs subagents; it closes when the last one leaves.
 	summary := in.Agents.RosterSummary()
@@ -265,15 +267,21 @@ func (f *Frame) Render(ctx context.Context, in FrameInput) (out RenderedFrame, e
 				panel = true
 			}
 		}
-		dockRows := 0
-		if !panel && mainEdit && !in.Main.Keybindings && !in.Main.Menu.Open() {
-			dockRows = ih
+		live := liveOff
+		if !panel && !in.LiveHidden && !in.Main.Keybindings && !in.Main.Menu.Open() {
+			callers := in.Live.Callers()
+			if slices.Contains(callers, caller) || caller == "/root" && len(callers) > 0 {
+				live = liveBeside
+				if shell.DiffOpen {
+					live = liveBelow
+				}
+			}
 		}
 		rosterHits := in.Agents.Hits
-		main := in.Main.Render(in.displayedTranscript(), &in.Transcript.Painter, in.Prompts, MainOptions{
+		main := in.Main.Render(transcript, &in.Transcript.Painter, in.Prompts, MainOptions{
 			Now: in.Now, Focused: shell.Focus == 0, Version: in.Version, HideComposer: panel,
 			ParentHint: in.parentHint(),
-		}, iw, ih, dockRows)
+		}, iw, ih, live)
 		in.Agents.Hits = rosterHits
 		if len(main.Demands) != 0 {
 			out.Demands = main.Demands
@@ -295,17 +303,10 @@ func (f *Frame) Render(ctx context.Context, in FrameInput) (out RenderedFrame, e
 		mainImageDemands = main.ImageDemands
 		mainImagePlacements = main.ImagePlacements
 		content.Main, content.Dock = main.Rows, main.Dock
-		dockAt, dockRows := content.Dock.Y, content.Dock.H
-		if dockRows > 0 && dockAt+dockRows <= len(content.Main) {
-			dock, err := in.Live.RenderBatch(ctx, caller, view.Info.Workspace, shell.Theme, iw, dockRows, 15)
+		if dock := content.Dock; dock.H > 0 {
+			content.Live, err = in.Live.RenderBatch(ctx, caller, view.Info.Workspace, shell.Theme, dock.W, dock.H, liveDiffMinRows)
 			if err != nil {
 				return out, err
-			}
-			for i := range dockRows {
-				content.Main[dockAt+i] = ""
-				if i < len(dock) {
-					content.Main[dockAt+i] = dock[i]
-				}
 			}
 		}
 	}
@@ -414,7 +415,7 @@ func (f *Frame) Render(ctx context.Context, in FrameInput) (out RenderedFrame, e
 		}
 	} else if in.Dialog == nil && in.Selection == nil && view.Panel == nil && view.Resume == nil {
 		out.Images = terminalui.ImageFrame{Protocol: transcript.ImageProtocol, CellWidth: transcript.ImageCellWidth, CellHeight: transcript.ImageCellHeight}
-		if !in.Main.Keybindings && !in.Main.Menu.Open() && !mainEdit {
+		if !in.Main.Keybindings && !in.Main.Menu.Open() {
 			out.ImageDemands = append(out.ImageDemands, transcript.ImageDemands...)
 			for _, p := range transcript.ImagePlacements {
 				p.X += plan.Layout.Main.X + transcript.FeedLeft - 1
@@ -438,7 +439,9 @@ func (f *Frame) PaintSelection(in FrameInput, rows []string) bool {
 	if s == nil || in.Dialog != nil {
 		return true
 	}
-	if cmp.Or(s.ScreenRows(), len(s.Rows)) != len(rows) || f.Width != in.Width || in.SelectionPane != in.Shell.Layout.Main && in.SelectionPane != in.Shell.Layout.Diff {
+	if cmp.Or(s.ScreenRows(), len(s.Rows)) != len(rows) || f.Width != in.Width ||
+		in.SelectionPane != in.Shell.Layout.Main && in.SelectionPane != in.Shell.Layout.Diff ||
+		s.Rect.overlaps(in.Shell.Layout.Live) {
 		return false
 	}
 	for y := s.Rect.Y; y < s.Rect.Y+s.Rect.H; y++ {

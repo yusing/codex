@@ -25,6 +25,21 @@ test("replacement blocks retain words across rows and emphasize identifiers and 
   assert.deepEqual(changed(diffRows("@@ -1 +1 @@\n-a <= b\n+a >= b\n")), ["", "<", ">"]);
 });
 
+test("provisional hunks preserve patch-like text without guessing line numbers", () => {
+  assert.deepEqual(
+    diffRows("--- a/file\n+++ b/file\n@@\n--- old\n+++ new\n@@ anchor\n context\n").map(
+      ({ kind, text, old, new: next }) => [kind, text, old, next],
+    ),
+    [
+      ["hunk", "@@", undefined, undefined],
+      ["remove", "-- old", undefined, undefined],
+      ["add", "++ new", undefined, undefined],
+      ["hunk", "@@ anchor", undefined, undefined],
+      ["context", "context", undefined, undefined],
+    ],
+  );
+});
+
 test("Unicode words, whitespace, graphemes, notes and separate hunks preserve source", () => {
   const rows = diffRows(
     "@@ -1 +1 @@\n-\tcafé 👩‍💻 ok  \n\\ No newline at end of file\n+\tcafè 👨‍💻 ok \n@@ -8 +9 @@\n-pure removal\n@@ -12,0 +13 @@\n+pure addition\n",

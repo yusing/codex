@@ -30,7 +30,7 @@ type MainOptions struct {
 // Render paints the attached views without resolving source output. The application
 // hydrates returned demands and renders again before delivering the frame.
 // Source: apps/mekugi/internal/router/app_server_ui.go:1131:1208@ceef0946.
-func (m *Main) Render(transcript *activityui.View, painter *activityui.Painter, prompts *Prompts, options MainOptions, width, height, dock int) (out MainFrame) {
+func (m *Main) Render(transcript *activityui.View, painter *activityui.Painter, prompts *Prompts, options MainOptions, width, height int, live livePlacement) (out MainFrame) {
 	presentation := m.session
 	readOnly := presentation.ReadOnly != sessionpresentation.Editable
 	defer func() {
@@ -85,12 +85,12 @@ func (m *Main) Render(transcript *activityui.View, painter *activityui.Painter, 
 		}
 	}
 
-	frame := m.layout(in, painter, width, height, dock)
+	frame := m.layout(in, painter, width, height, live)
 	transcript.Conversation, transcript.FeedOnly, transcript.StatusLabel = true, true, textsanitize.Safe(StatusText(presentation.Status.State), false)
 	transcript.FeedRows = 0
 	transcript.FeedQuestions, transcript.FeedSnippets = nil, nil
 	if room := frame.Feed.H; room > 0 {
-		rows := transcript.Render(width, room, in.Now)
+		rows := transcript.Render(frame.Feed.W, room, in.Now)
 		for row := range rows {
 			rows[row] = terminalui.AttachCopy(rows[row], transcript.CopyRows[row])
 		}

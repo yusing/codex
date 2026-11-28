@@ -199,15 +199,15 @@ export function diffRows(diff: string): DiffRow[] {
   const rows: DiffRow[] = [];
   const lines = diff.split("\n");
   if (lines.at(-1) === "") lines.pop();
-  let old = 0,
-    now = 0,
-    started = false;
+  let old: number | undefined;
+  let now: number | undefined;
+  let started = false;
   for (const line of lines) {
     const header = hunk.exec(line);
-    if (header) {
+    if (header || line === "@@" || line.startsWith("@@ ")) {
       started = true;
-      old = Number(header[1]);
-      now = Number(header[2]);
+      old = header ? Number(header[1]) : undefined;
+      now = header ? Number(header[2]) : undefined;
       rows.push({ kind: "hunk", text: line });
     } else if (!started) {
       // File headers and the review's operation line repeat what the view
@@ -219,10 +219,22 @@ export function diffRows(diff: string): DiffRow[] {
         !operation.test(line)
       )
         rows.push({ kind: "note", text: line });
-    } else if (line.startsWith("+")) rows.push({ kind: "add", text: line.slice(1), new: now++ });
-    else if (line.startsWith("-")) rows.push({ kind: "remove", text: line.slice(1), old: old++ });
+    } else if (line.startsWith("+"))
+      rows.push({ kind: "add", text: line.slice(1), new: now === undefined ? undefined : now++ });
+    else if (line.startsWith("-"))
+      rows.push({
+        kind: "remove",
+        text: line.slice(1),
+        old: old === undefined ? undefined : old++,
+      });
     else if (line.startsWith("\\")) rows.push({ kind: "note", text: line.slice(1).trim() });
-    else rows.push({ kind: "context", text: line.slice(1), old: old++, new: now++ });
+    else
+      rows.push({
+        kind: "context",
+        text: line.slice(1),
+        old: old === undefined ? undefined : old++,
+        new: now === undefined ? undefined : now++,
+      });
   }
   return rows;
 }

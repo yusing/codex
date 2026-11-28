@@ -111,7 +111,8 @@ fn diff_consumer_streams_apply_patch_changes() {
 
     let event = consumer
         .push_delta("call-1".to_string(), "*** Add File: hello.txt\n+hello")
-        .expect("progress event");
+        .expect("progress event")
+        .provisional();
     assert_eq!(
         (event.call_id, event.changes),
         (
@@ -139,7 +140,8 @@ fn diff_consumer_streams_apply_patch_changes() {
     let event = consumer
         .finish_update_on_complete()
         .expect("finish parser")
-        .expect("progress event");
+        .expect("progress event")
+        .provisional();
     assert_eq!(
         (event.call_id, event.changes),
         (
@@ -168,7 +170,8 @@ fn diff_consumer_streams_apply_patch_changes_with_environment_header() {
 
     let event = consumer
         .push_delta("call-1".to_string(), "*** Add File: hello.txt\n+hello")
-        .expect("progress event");
+        .expect("progress event")
+        .provisional();
     assert_eq!(
         event.changes,
         HashMap::from([(
@@ -186,7 +189,8 @@ fn diff_consumer_sends_next_update_after_buffer_interval() {
     consumer.push_delta("call-1".to_string(), "*** Begin Patch\n");
     let first = consumer
         .push_delta("call-1".to_string(), "*** Add File: hello.txt\n+hello")
-        .expect("first progress event");
+        .expect("first progress event")
+        .provisional();
     assert_eq!(
         first.changes,
         HashMap::from([(
@@ -201,7 +205,8 @@ fn diff_consumer_sends_next_update_after_buffer_interval() {
         Some(std::time::Instant::now() - APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL);
     let second = consumer
         .push_delta("call-1".to_string(), "\n+world")
-        .expect("second progress event");
+        .expect("second progress event")
+        .provisional();
     assert_eq!(
         second.changes,
         HashMap::from([(

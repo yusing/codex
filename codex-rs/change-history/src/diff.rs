@@ -309,17 +309,7 @@ pub fn captured_diff_range_by(
     max_budget: usize,
     char_cost: impl Fn(char) -> usize,
 ) -> Result<Option<(ComposedFileDiff, Option<usize>)>, ChangeHistoryError> {
-    let selected = ChangeRecord {
-        schema_version: record.schema_version,
-        id: record.id.clone(),
-        sequence: record.sequence,
-        recorded_at_ms: record.recorded_at_ms,
-        metadata: record.metadata.clone(),
-        files: files.iter().map(|file| (*file).clone()).collect(),
-    };
-    let Some(transition) =
-        compose_changed_files(store, std::slice::from_ref(&selected), &[])?.next()
-    else {
+    let Some(transition) = captured_file_transition(store, record, files)? else {
         return Ok(None);
     };
     let mut output = BudgetedDiffRange {
@@ -342,6 +332,37 @@ pub fn captured_diff_range_by(
         },
         next,
     )))
+}
+
+/// Compute a captured file's status and line counts without rendering patch text.
+pub fn captured_file_stats(
+    store: &ChangeHistoryStore,
+    record: &ChangeRecord,
+    files: &[&FileEvidence],
+) -> Result<Option<FileDiffStats>, ChangeHistoryError> {
+    Ok(
+        captured_file_transition(store, record, files)?.map(|transition| {
+            let counts = transition.text_diff().as_ref().map(count_lines);
+            transition.into_stats(counts)
+        }),
+    )
+}
+
+fn captured_file_transition(
+    store: &ChangeHistoryStore,
+    record: &ChangeRecord,
+    files: &[&FileEvidence],
+) -> Result<Option<ComposedFileTransition>, ChangeHistoryError> {
+    let selected = ChangeRecord {
+        schema_version: record.schema_version,
+        id: record.id.clone(),
+        sequence: record.sequence,
+        recorded_at_ms: record.recorded_at_ms,
+        metadata: record.metadata.clone(),
+        files: files.iter().map(|file| (*file).clone()).collect(),
+    };
+    let transition = compose_changed_files(store, std::slice::from_ref(&selected), &[])?.next();
+    Ok(transition)
 }
 
 /// Compute per-file statistics across `records` without rendering unified diffs.

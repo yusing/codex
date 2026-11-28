@@ -530,11 +530,6 @@ func (p *Painter) blockRows(block Block, width int) []string {
 		}
 		body := presentation.ReasoningSummaryBody(block.Body)
 		if body == "" {
-			// A request's thinking block before its first delta.
-			if block.Live && strings.TrimSpace(block.Body) == "" {
-				header, _ := p.thinkingHeader(block, width-2)
-				return []string{terminalui.Dim + "• " + header + terminalui.Undim}
-			}
 			return nil
 		}
 		header, headingElided := p.thinkingHeader(block, width-2)
@@ -564,7 +559,7 @@ func (p *Painter) blockRows(block Block, width int) []string {
 			}
 			return rows
 		}
-		if block.Collapsed || (block.Compact && !block.Live) {
+		if block.Collapsed && header != "" || block.Compact && !block.Live {
 			if block.Hovered {
 				header = Underline(header)
 			}
@@ -573,7 +568,10 @@ func (p *Painter) blockRows(block Block, width int) []string {
 		if block.Live && !block.Expanded {
 			var hidden int
 			if rows, hidden = TailRows(rows, ThinkingTailRows); hidden > 0 {
-				suffix := " · " + Elision{Hidden: hidden, Form: ElisionSuffix, Hovered: block.Hovered}.String()
+				suffix := Elision{Hidden: hidden, Form: ElisionSuffix, Hovered: block.Hovered}.String()
+				if header != "" {
+					suffix = " · " + suffix
+				}
 				suffix = ansi.Truncate(suffix, max(0, width-3), "…")
 				header, headingElided = p.thinkingHeader(block, width-2-ansi.StringWidth(suffix))
 				header += suffix + terminalui.Dim
@@ -583,7 +581,14 @@ func (p *Painter) blockRows(block Block, width int) []string {
 			header = Underline(header)
 		}
 		for i, row := range rows {
-			rows[i] = reasoningRow("  " + row)
+			marker := "  "
+			if i == 0 && header == "" {
+				marker = "• "
+			}
+			rows[i] = reasoningRow(marker + row)
+		}
+		if header == "" {
+			return rows
 		}
 		return append([]string{terminalui.Dim + "• " + header + terminalui.Undim}, rows...)
 	case "final":
@@ -900,7 +905,7 @@ func (p *Painter) groupSource(block Block) []string {
 // editRow lays out a file row with its counts in the group's shared column.
 // Zero counts are omitted.
 func (p *Painter) editRow(block Block, width, lead int) (string, bool) {
-	if !slices.Contains([]string{"Create", "Edit", "Delete"}, block.Verb) {
+	if !slices.Contains([]string{"Create", "Edit", "Delete", "Move"}, block.Verb) {
 		return "", false
 	}
 	path, added, removed, tail, ok := EditStat(block.Label)
@@ -1545,6 +1550,10 @@ func (p *Painter) Summary(blocks []Block, width int) string {
 	case "summary":
 		if block.Label != "" {
 			return p.statusStyle(block.Live) + ansi.Strip(p.Inline(block.Label)) + terminalui.Reset
+		}
+		if block.Live && block.ReasoningLabel() == "" {
+			preview := p.MarkdownPreview(presentation.ReasoningSummaryBody(block.Body))
+			return p.statusStyle(true) + ansi.Truncate(preview, max(1, width), "…") + terminalui.Reset
 		}
 		block.Collapsed, block.Thought, block.Hovered = true, 0, false
 		if rows := p.blockRows(block, max(1, width)+2); len(rows) > 0 {

@@ -27,6 +27,20 @@ pub fn try_parse_shell(shell_lc_arg: &str) -> Option<Tree> {
 /// (parentheses, redirections, substitutions, control flow, etc.). Otherwise
 /// returns `None`.
 pub fn try_parse_word_only_commands_sequence(tree: &Tree, src: &str) -> Option<Vec<Vec<String>>> {
+    parse_word_only_commands_sequence(tree, src, CommandSequence::Pipelines)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandSequence {
+    Pipelines,
+    Sequential,
+}
+
+fn parse_word_only_commands_sequence(
+    tree: &Tree,
+    src: &str,
+    sequence: CommandSequence,
+) -> Option<Vec<Vec<String>>> {
     if tree.root_node().has_error() {
         return None;
     }
@@ -49,7 +63,7 @@ pub fn try_parse_word_only_commands_sequence(tree: &Tree, src: &str) -> Option<V
         "concatenation",
     ];
     // Allow only safe punctuation / operator tokens; anything else causes reject.
-    const ALLOWED_PUNCT_TOKENS: &[&str] = &["&&", "||", ";", "|", "\"", "'"];
+    const ALLOWED_PUNCT_TOKENS: &[&str] = &["&&", ";", "\"", "'"];
 
     let root = tree.root_node();
     let mut cursor = root.walk();
@@ -58,25 +72,28 @@ pub fn try_parse_word_only_commands_sequence(tree: &Tree, src: &str) -> Option<V
     while let Some(node) = stack.pop() {
         let kind = node.kind();
         if node.is_named() {
+            if kind == "comment" && sequence == CommandSequence::Sequential {
+                continue;
+            }
             if !ALLOWED_KINDS.contains(&kind) {
                 return None;
             }
-            if matches!(kind, "word" | "number") && !is_literal_word_or_number(node, src) {
+            if matches!(kind, "word" | "number")
+                && !match sequence {
+                    CommandSequence::Pipelines => is_literal_word_or_number(node, src),
+                    CommandSequence::Sequential => is_literal_source_word(node, src),
+                }
+            {
                 return None;
             }
             if kind == "command" {
                 command_nodes.push(node);
             }
-        } else {
-            // Reject any punctuation / operator tokens that are not explicitly allowed.
-            if kind.chars().any(|c| "&;|".contains(c)) && !ALLOWED_PUNCT_TOKENS.contains(&kind) {
-                return None;
-            }
-            if !(ALLOWED_PUNCT_TOKENS.contains(&kind) || kind.trim().is_empty()) {
-                // If it's a quote token or operator it's allowed above; we also allow whitespace tokens.
-                // Any other punctuation like parentheses, braces, redirects, backticks, etc are rejected.
-                return None;
-            }
+        } else if !(ALLOWED_PUNCT_TOKENS.contains(&kind)
+            || kind.trim().is_empty()
+            || sequence == CommandSequence::Pipelines && matches!(kind, "||" | "|"))
+        {
+            return None;
         }
         for child in node.children(&mut cursor) {
             stack.push(child);
@@ -88,7 +105,10 @@ pub fn try_parse_word_only_commands_sequence(tree: &Tree, src: &str) -> Option<V
 
     let mut commands = Vec::new();
     for node in command_nodes {
-        let words = parse_plain_command_from_node(node, src)?;
+        let words = match sequence {
+            CommandSequence::Pipelines => parse_plain_command_from_node(node, src)?,
+            CommandSequence::Sequential => shlex::split(node.utf8_text(src.as_bytes()).ok()?)?,
+        };
         commands.push(words);
     }
     Some(commands)
@@ -98,6 +118,41 @@ pub fn try_parse_word_only_commands_sequence(tree: &Tree, src: &str) -> Option<V
 pub fn parse_shell_script_into_commands(script: &str) -> Option<Vec<Vec<String>>> {
     let tree = try_parse_shell(script)?;
     try_parse_word_only_commands_sequence(&tree, script)
+}
+
+/// Classify source words in simple commands joined by newline, semicolon, or &&.
+/// Keeps a home-relative path in source form. No command is evaluated.
+pub fn parse_sequential_shell_commands(script: &str) -> Option<Vec<Vec<String>>> {
+    let tree = try_parse_shell(script)?;
+    parse_word_only_commands_sequence(&tree, script, CommandSequence::Sequential)
+}
+
+/// Source words of one simple command, also allowing a displayed home-relative path.
+/// These are not runtime arguments and must not be used for approval decisions.
+pub fn display_command_words(script: &str) -> Option<Vec<String>> {
+    let tree = try_parse_shell(script)?;
+    let root = tree.root_node();
+    let command = root.named_child(0)?;
+    if root.has_error() || root.named_child_count() != 1 || command.kind() != "command" {
+        return None;
+    }
+    let mut pending = vec![command];
+    while let Some(node) = pending.pop() {
+        match node.kind() {
+            "word" | "number"
+                if !is_literal_word_or_number(node, script)
+                    && !is_home_relative_word(node, script) =>
+            {
+                return None;
+            }
+            "word" | "number" | "string" | "raw_string" => {}
+            "command" | "command_name" | "concatenation" => {
+                pending.extend(node.named_children(&mut node.walk()));
+            }
+            _ => return None,
+        }
+    }
+    parse_plain_command_from_node(command, script)
 }
 
 pub fn extract_bash_command(command: &[String]) -> Option<(&str, &str)> {
@@ -345,6 +400,9 @@ fn parse_literal_shell_word(node: Node<'_>, src: &str) -> Option<String> {
     }
 }
 
+const SHELL_WORD_METACHARACTERS: &[char] =
+    &['{', '}', '*', '?', '[', ']', '\\', '~', '^', '#', '$', '`'];
+
 fn is_literal_word_or_number(node: Node<'_>, src: &str) -> bool {
     if !matches!(node.kind(), "word" | "number") {
         return false;
@@ -356,8 +414,37 @@ fn is_literal_word_or_number(node: Node<'_>, src: &str) -> bool {
             // removal. Do not use its source spelling as proof of runtime argv.
             // Include Zsh's equals expansion and extended glob syntax because
             // this parser is also used for Zsh commands.
-            !word.starts_with('=')
-                && !word.contains(['{', '}', '*', '?', '[', ']', '\\', '~', '^', '#', '$', '`'])
+            !word.starts_with('=') && !word.contains(SHELL_WORD_METACHARACTERS)
+        })
+}
+
+fn is_literal_source_word(node: Node<'_>, src: &str) -> bool {
+    let Ok(word) = node.utf8_text(src.as_bytes()) else {
+        return false;
+    };
+    if node.named_child_count() != 0 || word.starts_with('=') {
+        return false;
+    }
+    // Source classification permits ~/ and shell escapes. shlex decodes the
+    // escapes later; the runtime parser still requires already-literal words.
+    let mut chars = word.strip_prefix("~/").unwrap_or(word).chars();
+    while let Some(character) = chars.next() {
+        if character == '\\' {
+            if chars.next().is_none() {
+                return false;
+            }
+        } else if SHELL_WORD_METACHARACTERS.contains(&character) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_home_relative_word(node: Node<'_>, src: &str) -> bool {
+    node.child_count() == 0
+        && node.utf8_text(src.as_bytes()).is_ok_and(|word| {
+            word.strip_prefix("~/")
+                .is_some_and(|path| !path.contains(SHELL_WORD_METACHARACTERS))
         })
 }
 

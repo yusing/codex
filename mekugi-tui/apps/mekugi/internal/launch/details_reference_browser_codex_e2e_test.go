@@ -166,9 +166,11 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 		},
 		afterPrompt: func(t *testing.T, _ io.Writer, _ func(string), _ func(func(string) bool), _ *vt.Emulator) {
 			run("wait", "--text", "Workspace notes")
-			run("wait", "--fn", `[...document.querySelectorAll('[data-entry]')].some(row =>
-				row.textContent.includes('Read') && row.textContent.includes('cat notes.md') &&
-				!row.textContent.includes('native run line 160'))`)
+			run("wait", "--fn", `[...document.querySelectorAll('[data-entry]')].some(entry =>
+				!entry.textContent.includes('native run line 160') &&
+				[...entry.querySelectorAll('[data-ai-element="tool"]')].some(row =>
+					row.querySelector('[data-slot="trace-title"]')?.textContent.trim() === 'Read' &&
+					row.querySelector('code')?.textContent.trim() === 'notes.md'))`)
 			setBrowserViewport(t, run, 360, 800)
 			run("find", "role", "button", "click", "--name", "Session details", "--exact")
 			run("wait", "--fn", fmt.Sprintf(`(() => {
@@ -231,29 +233,72 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 			run("find", "role", "button", "click", "--name", "Close details", "--exact")
 			run("find", "role", "button", "click", "--name", "Close One-off", "--exact")
 			run("wait", "--fn", `!document.querySelector('[role=tablist][aria-label=Conversation]')`)
+			run("fill", "#composer-text", "Keep typing")
+			run("eval", `(() => {
+				const clipboardData = new DataTransfer();
+				clipboardData.items.add(new File(["note"], "pasted.txt", { type: "text/plain" }));
+				document.querySelector('#composer-text').dispatchEvent(
+					new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }),
+				);
+			})()`)
+			run("wait", "--fn", `document.activeElement?.id === 'composer-text' &&
+				document.activeElement.querySelector('[data-draft-attachment]')?.textContent === '[File pasted.txt]'`)
+			run("find", "role", "button", "click", "--name", "Remove pasted.txt", "--exact")
 			run("fill", "#composer-text", "@!not-an-image")
 			run("wait", "[aria-label=Files] [role=option]")
 			run("find", "role", "option", "click", "--name", "not-an-image.png", "--exact")
-			run("wait", "--fn", `document.querySelector('#composer-text').value === "@'not-an-image.png' " && document.querySelector('[aria-label="Attachments"] li')?.textContent.includes('not-an-image.png') && !document.querySelector('[aria-label="Attachments"] img')`)
+			run("wait", "--fn", `document.querySelector('#composer-text')?.textContent === "@'not-an-image.png' " && document.querySelector('#composer-text [data-draft-attachment]')?.classList.contains('text-positive') && document.querySelector('[aria-label="Attachments"] li')?.textContent.includes('not-an-image.png') && !document.querySelector('[aria-label="Attachments"] img')`)
 			run("find", "role", "button", "click", "--name", "Remove not-an-image.png", "--exact")
+			const beforeImage = "Some words before [Image literal.png] "
+			run("fill", "#composer-text", beforeImage)
 			run("find", "role", "button", "click", "--name", "Attach", "--exact")
 			run("find", "role", "menuitem", "click", "--name", "Attach path on Details fixture", "--exact")
 			run("fill", "#attach-path", "image-without-extension")
 			run("find", "role", "button", "click", "--name", "Attach path", "--exact")
-			run("wait", "--fn", `document.querySelector('#composer-text').value === '[Image image-without-extension] ' && document.querySelector('[aria-label="Attachments"] img')?.naturalWidth === 2`)
+			const imagePlaceholder = "[Image image-without-extension]"
+			checkDraftImageToken(run, "#composer-text", beforeImage, imagePlaceholder)
+			run("wait", "--fn", `document.querySelector('[aria-label="Attachments"] img')?.naturalWidth === 2`)
+			setBrowserViewport(t, run, 390, 844)
+			run("wait", "--fn", `(() => {
+				const field = document.querySelector('#composer-text');
+				const image = field?.querySelector('[data-draft-attachment]');
+				if (!image) return false;
+				const start = new Range();
+				start.setStart(field.firstChild, 0);
+				start.setEnd(field.firstChild, 1);
+				const label = new Range();
+				label.selectNodeContents(image);
+				return label.getClientRects().length === 1 &&
+					image.getBoundingClientRect().top > start.getBoundingClientRect().top + 10 &&
+					image.getBoundingClientRect().right <= field.getBoundingClientRect().right;
+			})()`)
+			run("eval", `(() => {
+				const field = document.querySelector('#composer-text');
+				field.focus();
+				document.getSelection().collapse(field.lastChild, 0);
+			})()`)
+			run("press", "Shift+ArrowLeft")
+			run("wait", "--fn", fmt.Sprintf(`document.getSelection().toString() === %q`, imagePlaceholder))
+			run("press", "Backspace")
+			run("wait", "--fn", fmt.Sprintf(`document.querySelector('#composer-text').textContent === %q &&
+				!document.querySelector('[aria-label="Attachments"]')`, beforeImage+" "))
+			run("press", "Control+z")
+			checkDraftImageToken(run, "#composer-text", beforeImage, imagePlaceholder)
+			setBrowserViewport(t, run, 1280, 900)
 			run("find", "role", "button", "click", "--name", "Remove image-without-extension", "--exact")
+			run("fill", "#composer-text", "")
 			run("find", "role", "link", "click", "--name", "Workspace notes", "--exact")
 			run("wait", "--fn", `document.querySelector('#activity-details mark')?.textContent?.trim() === 'file range line'`)
 			run("eval", `(() => { const r = new Range(); r.selectNodeContents(document.querySelector('#activity-details mark')); document.getSelection().removeAllRanges(); document.getSelection().addRange(r); })()`)
 			run("wait", "--fn", `[...document.querySelectorAll('#activity-details button')].some(button => button.textContent.trim() === 'Reference')`)
 			run("find", "role", "button", "click", "--name", "Reference", "--exact")
-			run("wait", "--fn", `document.querySelector('#composer-text').value === '[Selected dialog] ' && !document.querySelector('[aria-label="Attachments"]')`)
+			run("wait", "--fn", `document.querySelector('#composer-text').textContent === '[Selected dialog] ' && !document.querySelector('[aria-label="Attachments"]')`)
 			run("find", "role", "button", "click", "--name", "Close details", "--exact")
 			run("wait", "#activity-details", "--state", "hidden")
 			run("eval", `(() => { const text = [...document.querySelectorAll('[data-entry] .prose p')].find(p => p.textContent.startsWith('Reference me.')).firstChild; const r = new Range(); r.setStart(text, 0); r.setEnd(text, 'Reference me.'.length); document.getSelection().removeAllRanges(); document.getSelection().addRange(r); })()`)
 			run("wait", "--fn", `[...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Reference')`)
 			run("find", "role", "button", "click", "--name", "Reference", "--exact")
-			run("wait", "--fn", `document.querySelector('#composer-text').value === '[Selected dialog] [Selected message] ' && !document.querySelector('[aria-label="Attachments"]')`)
+			run("wait", "--fn", `document.querySelector('#composer-text').textContent === '[Selected dialog] [Selected message] ' && !document.querySelector('[aria-label="Attachments"]')`)
 			run("find", "role", "link", "click", "--name", "Run output", "--exact")
 			run("wait", "--fn", `document.querySelector('#activity-details')?.textContent.includes('Batch')`)
 			run("wait", "--fn", `(() => { const mark = document.querySelector('#activity-details mark'); if (mark?.textContent !== 'native run line 130\nnative run line 131\nnative run line 132') return false; const r = mark.getBoundingClientRect(); const pane = document.querySelector('#activity-details > .overflow-y-auto'); return pane.scrollTop > 0 && r.top >= pane.getBoundingClientRect().top && r.bottom <= pane.getBoundingClientRect().bottom; })()`)
@@ -264,9 +309,9 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 			run("fill", "#composer-text", "[Selected dialog] [Selected message] Check references $fixture")
 			run("wait", `[aria-label="Skills and presets"] [role=option]`)
 			run("find", "role", "option", "click", "--name", "Fixture helper")
-			run("wait", "--fn", `document.querySelector('#composer-text').value.endsWith('$fixture-helper ')`)
+			run("wait", "--fn", `document.querySelector('#composer-text').textContent.endsWith('$fixture-helper ')`)
 			run("upload", `input[aria-label="Upload files"]`, upload)
-			run("wait", "--fn", `document.querySelector('#composer-text').value.endsWith('[File browser-upload.txt] ') && document.querySelector('[aria-label="Attachments"] li')?.textContent.includes('browser-upload.txt')`)
+			run("wait", "--fn", `document.querySelector('#composer-text').textContent.endsWith('[File browser-upload.txt] ') && document.querySelector('[aria-label="Attachments"] li')?.textContent.includes('browser-upload.txt')`)
 			run("press", "Enter")
 			run("wait", "--fn", `Array.from(document.querySelectorAll('[data-entry]')).some(row => row.textContent.includes('Check references') && row.textContent.includes('[File browser-upload.txt]') && !row.textContent.includes('User selections:') && !row.textContent.includes('UTF-8 upload Ω sentinel.'))`)
 			select {
@@ -299,7 +344,7 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 			run("wait", fmt.Sprintf("button[title=%q]", manualWorkspace))
 			run("fill", "#new-text", "First browser message.")
 			run("upload", `input[type="file"]`, imageUpload)
-			run("wait", "--text", "browser-image.png")
+			checkDraftImageToken(run, "#new-text", "First browser message. ", "[Image browser-image.png]")
 			run("find", "role", "button", "click", "--name", "Start thread", "--exact")
 			select {
 			case <-created:
@@ -417,6 +462,18 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 			run("wait", "--fn", `!document.getElementById('composer-prediction')`)
 		},
 	})
+}
+
+func checkDraftImageToken(run func(...string) string, selector, prefix, placeholder string) {
+	run("wait", "--fn", fmt.Sprintf(`(() => {
+		const field = document.querySelector(%q);
+		const image = field?.querySelector('[data-draft-attachment]');
+		return image?.textContent === %q && field.querySelectorAll('[data-draft-attachment]').length === 1 &&
+			field.firstChild.nodeType === Node.TEXT_NODE && field.firstChild.data === %q &&
+			image.classList.contains('text-marker-image') &&
+			getComputedStyle(image).fontWeight === '600' && !image.isContentEditable &&
+			field.textContent === %q;
+	})()`, selector, placeholder, prefix, prefix+placeholder+" "))
 }
 
 func setBrowserViewport(t *testing.T, run func(...string) string, width, height int) {

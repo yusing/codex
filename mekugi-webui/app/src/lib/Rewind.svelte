@@ -53,7 +53,7 @@
         for (const item of turn.items) {
           if (item.type !== "userMessage") continue;
           if (!first && !item.id) continue;
-          const label = (itemToEntry(item, 0, 0, turn.id).text ?? "").replace(/\s+/g, " ").trim();
+          const label = (itemToEntry(item, 0, 0, turn.id)?.text ?? "").replace(/\s+/g, " ").trim();
           targets.push({
             turnId: turn.id,
             itemId: first ? null : item.id,

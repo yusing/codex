@@ -54,7 +54,7 @@ type PreviewMotion struct {
 type PreviewView struct {
 	Current   previewmodel.Preview
 	Complete  bool
-	numbers   diffrender.Numbers // Line-number columns only grow, so the source never shifts sideways.
+	numbers   diffrender.Numbers // Columns only grow until the source format changes.
 	Rendered  previewmodel.Preview
 	Focus     int
 	Paused    bool
@@ -166,12 +166,23 @@ func previewNumbers(preview previewmodel.Preview, rows []PreviewRow) diffrender.
 	return numbers
 }
 
-func liveDiffPreviewRows(review diffmodel.ReviewFile, workspace string) ([]PreviewRow, error) {
+func liveDiffPreviewRows(review diffmodel.ReviewFile, workspace string, unlocatedDiff bool) ([]PreviewRow, error) {
 	if review.BeforePath != "" && review.AfterPath == "" {
 		path := pathdisplay.ForWorkspace(workspace, review.BeforePath)
 		return []PreviewRow{{Kind: ' ', Text: "# " + path + " deleted\n"}}, nil
 	}
 	hunks, err := review.Hunks()
+	if unlocatedDiff && review.BeforePath != "" && (err != nil || len(hunks) == 0) {
+		// Streaming apply_patch anchors and shell edit ranges are not file
+		// positions. Keep the proposed source rows without numbering them.
+		var rows []PreviewRow
+		for line := range strings.SplitAfterSeq(review.Diff, "\n") {
+			if len(line) > 0 && strings.ContainsRune(" +-", rune(line[0])) {
+				rows = append(rows, PreviewRow{Kind: line[0], Text: line[1:]})
+			}
+		}
+		return rows, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +242,8 @@ func liveDiffPreviewFocus(before, after []PreviewRow) int {
 
 func (p *PreviewView) prepare(now time.Time) error {
 	current := p.Current
-	if p.Rendered.ID == current.ID && p.Rendered.Input == current.Input && p.Rendered.DiffText == current.DiffText && slices.Equal(p.Rendered.Files, current.Files) {
+	if p.Rendered.ID == current.ID && p.Rendered.Input == current.Input && p.Rendered.DiffText == current.DiffText &&
+		p.Rendered.UnlocatedDiff == current.UnlocatedDiff && slices.Equal(p.Rendered.Files, current.Files) {
 		return nil
 	}
 	var source []PreviewRow
@@ -248,7 +260,7 @@ func (p *PreviewView) prepare(now time.Time) error {
 		}
 	}
 	if len(current.Files) > 0 {
-		source, err = liveDiffPreviewRows(current.Files[0], current.Workspace)
+		source, err = liveDiffPreviewRows(current.Files[0], current.Workspace, current.UnlocatedDiff)
 		if err != nil {
 			return err
 		}
@@ -264,6 +276,9 @@ func (p *PreviewView) prepare(now time.Time) error {
 	}
 	if !p.Paused {
 		p.ScrollRow = 0 // New source releases the preceding scroll-to-bottom anchor.
+	}
+	if p.Rendered.UnlocatedDiff != current.UnlocatedDiff {
+		p.numbers = diffrender.Numbers{}
 	}
 	p.Source, p.Rendered = source, current
 	p.numbers = p.numbers.Union(previewNumbers(current, source))

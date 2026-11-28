@@ -1,5 +1,5 @@
 └ Ran     go test ./internal/launch
-    Edited  main.go
+    Edited  main.go +1 -1
 
 ● main                                                                                                                             12:00:00
 ┃ Fixed native TUI projection.

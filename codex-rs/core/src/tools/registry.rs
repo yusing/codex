@@ -12,7 +12,7 @@ use crate::hook_runtime::run_pre_tool_use_hooks;
 use crate::memory_usage::emit_metric_for_tool_read;
 use crate::memory_usage::shell_script_for_invocation;
 use crate::session::session::Session;
-use crate::session::turn_context::TurnContext;
+use crate::session::step_context::StepContext;
 use crate::tools::context::AbortedToolOutput;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolCallState;
@@ -22,6 +22,7 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::control_tool_analytics::ControlToolCallGuard;
 use crate::tools::flat_tool_name;
+use crate::tools::handlers::live_diff::ArgumentPreview;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::lifecycle::notify_tool_finish;
@@ -39,7 +40,7 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::ToolResultMetadata;
 use codex_protocol::parse_command::ParsedCommand;
-use codex_protocol::protocol::EventMsg;
+
 use codex_rollout::state_db;
 use codex_rollout_trace::ExecutionStatus;
 use codex_shell_command::parse_command::parse_shell_script;
@@ -319,10 +320,15 @@ fn preserve_hook_selector(
 /// derived from partial tool input.
 pub(crate) trait ToolArgumentDiffConsumer: Send {
     /// Consume the next argument diff for a tool call.
-    fn consume_diff(&mut self, turn: &TurnContext, call_id: String, diff: &str) -> Vec<EventMsg>;
+    fn consume_diff(
+        &mut self,
+        turn: &StepContext,
+        call_id: String,
+        diff: &str,
+    ) -> Vec<ArgumentPreview>;
 
     /// Finish consuming argument diffs before the tool call completes.
-    fn finish(&mut self) -> Result<Vec<EventMsg>, FunctionCallError> {
+    fn finish(&mut self) -> Result<Vec<ArgumentPreview>, FunctionCallError> {
         Ok(Vec::new())
     }
 }

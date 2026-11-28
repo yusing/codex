@@ -1,0 +1,13 @@
+mekugi-app-server/test
+
+
+
+• Steering pending · esc sends now · ctrl+c interrupts and restores input
+  ↳ Check retained inputs.
+
+◐ Working 21s
+────────────────────────────────────────────────────────────────────────────────────────
+❯  
+────────────────────────────────────────────────────────────────────────────────────────
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • ◐ 1 • Direct Session • /tmp/ws • ↓ roster • → diff • ctrl+e view

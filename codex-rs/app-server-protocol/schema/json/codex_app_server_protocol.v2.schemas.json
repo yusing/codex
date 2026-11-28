@@ -5718,6 +5718,17 @@
             "$ref": "#/definitions/CommandStepKind"
           },
           "type": "array"
+        },
+        "stepSubjects": {
+          "default": [],
+          "description": "Compact display subjects in the same order as step kinds. A step without a subject displays its source.",
+          "items": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -22444,6 +22455,16 @@
         "perCapture": {
           "description": "Return individual captures, rather than composing them by file.",
           "type": "boolean"
+        },
+        "receiptItemIds": {
+          "description": "Read per-capture file metadata (no patch text) for these command items in the selected thread only. External and ephemeral files are omitted.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "threadId": {
           "type": "string"

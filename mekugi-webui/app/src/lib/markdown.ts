@@ -68,6 +68,16 @@ function createMarkdown(breaks: boolean) {
 
 const md = createMarkdown(false);
 const mdBreaks = createMarkdown(true);
+const mdUser = createMarkdown(false);
+// An unmarked line after a user quote belongs to the user's own message.
+mdUser.block.ruler.before(
+  "paragraph",
+  "end_explicit_quote",
+  (_state, _start, _end, silent) => silent,
+  {
+    alt: ["blockquote"],
+  },
+);
 
 // Sections share their original document's link definitions.
 export function referenceContext(text: string): Env {
@@ -145,10 +155,8 @@ export function toolLabel(text: string, verb: string): string {
 }
 
 // Only published byte spans are markers. Identical unbound text stays ordinary.
-export function markedBlock(
-  text: string,
-  spans: NonNullable<import("./protocol").Entry["spans"]>,
-): string {
+export function userBlock(text: string, spans?: import("./protocol").Entry["spans"]): string {
+  if (!spans?.length) return mdUser.render(text);
   const bytes = encoder.encode(text);
   let prefix = "[mekugi-bound:";
   while (text.includes(prefix)) prefix += ":";
@@ -176,7 +184,7 @@ export function markedBlock(
     at = span.End;
   }
   source += decoder.decode(bytes.slice(at));
-  return md
+  return mdUser
     .render(source)
     .split(/(<[^>]*>)/)
     .map((part, i) => {

@@ -103,7 +103,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   unattributed `shellN`) for interactive `!` commands with shared `claim_key`
   deduplication, while classifying Git worktree restores on Linux (`git restore`,
   `git checkout --`, `git reset --hard`, `git clean`) under
-  `ChangeSourceKind::VcsDiagnostic` (`MEKUGI-827`). Downgrade note:
+  `ChangeSourceKind::VcsDiagnostic` (`MEKUGI-827`). When an older session is
+  reopened, worktree-only setup and cleanup no longer count as authored edits;
+  captures that also contain unrelated writes stay visible. Downgrade note:
   older runtimes deserialize `ChangeSourceKind` strictly and will reject a
   session's `change-history/index.json` once a `user_shell` entry is recorded.
 - Subprocess regression tests are in a separate
@@ -292,6 +294,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   origin's full filtered path list when it fits (falling back to per-page paths
   on oversized captures while clients merge origins across pages), and report
   line totals for the page.
+  `receiptItemIds` returns per-capture file metadata and counts without patch
+  text for the requested command items in the selected thread.
   Composed and caller-filtered pages keep their totals and continue at the
   next file when a reply would exceed the connector limit. An oversized
   individual patch keeps its metadata and shows a display-limit note.
@@ -316,8 +320,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 - A named turn interrupt can stop only that turn, even if it finishes and its
   replacement starts before the interrupt reaches the runtime. JSON-RPC error
   data identifies a stale interrupt target or an unloaded process-list thread.
-- Command display metadata identifies the authored shell script, its segments
-  and resolved effective working directory for live and saved commands.
+- Command display metadata identifies the authored shell script, step subjects
+  such as skill names and read targets, and resolved effective working directory
+  for live and saved commands.
   Batch status and output still belong to the whole invocation, not to
   individual segments.
 - Thread input-history reads and appends let the terminal save and recover
@@ -334,6 +339,12 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   native startup / host process RPCs and private secret prompts (`sudo`
   password, GPG passphrase, and `is_secret` user input) while leaving active
   turns running when the connector disconnects or restarts.
+
+- Remote-human connections can use session approval for eligible commands
+  and file changes. Guarded VCS approvals remember exact arguments,
+  executable, and working directory for the same thread and attachment.
+  Remote policy amendments, session grants for network access or additional
+  permissions, and private secret responses remain unavailable.
 
 ## Upstream imports
 

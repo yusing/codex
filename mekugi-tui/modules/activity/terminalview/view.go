@@ -296,11 +296,11 @@ func (v *View) Visible(entry activitypresentation.Entry) bool {
 			return false
 		}
 	}
+	if v.Conversation && (!v.ChildrenOnly || entry.Delivered) {
+		return true // The local transcript owns deliveries, including those from Main.
+	}
 	if v.ChildrenOnly && entry.Agent == "/root" {
 		return false
-	}
-	if v.Conversation && !v.ChildrenOnly {
-		return true // The local transcript has already selected its audience.
 	}
 	return !v.displayingChild() || entry.Agent == v.displayedCaller()
 }

@@ -338,6 +338,93 @@ pub struct ChangeRecord {
     pub files: Vec<FileEvidence>,
 }
 
+impl ChangeRecord {
+    /// Conservatively classifies retained pre-fix shell captures whose authored
+    /// command consists solely of git worktree setup/cleanup (and optional
+    /// read-only/branch housekeeping) without any other file-writing commands.
+    /// Never blacklists paths such as `.worktrees/` and never hides mixed
+    /// commands that also perform unrelated writes.
+    pub fn is_retained_vcs_diagnostic(&self) -> bool {
+        if !matches!(
+            self.metadata.source_kind,
+            ChangeSourceKind::ShellWrite | ChangeSourceKind::UserShell
+        ) {
+            return false;
+        }
+        let Some(script) = self.metadata.summary.as_deref() else {
+            return false;
+        };
+        is_pure_git_worktree_script(script)
+    }
+}
+
+fn is_pure_git_worktree_script(script: &str) -> bool {
+    let Some(commands) = codex_shell_command::bash::parse_sequential_shell_commands(script) else {
+        return false;
+    };
+    let mut saw_worktree_mutation = false;
+    for tokens in commands {
+        if is_git_worktree_mutation(&tokens) {
+            saw_worktree_mutation = true;
+        } else if !is_benign_worktree_companion(&tokens) {
+            return false;
+        }
+    }
+    saw_worktree_mutation
+}
+
+fn git_subcommand(tokens: &[String]) -> Option<(&str, &[String])> {
+    let mut idx = 0;
+    if *tokens.get(idx)? != "git" {
+        return None;
+    }
+    idx += 1;
+    while idx < tokens.len() {
+        let tok = tokens[idx].as_str();
+        if matches!(
+            tok,
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
+        ) {
+            idx += 2;
+            continue;
+        }
+        if tok.starts_with('-') {
+            idx += 1;
+            continue;
+        }
+        return Some((tok, &tokens[idx + 1..]));
+    }
+    None
+}
+
+fn is_git_worktree_mutation(tokens: &[String]) -> bool {
+    let Some((sub, rest)) = git_subcommand(tokens) else {
+        return false;
+    };
+    if sub != "worktree" {
+        return false;
+    }
+    rest.first().is_some_and(|op| {
+        matches!(
+            op.as_str(),
+            "add" | "remove" | "move" | "repair" | "prune" | "lock" | "unlock"
+        )
+    })
+}
+
+fn is_benign_worktree_companion(tokens: &[String]) -> bool {
+    if matches!(
+        tokens.first().map(String::as_str),
+        Some("cd" | "pwd" | "true")
+    ) {
+        return true;
+    }
+    let Some((sub, _)) = git_subcommand(tokens) else {
+        return false;
+    };
+    matches!(sub, "branch" | "status" | "rev-parse" | "worktree")
+}
+
 /// Lightweight index entry stored in `index.json` for fast listing and lookup.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ChangeIndexEntry {

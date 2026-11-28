@@ -42,16 +42,28 @@ pub(crate) async fn derive_new_contents_from_chunks(
             })
         })?;
 
-    let path_text = path.inferred_native_path_string();
-    let mut source_file = SourceFile::parse(&original_contents);
-    let original_lines = source_file.line_texts();
-    let replacements = compute_replacements(&original_lines, &path_text, chunks)?;
-    source_file.apply_replacements(&replacements);
-    let new_contents = source_file.into_contents();
+    let new_contents = apply_chunks_to_text(
+        &path.inferred_native_path_string(),
+        &original_contents,
+        chunks,
+    )?;
     Ok(AppliedPatch {
         original_contents,
         new_contents,
     })
+}
+
+/// Apply the native patch matcher to an already acquired pre-edit file.
+pub fn apply_chunks_to_text(
+    path: &str,
+    original: &str,
+    chunks: &[UpdateFileChunk],
+) -> Result<String, ApplyPatchError> {
+    let mut source_file = SourceFile::parse(original);
+    let original_lines = source_file.line_texts();
+    let replacements = compute_replacements(&original_lines, path, chunks)?;
+    source_file.apply_replacements(&replacements);
+    Ok(source_file.into_contents())
 }
 
 /// Compute a list of replacements needed to transform `original_lines` into the
@@ -172,6 +184,9 @@ pub struct ApplyPatchFileUpdate {
     pub(crate) original_content: String,
     pub(crate) content: String,
 }
+
+/// Unchanged lines shown around a live file edit.
+pub const LIVE_DIFF_CONTEXT: usize = 5;
 
 pub async fn unified_diff_from_chunks(
     path: &PathUri,

@@ -203,7 +203,7 @@ func (v *View) blocks(index int) []Block {
 func (v *View) observe(entry presentation.Entry, appended bool) {
 	blocks := Disclosure(nil).Blocks(entry.Values)
 	for i, block := range blocks {
-		blocks[i].Collapsed = entry.Kind == "reasoning" && block.Collapsible() && !(entry.Live && entry.ItemComplete) ||
+		blocks[i].Collapsed = entry.Kind == "reasoning" && block.Collapsible() && !block.Live ||
 			entry.Kind == "attachments" && block.ReadOutput() ||
 			(entry.Kind == "tool" || block.Segment) && block.ReadOutput() && block.Collapsible()
 	}

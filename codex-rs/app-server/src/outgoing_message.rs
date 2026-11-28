@@ -9,6 +9,8 @@ use std::time::UNIX_EPOCH;
 
 use codex_analytics::AnalyticsEventsClient;
 use codex_app_server_protocol::ClientResponsePayload;
+use codex_app_server_protocol::CommandExecutionApprovalDecision;
+use codex_app_server_protocol::CommandExecutionApprovalKind;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result;
@@ -18,6 +20,7 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::ServerRequestResolvedNotification;
 use codex_app_server_protocol::ServerResponse;
+use codex_app_server_protocol::ShellGuardApprovalKind;
 use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
 use codex_otel::span_w3c_trace_context;
@@ -148,6 +151,7 @@ pub(crate) struct OutgoingMessageSender {
     verification_connections: Mutex<HashSet<ConnectionId>>,
     human_approval_connections: Mutex<HashSet<ConnectionId>>,
     remote_human_connections: Mutex<HashSet<ConnectionId>>,
+    remembered_shell_guards: Mutex<HashMap<ConnectionId, HashSet<ShellGuardApprovalKey>>>,
     next_server_request_id: AtomicI64,
     sender: mpsc::Sender<OutgoingEnvelope>,
     process_reply_sender: mpsc::Sender<OutgoingEnvelope>,
@@ -167,7 +171,7 @@ pub(crate) struct ThreadScopedOutgoingMessageSender {
 }
 
 struct PendingCallbackEntry {
-    human_approval_recipients: HashSet<ConnectionId>,
+    approval_recipients: HashSet<ConnectionId>,
     verification_owner: Option<ConnectionId>,
     verification_auth_revision: Option<u64>,
     verification_identity: Option<user_verification_auth::Identity>,
@@ -175,6 +179,31 @@ struct PendingCallbackEntry {
     thread_id: Option<ThreadId>,
     request: ServerRequest,
     _diagnostics_guard: GaugeGuard,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct ShellGuardApprovalKey {
+    thread_id: ThreadId,
+    cwd: String,
+    executable: String,
+    argv: Vec<String>,
+}
+
+impl ShellGuardApprovalKey {
+    fn for_request(request: &ServerRequest, thread_id: Option<ThreadId>) -> Option<Self> {
+        let ServerRequest::ShellGuardRequestApproval { params, .. } = request else {
+            return None;
+        };
+        if params.kind != ShellGuardApprovalKind::RemoteWrite {
+            return None;
+        }
+        Some(Self {
+            thread_id: thread_id?,
+            cwd: params.cwd.clone(),
+            executable: params.executable.clone(),
+            argv: params.argv.clone(),
+        })
+    }
 }
 
 impl ThreadScopedOutgoingMessageSender {
@@ -297,6 +326,7 @@ impl OutgoingMessageSender {
             verification_connections: Mutex::new(HashSet::new()),
             human_approval_connections: Mutex::new(HashSet::new()),
             remote_human_connections: Mutex::new(HashSet::new()),
+            remembered_shell_guards: Mutex::new(HashMap::new()),
             next_server_request_id: AtomicI64::new(0),
             process_reply_sender: sender.clone(),
             sender,
@@ -384,6 +414,16 @@ impl OutgoingMessageSender {
             .lock()
             .await
             .remove(&connection_id);
+        {
+            let mut callbacks = self.request_id_to_callback.lock().await;
+            for entry in callbacks.values_mut() {
+                entry.approval_recipients.remove(&connection_id);
+            }
+            self.remembered_shell_guards
+                .lock()
+                .await
+                .remove(&connection_id);
+        }
         self.disconnect_user_verification_connection(connection_id)
             .await;
         let mut request_contexts = self.request_contexts.lock().await;
@@ -400,6 +440,36 @@ impl OutgoingMessageSender {
             }
             false
         });
+    }
+
+    #[tracing::instrument(skip_all)]
+    pub(crate) async fn forget_shell_guard_approvals(
+        &self,
+        thread_id: ThreadId,
+        connection_id: Option<ConnectionId>,
+    ) {
+        // Serialize grant removal with approval responses for the detached scope.
+        let mut callbacks = self.request_id_to_callback.lock().await;
+        for entry in callbacks
+            .values_mut()
+            .filter(|entry| entry.thread_id == Some(thread_id))
+        {
+            match connection_id {
+                Some(id) => {
+                    entry.approval_recipients.remove(&id);
+                }
+                None => entry.approval_recipients.clear(),
+            }
+        }
+        self.remembered_shell_guards
+            .lock()
+            .await
+            .retain(|id, grants| {
+                if connection_id.is_none_or(|connection| *id == connection) {
+                    grants.retain(|key| key.thread_id != thread_id);
+                }
+                !grants.is_empty()
+            });
     }
 
     pub(crate) async fn request_trace_context(
@@ -527,12 +597,23 @@ impl OutgoingMessageSender {
         } else {
             connection_ids
         };
+        if let Some(key) = ShellGuardApprovalKey::for_request(&request, thread_id)
+            && let Some(ids) = connection_ids
+            && {
+                let grants = self.remembered_shell_guards.lock().await;
+                ids.iter()
+                    .any(|id| grants.get(id).is_some_and(|keys| keys.contains(&key)))
+            }
+        {
+            let _ = tx_approve.send(Ok(serde_json::json!({ "decision": "accept" })));
+            return (outgoing_message_id, rx_approve);
+        }
         {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
             request_id_to_callback.insert(
                 id,
                 PendingCallbackEntry {
-                    human_approval_recipients: if requires_human_approval(&request) {
+                    approval_recipients: if tracks_approval_recipients(&request) {
                         connection_ids.unwrap_or_default().iter().copied().collect()
                     } else {
                         HashSet::new()
@@ -623,17 +704,17 @@ impl OutgoingMessageSender {
             if requires_local_secret_authority(&request) && is_remote_human {
                 continue;
             }
-            if requires_human_approval(&request) {
-                if !human_approval {
-                    continue;
-                }
+            if requires_human_approval(&request) && !human_approval {
+                continue;
+            }
+            if tracks_approval_recipients(&request) {
                 // Register the replay recipient before sending so its response
                 // cannot race ahead of callback authorization.
                 let mut callbacks = self.request_id_to_callback.lock().await;
                 let Some(entry) = callbacks.get_mut(request.id()) else {
                     continue;
                 };
-                entry.human_approval_recipients.insert(connection_id);
+                entry.approval_recipients.insert(connection_id);
             }
             if let Err(err) = self
                 .sender
@@ -799,7 +880,7 @@ impl OutgoingMessageSender {
             return None;
         }
         if requires_human_approval(&entry.request)
-            && (!human_approval || !entry.human_approval_recipients.contains(&connection_id))
+            && (!human_approval || !entry.approval_recipients.contains(&connection_id))
         {
             return None;
         }
@@ -812,6 +893,22 @@ impl OutgoingMessageSender {
             {
                 callbacks.remove(id);
                 return None;
+            }
+        }
+        if result.is_some_and(is_remember_approval) {
+            let shell_key = ShellGuardApprovalKey::for_request(&entry.request, entry.thread_id);
+            if (is_remote_human || shell_key.is_some())
+                && !entry.approval_recipients.contains(&connection_id)
+            {
+                return None;
+            }
+            if let Some(key) = shell_key {
+                self.remembered_shell_guards
+                    .lock()
+                    .await
+                    .entry(connection_id)
+                    .or_default()
+                    .insert(key);
             }
         }
         callbacks.remove_entry(id)
@@ -1183,7 +1280,16 @@ fn timestamped_server_notification(notification: ServerNotification) -> Outgoing
 
 fn requires_human_approval(request: &ServerRequest) -> bool {
     matches!(request, ServerRequest::CommandExecutionRequestApproval { params, .. }
-        if params.kind == codex_app_server_protocol::CommandExecutionApprovalKind::HumanCommand)
+        if params.kind == CommandExecutionApprovalKind::HumanCommand)
+}
+
+fn tracks_approval_recipients(request: &ServerRequest) -> bool {
+    matches!(
+        request,
+        ServerRequest::CommandExecutionRequestApproval { .. }
+            | ServerRequest::FileChangeRequestApproval { .. }
+            | ServerRequest::ShellGuardRequestApproval { .. }
+    )
 }
 
 /// Private secret prompts (sudo password, GPG passphrase, and secret user-input
@@ -1199,18 +1305,43 @@ pub(crate) fn requires_local_secret_authority(request: &ServerRequest) -> bool {
     }
 }
 
-/// Remote-human connections may only approve or deny a single command/action.
-/// Reject session-wide approvals and policy amendments from remote-human peers.
+fn is_remember_approval(result: &serde_json::Value) -> bool {
+    result.get("decision").and_then(serde_json::Value::as_str) == Some("acceptForSession")
+}
+
+/// Allow session approval only for supported requests, never policy amendments
+/// or general session permissions from a remote connection.
 fn is_disallowed_remote_human_approval_response(
     request: &ServerRequest,
     result: &serde_json::Value,
 ) -> bool {
+    if is_remember_approval(result) {
+        return match request {
+            ServerRequest::CommandExecutionRequestApproval { params, .. } => {
+                params.kind != CommandExecutionApprovalKind::Command
+                    || params.network_approval_context.is_some()
+                    || params.additional_permissions.is_some()
+                    || !params
+                        .available_decisions
+                        .as_ref()
+                        .is_some_and(|decisions| {
+                            decisions.contains(&CommandExecutionApprovalDecision::AcceptForSession)
+                        })
+            }
+            ServerRequest::FileChangeRequestApproval { params, .. } => {
+                params.reason.is_some() || params.grant_root.is_some()
+            }
+            ServerRequest::ShellGuardRequestApproval { params, .. } => {
+                params.kind != ShellGuardApprovalKind::RemoteWrite
+            }
+            _ => true,
+        };
+    }
     let decision_is_persistent = |decision: &serde_json::Value| -> bool {
         match decision {
-            serde_json::Value::String(value) => matches!(
-                value.as_str(),
-                "acceptForSession" | "allowForSession" | "approved_for_session"
-            ),
+            serde_json::Value::String(value) => {
+                matches!(value.as_str(), "allowForSession" | "approved_for_session")
+            }
             serde_json::Value::Object(map) => {
                 map.contains_key("acceptWithExecpolicyAmendment")
                     || map.contains_key("applyNetworkPolicyAmendment")
@@ -1270,6 +1401,7 @@ mod tests {
     use codex_app_server_protocol::RateLimitSnapshot;
     use codex_app_server_protocol::RateLimitWindow;
     use codex_app_server_protocol::ServerResponse;
+    use codex_app_server_protocol::ShellGuardRequestApprovalParams;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::TurnModerationMetadataNotification;
     use codex_protocol::ThreadId;
@@ -2208,37 +2340,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_human_connection_rejects_session_wide_and_policy_amendment_approvals() {
+    async fn remote_human_only_remembers_offered_command_decisions() {
         let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(16);
         let outgoing =
             OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
         let remote_conn = ConnectionId(42);
+        let other_remote = ConnectionId(43);
         outgoing.register_remote_human_connection(remote_conn).await;
+        outgoing
+            .register_remote_human_connection(other_remote)
+            .await;
         let thread_id = ThreadId::new();
 
+        let mut params = CommandExecutionRequestApprovalParams {
+            thread_id: thread_id.to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "item-1".to_string(),
+            approval_id: None,
+            reason: None,
+            network_approval_context: None,
+            command: Some("ls".to_string()),
+            cwd: None,
+            command_actions: None,
+            additional_permissions: None,
+            proposed_execpolicy_amendment: None,
+            proposed_network_policy_amendments: None,
+            available_decisions: None,
+            started_at_ms: 0,
+            environment_id: None,
+            kind: CommandExecutionApprovalKind::Command,
+        };
         let (cmd_id, mut cmd_waiter) = outgoing
             .send_request_to_connections(
                 Some(&[remote_conn]),
-                ServerRequestPayload::CommandExecutionRequestApproval(
-                    codex_app_server_protocol::CommandExecutionRequestApprovalParams {
-                        thread_id: thread_id.to_string(),
-                        turn_id: "turn-1".to_string(),
-                        item_id: "item-1".to_string(),
-                        approval_id: None,
-                        reason: None,
-                        network_approval_context: None,
-                        command: Some("ls".to_string()),
-                        cwd: None,
-                        command_actions: None,
-                        additional_permissions: None,
-                        proposed_execpolicy_amendment: None,
-                        proposed_network_policy_amendments: None,
-                        available_decisions: None,
-                        started_at_ms: 0,
-                        environment_id: None,
-                        kind: codex_app_server_protocol::CommandExecutionApprovalKind::Command,
-                    },
-                ),
+                ServerRequestPayload::CommandExecutionRequestApproval(params.clone()),
                 Some(thread_id),
             )
             .await;
@@ -2285,6 +2420,52 @@ mod tests {
                 .is_ok()
         );
 
+        params.available_decisions = Some(vec![CommandExecutionApprovalDecision::AcceptForSession]);
+        let (network_id, mut network_waiter) = outgoing
+            .send_request_to_connections(
+                Some(&[remote_conn]),
+                ServerRequestPayload::CommandExecutionRequestApproval(
+                    CommandExecutionRequestApprovalParams {
+                        command: None,
+                        network_approval_context: Some(
+                            codex_app_server_protocol::NetworkApprovalContext {
+                                host: "example.com".to_string(),
+                                protocol: codex_app_server_protocol::NetworkApprovalProtocol::Https,
+                            },
+                        ),
+                        ..params.clone()
+                    },
+                ),
+                Some(thread_id),
+            )
+            .await;
+        let remember = json!({ "decision": "acceptForSession" });
+        outgoing
+            .notify_client_response(remote_conn, network_id.clone(), remember.clone())
+            .await;
+        assert!(network_waiter.try_recv().is_err());
+        let allow_once = json!({ "decision": "accept" });
+        outgoing
+            .notify_client_response(remote_conn, network_id, allow_once.clone())
+            .await;
+        assert_eq!(network_waiter.await.unwrap().unwrap(), allow_once);
+
+        let (cmd_id, mut cmd_waiter) = outgoing
+            .send_request_to_connections(
+                Some(&[remote_conn]),
+                ServerRequestPayload::CommandExecutionRequestApproval(params),
+                Some(thread_id),
+            )
+            .await;
+        outgoing
+            .notify_client_response(other_remote, cmd_id.clone(), remember.clone())
+            .await;
+        assert!(cmd_waiter.try_recv().is_err());
+        outgoing
+            .notify_client_response(remote_conn, cmd_id, remember.clone())
+            .await;
+        assert_eq!(cmd_waiter.await.unwrap().unwrap(), remember);
+
         // Session-scoped permission grant is also rejected on remote-human.
         let (perm_id, mut perm_waiter) = outgoing
             .send_request_to_connections(
@@ -2330,5 +2511,102 @@ mod tests {
                 .expect("turn-scoped grant should resolve")
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn remembered_shell_approval_requires_the_same_action_thread_and_attachment() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(16);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let remote = ConnectionId(42);
+        let other = ConnectionId(43);
+        outgoing.register_remote_human_connection(remote).await;
+        outgoing.register_remote_human_connection(other).await;
+        let thread = ThreadId::new();
+        let params = ShellGuardRequestApprovalParams {
+            thread_id: thread.to_string(),
+            turn_id: "turn-1".into(),
+            item_id: None,
+            started_at_ms: 0,
+            kind: ShellGuardApprovalKind::RemoteWrite,
+            cwd: "/workspace".into(),
+            executable: "/usr/bin/git".into(),
+            argv: vec!["push".into(), "origin".into()],
+        };
+        let send = |connection, thread, params| {
+            let outgoing = &outgoing;
+            async move {
+                outgoing
+                    .send_request_to_connections(
+                        Some(&[connection]),
+                        ServerRequestPayload::ShellGuardRequestApproval(params),
+                        Some(thread),
+                    )
+                    .await
+            }
+        };
+        let (id, waiter) = send(remote, thread, params.clone()).await;
+        assert!(rx.try_recv().is_ok());
+        let remember = json!({ "decision": "acceptForSession" });
+        outgoing
+            .notify_client_response(remote, id, remember.clone())
+            .await;
+        assert_eq!(waiter.await.unwrap().unwrap(), remember);
+
+        let (_, mut waiter) = send(remote, thread, params.clone()).await;
+        assert_eq!(
+            waiter.try_recv().unwrap().unwrap(),
+            json!({ "decision": "accept" })
+        );
+        assert!(rx.try_recv().is_err());
+
+        let mut other_command = params.clone();
+        other_command.argv.push("branch".into());
+        let mut other_directory = params.clone();
+        other_directory.cwd = "/somewhere-else".into();
+        let mut other_executable = params.clone();
+        other_executable.executable = "/somewhere-else/git".into();
+        let other_thread = ThreadId::new();
+        let mut other_thread_params = params.clone();
+        other_thread_params.thread_id = other_thread.to_string();
+        for (connection, thread, request) in [
+            (remote, thread, other_command),
+            (remote, thread, other_directory),
+            (remote, thread, other_executable),
+            (other, thread, params.clone()),
+            (remote, other_thread, other_thread_params),
+        ] {
+            let (id, mut waiter) = send(connection, thread, request).await;
+            assert!(rx.try_recv().is_ok());
+            assert!(waiter.try_recv().is_err());
+            outgoing
+                .notify_client_response(connection, id, json!({ "decision": "decline" }))
+                .await;
+            assert!(waiter.await.unwrap().is_ok());
+        }
+
+        let mut sudo = params.clone();
+        sudo.kind = ShellGuardApprovalKind::Sudo;
+        let (sudo_id, mut sudo_waiter) = send(remote, thread, sudo).await;
+        assert!(rx.try_recv().is_ok());
+        outgoing
+            .notify_client_response(remote, sudo_id, remember.clone())
+            .await;
+        assert!(sudo_waiter.try_recv().is_err());
+
+        outgoing
+            .forget_shell_guard_approvals(thread, Some(remote))
+            .await;
+        let (id, waiter) = send(remote, thread, params.clone()).await;
+        assert!(rx.try_recv().is_ok());
+        outgoing
+            .notify_client_response(remote, id, remember.clone())
+            .await;
+        assert_eq!(waiter.await.unwrap().unwrap(), remember);
+        outgoing.connection_closed(remote).await;
+        outgoing.register_remote_human_connection(remote).await;
+        let (_, mut waiter) = send(remote, thread, params).await;
+        assert!(rx.try_recv().is_ok());
+        assert!(waiter.try_recv().is_err());
     }
 }

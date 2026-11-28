@@ -2761,6 +2761,10 @@ pub struct ThreadChangesReadParams {
     /// Read one execution's exact captured effects, not the composed session diff.
     #[ts(optional = nullable)]
     pub item_id: Option<String>,
+    /// Read per-capture file metadata (no patch text) for these command items
+    /// in the selected thread only. External and ephemeral files are omitted.
+    #[ts(optional = nullable)]
+    pub receipt_item_ids: Option<Vec<String>>,
     /// Return individual captures, rather than composing them by file.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub per_capture: bool,

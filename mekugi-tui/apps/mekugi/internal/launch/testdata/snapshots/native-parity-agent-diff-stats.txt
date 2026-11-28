@@ -1,0 +1,16 @@
+
+
+
+
+
+
+
+
+
+
+
+── Agents · ◐ 1 ──────────────────────────────────────────────────────────────────────────── ● explorer ──
+ ◐ worker  working                                                                                 0%  -2
+↑↓ agent · a child · ← back · esc close
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • ◐ 1 • Direct Session • /tmp/ws • +2 -3

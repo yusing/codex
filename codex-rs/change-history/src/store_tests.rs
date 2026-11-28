@@ -1056,3 +1056,83 @@ fn unattributed_author_allocates_shell_stream_and_ephemeral_only_index_flag() {
     assert!(entries[0].is_unattributed());
     assert!(entries[0].ephemeral_only);
 }
+
+#[test]
+fn retained_worktree_diagnostic_classifier_preserves_mixed_and_delegate_edits() {
+    let dir = TempDir::new().expect("temp");
+    let ws = dir.path().join("ws");
+    fs::create_dir_all(&ws).expect("ws");
+    let make = |source_kind, summary: Option<&str>| crate::ChangeRecord {
+        schema_version: 1,
+        id: crate::ChangeId::new("amber", 1).expect("id"),
+        sequence: 1,
+        recorded_at_ms: Some(0),
+        metadata: crate::ChangeMetadata {
+            summary: summary.map(str::to_string),
+            ..test_metadata(&ws, "t1", "c1", source_kind)
+        },
+        files: vec![],
+    };
+    assert!(
+        make(
+            ChangeSourceKind::ShellWrite,
+            Some("git worktree add .worktrees/task -b task")
+        )
+        .is_retained_vcs_diagnostic()
+    );
+    assert!(
+        make(
+            ChangeSourceKind::ShellWrite,
+            Some("git -C '/Client Project' worktree remove --force .worktrees/task && git branch -D task")
+        )
+        .is_retained_vcs_diagnostic()
+    );
+    assert!(
+        !make(
+            ChangeSourceKind::ShellWrite,
+            Some("git -C '/Client Project' worktree add .worktrees/task -b task && echo hi > real.txt")
+        )
+        .is_retained_vcs_diagnostic()
+    );
+    for script in [
+        "git -C '/Research & Development; (QA)|<draft>' worktree add .worktrees/task",
+        r#"git -C "/Research && Notes; \"Draft\"" worktree remove .worktrees/task"#,
+        "git worktree add --detach '.worktrees/QA task'",
+        r"git worktree add --detach .worktrees/QA\ task",
+        r"git -C ~/Research\ \&\ Development\ \[QA\] worktree prune",
+        "cd ~/repo\ngit worktree prune # remove stale entries",
+    ] {
+        assert!(
+            make(ChangeSourceKind::ShellWrite, Some(script)).is_retained_vcs_diagnostic(),
+            "{script}"
+        );
+    }
+    for script in [
+        "git -C '/Research & Development' worktree add .worktrees/task; touch keep.txt",
+        r"git worktree add --detach .worktrees/QA\ task && touch keep.txt",
+        "git worktree add --detach .worktrees/QA*",
+        "git worktree add .worktrees/task | git status",
+        "git worktree add .worktrees/task &",
+        "git worktree add .worktrees/task || git status",
+        "git -C \"$(touch keep.txt)\" worktree add .worktrees/task",
+    ] {
+        assert!(
+            !make(ChangeSourceKind::ShellWrite, Some(script)).is_retained_vcs_diagnostic(),
+            "{script}"
+        );
+    }
+    assert!(
+        !make(
+            ChangeSourceKind::ShellWrite,
+            Some(r#"python3 -c 'open(".worktrees/task/a.rs", "w").write("ok")'"#)
+        )
+        .is_retained_vcs_diagnostic()
+    );
+    assert!(
+        !make(
+            ChangeSourceKind::ApplyPatch,
+            Some("git worktree add .worktrees/task -b task")
+        )
+        .is_retained_vcs_diagnostic()
+    );
+}

@@ -2,7 +2,7 @@
   import { getContext } from "svelte";
   import { detailLinks, parseDetailLink, type DetailLink } from "./detail-link";
   import { highlightWithin } from "./highlight";
-  import { block, inline as renderInline, markedBlock } from "./markdown";
+  import { block, inline as renderInline, userBlock } from "./markdown";
 
   // Rendered Markdown from recorded messages, styled by the prose component
   // class since no template declares its elements.
@@ -11,6 +11,7 @@
     quiet = false,
     inline = false,
     breaks = false,
+    userMessage = false,
     spans,
     context,
   }: {
@@ -18,14 +19,15 @@
     quiet?: boolean;
     inline?: boolean;
     breaks?: boolean;
+    userMessage?: boolean;
     spans?: import("./protocol").Entry["spans"];
     context?: import("markdown-it").Env;
   } = $props();
   const html = $derived(
     inline
       ? renderInline(text, context)
-      : spans?.length
-        ? markedBlock(text, spans)
+      : userMessage
+        ? userBlock(text, spans)
         : block(text, context, breaks),
   );
   const openDetails = getContext<((link: DetailLink) => void) | undefined>(detailLinks);

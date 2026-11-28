@@ -50,8 +50,8 @@ type ShellPlan struct {
 }
 
 type ShellContent struct {
-	Main, Diff, Stats []string
-	Dock              Rect
+	Main, Diff, Live, Stats []string
+	Dock                    Rect
 }
 
 // ShellStatus carries the second stat line's facts: the displayed thread,
@@ -101,19 +101,28 @@ func (s *Shell) Compose(plan ShellPlan, in ShellContent) []string {
 			}
 		}
 	}
-	if left := plan.Left; left.W >= 4 && left.H >= 1 {
-		if in.Dock.H > 0 {
-			layout.Live = Rect{layout.Main.X, layout.Main.Y + in.Dock.Y, layout.Main.W, in.Dock.H}
-		}
-		draw(left, in.Main)
-	}
-	if layout.Vertical >= 0 && plan.Left.H >= 1 {
-		sep := fmt.Sprintf("\x1b[%dG\x1b[0m%s│%s", layout.Vertical+1, terminalui.Dim, terminalui.Reset)
-		for i := range plan.Left.H {
-			if y := plan.Left.Y + i; y >= 0 && y < len(rows) {
+	divider := func(x, top, height int) {
+		sep := fmt.Sprintf("\x1b[%dG\x1b[0m%s│%s", x+1, terminalui.Dim, terminalui.Reset)
+		for i := range height {
+			if y := top + i; y >= 0 && y < len(rows) {
 				rows[y] += sep
 			}
 		}
+	}
+	if left := plan.Left; left.W >= 4 && left.H >= 1 {
+		draw(left, in.Main)
+		if in.Dock.H > 0 {
+			layout.Live = in.Dock
+			layout.Live.X += layout.Main.X
+			layout.Live.Y += layout.Main.Y
+			if in.Dock.X > 0 {
+				divider(layout.Live.X-1, layout.Live.Y, layout.Live.H)
+			}
+			draw(layout.Live, in.Live)
+		}
+	}
+	if layout.Vertical >= 0 && plan.Left.H >= 1 {
+		divider(layout.Vertical, plan.Left.Y, plan.Left.H)
 	}
 	if right := plan.Right; right.W >= 4 && right.H >= 1 {
 		body := append(in.Diff[:min(len(in.Diff), layout.Diff.H)], make([]string, max(0, layout.Diff.H-len(in.Diff)))...)
@@ -132,8 +141,7 @@ func (s *Shell) Compose(plan ShellPlan, in ShellContent) []string {
 func (s *Shell) PromptVisible(prompt Rect, dialog bool, selection Rect) bool {
 	prompt.H = min(prompt.H, max(0, s.Layout.Main.H-prompt.Y))
 	prompt.X, prompt.Y = prompt.X+s.Layout.Main.X, prompt.Y+s.Layout.Main.Y
-	return prompt.W > 0 && prompt.H > 0 && !dialog &&
-		(selection.W <= 0 || selection.H <= 0 || prompt.X+prompt.W <= selection.X || selection.X+selection.W <= prompt.X || prompt.Y+prompt.H <= selection.Y || selection.Y+selection.H <= prompt.Y)
+	return prompt.W > 0 && prompt.H > 0 && !dialog && !prompt.overlaps(selection)
 }
 
 // statSegment is one stat-line part. Segments with a higher drop rank leave

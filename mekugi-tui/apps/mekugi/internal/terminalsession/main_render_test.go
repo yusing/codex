@@ -79,11 +79,12 @@ func TestUISnapshotNativeWelcome(t *testing.T) {
 
 func TestNativeWelcomeDoesNotReplaceHistoryOrLiveDock(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		dock int
+		name  string
+		live  livePlacement
+		shown bool
 	}{
-		{"transcript", 0},
-		{"live-dock", 12},
+		{"transcript", liveOff, false},
+		{"live-dock", liveBeside, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var main Main
@@ -91,20 +92,42 @@ func TestNativeWelcomeDoesNotReplaceHistoryOrLiveDock(t *testing.T) {
 			thread := sessionpresentation.Thread{ID: "main", Caller: "/root"}
 			main.Update(sessionpresentation.View{Main: thread, Displayed: thread})
 			transcript := activityui.NewView()
-			if tc.dock == 0 {
+			if !tc.shown {
 				transcript.Update(&activitypresentation.Publication{Entries: []activitypresentation.Entry{{
 					Seq: 1, Agent: "You", Kind: "text", Text: "Submitted prompt",
 				}}}, activityui.Display{Caller: "/root"})
 			}
 			options := MainOptions{Now: time.Unix(100, 0), Focused: true, Version: "dev"}
-			frame := main.Render(transcript, &transcript.Painter, &prompts, options, 80, 24, tc.dock)
+			frame := main.Render(transcript, &transcript.Painter, &prompts, options, 80, 24, tc.live)
 			rows := strings.Join(frame.Rows, "\n")
 			if strings.Contains(rows, "Mekugi dev") ||
-				tc.dock == 0 && !strings.Contains(rows, "Submitted prompt") ||
-				frame.Dock.H != tc.dock {
+				!tc.shown && !strings.Contains(rows, "Submitted prompt") ||
+				(frame.Dock.H > 0) != tc.shown {
 				t.Fatalf("welcome displaced active content (dock: %d):\n%s", frame.Dock.H, rows)
 			}
 		})
+	}
+}
+
+func TestLivePlacementRegions(t *testing.T) {
+	// Single view with room splits horizontally beside the transcript.
+	feed, live := liveBeside.regions(100, 24)
+	if feed != (Rect{W: 50, H: 24}) || live != (Rect{X: 51, W: 49, H: 24}) {
+		t.Fatalf("liveBeside(100,24) = feed %+v live %+v", feed, live)
+	}
+	// Diff open with vertical room stacks Live below the transcript.
+	feed, live = liveBelow.regions(80, 30)
+	if feed != (Rect{W: 80, H: 14}) || live != (Rect{Y: 14, W: 80, H: 16}) {
+		t.Fatalf("liveBelow(80,30) = feed %+v live %+v", feed, live)
+	}
+	// Compact views fall back to replacing the transcript.
+	feed, live = liveBeside.regions(60, 24)
+	if feed.H != 0 || live != (Rect{W: 60, H: 24}) {
+		t.Fatalf("compact liveBeside = feed %+v live %+v", feed, live)
+	}
+	feed, live = liveBelow.regions(80, 18)
+	if feed.H != 0 || live != (Rect{W: 80, H: 18}) {
+		t.Fatalf("compact liveBelow = feed %+v live %+v", feed, live)
 	}
 }
 

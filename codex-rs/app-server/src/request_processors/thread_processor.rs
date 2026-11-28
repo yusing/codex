@@ -1351,6 +1351,9 @@ impl ThreadRequestProcessor {
         self.outgoing
             .cancel_requests_for_thread(thread_id, /*error*/ None)
             .await;
+        self.outgoing
+            .forget_shell_guard_approvals(thread_id, /*connection_id*/ None)
+            .await;
         // The state entry owns the resume lock. Remove the watch while a cold resume
         // still has to wait for this teardown to finish.
         self.thread_watch_manager
@@ -1374,6 +1377,9 @@ impl ThreadRequestProcessor {
         let was_subscribed = self
             .thread_state_manager
             .unsubscribe_connection_from_thread(thread_id, connection_id)
+            .await;
+        self.outgoing
+            .forget_shell_guard_approvals(thread_id, Some(connection_id))
             .await;
 
         if self.thread_manager.get_thread(thread_id).await.is_err() {
@@ -7184,7 +7190,7 @@ fn stored_thread_item_to_api_item(
             }
         }
         if let Some(display) = display {
-            display.restore_step_kinds();
+            display.restore_step_display();
         }
     }
     Ok(ThreadItem {

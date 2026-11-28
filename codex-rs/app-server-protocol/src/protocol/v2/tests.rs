@@ -3390,6 +3390,45 @@ fn command_display_classifies_authored_steps_without_assigning_execution_results
         ]
     );
     assert_eq!(display.segments.len(), display.step_kinds.len());
+    assert_eq!(
+        display.step_subjects,
+        [
+            Some("src.rs"),
+            Some("keyword ."),
+            Some("src.rs"),
+            Some("src.rs"),
+            Some("save"),
+            Some("demo"),
+            None,
+        ]
+        .map(|subject| subject.map(str::to_owned))
+    );
+
+    let display = command_display(
+        &["bash", "-lc", "mcat ~/.codex/TASK-FILE.md README.md"].map(str::to_owned),
+        None,
+        Some(0),
+        "",
+    )
+    .expect("command display");
+    assert_eq!(display.step_kinds, vec![CommandStepKind::Read]);
+    assert_eq!(
+        display.step_subjects,
+        vec![Some("'~/.codex/TASK-FILE.md' README.md".into())]
+    );
+
+    let mut retained: CommandDisplay = serde_json::from_value(json!({
+        "script": "skills-mgr get demo/references/check.md",
+        "segments": [],
+        "stepKinds": ["skill"],
+        "effectiveCwd": null,
+    }))
+    .expect("retained display");
+    retained.restore_step_display();
+    assert_eq!(
+        retained.step_subjects,
+        vec![Some("demo/references/check.md".into())]
+    );
 
     for (script, kind) in [
         ("cat src.rs", CommandStepKind::Read),

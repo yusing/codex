@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -570,7 +571,7 @@ awaitProcess:
 	}
 	conn.handleNotification(patch)
 	ev = drain()
-	if len(ev.Frame.Live) != 1 || len(ev.Frame.Live[0].Files) != 1 || ev.Frame.Live[0].Files[0].Diff != "@@ -0 +1 @@\n+new" {
+	if len(ev.Frame.Live) != 1 || len(ev.Frame.Live[0].Files) != 1 || ev.Frame.Live[0].Files[0].Diff != "@@ -0,0 +1,1 @@\n+new\n" {
 		t.Fatalf("expected Frame.Live from patchUpdated, got %+v", ev.Frame.Live)
 	}
 	conn.handleNotification(appserver.Message{
@@ -582,6 +583,83 @@ awaitProcess:
 	if len(ev.Frame.Live) != 0 {
 		t.Fatalf("expected completed patch to stay cleared, got %+v", ev.Frame.Live)
 	}
+}
+
+func TestUISnapshotNativeAgentMail(t *testing.T) {
+	f := newNativeParitySnapshot(t)
+	f.client.renderer.views.ChildReplySummary = true
+	const summary = "The parser checks pass."
+	const supporting = "The supporting work stays in the reply."
+	const source = "## Summary\n" + summary + "\n\n## Details\n" + supporting
+	const shell = `{"type":"commandExecution","id":"shell","command":"printf checked","status":"completed","exitCode":0}`
+	const mainReply = `{"type":"agentMessage","id":"main-answer","text":"I reviewed the result."}`
+	const childMail = `{"type":"agentMail","id":"message","kind":"message","sender":"/root","recipient":"/root/worker","text":"Please include the supporting work.","summary":null,"details":null}`
+	reply := fmt.Sprintf(`{"type":"agentMail","id":"delivered","kind":"reply","sender":"/root/worker","recipient":"/root","text":%q,"summary":%q,"details":%q}`,
+		source, summary, supporting)
+	childReply := fmt.Sprintf(`{"type":"agentMessage","id":"child-answer","text":%q}`, source)
+	notify := func(thread, turn, item string) {
+		t.Helper()
+		f.notify("item/completed", fmt.Sprintf(`{"threadId":%q,"turnId":%q,"item":%s}`, thread, turn, item))
+	}
+	notify("thr-main", "turn-1", shell)
+	notify("thr-main", "turn-1", reply)
+	notify("thr-main", "turn-1", mainReply)
+	live := f.await(func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 3
+	})
+	const width, height = 88, 20
+	f.assert("agent-mail", live, width, height)
+	u := f.client.renderer.terminal
+	replySeq := live.Frame.Main.Entries[1].Seq
+	row := slices.Index(u.Transcript.FeedQuestions, replySeq)
+	if row < 0 {
+		t.Fatal("the painted reply cannot be opened")
+	}
+	x := u.Layout.Main.X + u.Transcript.FeedLeft + 2 // Past the gutter.
+	y := u.Layout.Main.Y + u.Transcript.FeedTop + row
+	for _, key := range []string{
+		fmt.Sprintf("\x1b[<0;%d;%dM", x, y),
+		fmt.Sprintf("\x1b[<0;%d;%dm", x, y),
+	} {
+		f.client.dispatch(terminalsession.Input{Kind: terminalsession.MouseInput, Text: key})
+	}
+	for _, call := range f.client.calls {
+		if _, err := f.conn.Send(f.ctx, call.target, call.operation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.client.calls = nil
+	details := f.await(func(ev sessionapi.NativeEvent) bool { return ev.Frame.Details != nil })
+	f.assert("agent-mail-details", details, width, height)
+	if u.Dialog.Document.Text != source || len(u.Dialog.Pages) != 1 {
+		t.Fatal("Open reply did not resolve the original delivered Markdown")
+	}
+	f.send(sessionapi.NativeOperation{CloseDetails: &details.Frame.Details.View.ID})
+
+	f.server.mu.Lock()
+	f.server.overrides["thread/read"] = func(params jsontext.Value) any {
+		if strings.Contains(string(params), "thr-worker") {
+			return jsontext.Value(`{"thread":{"id":"thr-worker","turns":[{"id":"child-turn","items":[` + childMail + "," + childReply + `]}]}}`)
+		}
+		return jsontext.Value(`{"thread":{"id":"thr-main","turns":[{"id":"turn-1","items":[` + shell + "," + reply + "," + mainReply + `]}]}}`)
+	}
+	f.server.mu.Unlock()
+	f.send(sessionapi.NativeOperation{Display: &sessionpresentation.DisplayIntent{
+		Thread: sessionpresentation.Thread{ID: "thr-worker", Caller: "/root/worker"},
+	}})
+	child := f.await(func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Displayed.ID == "thr-worker" && ev.Frame.Agents != nil &&
+			len(ev.Frame.Agents.Entries) == 2 && ev.Frame.Agents.Entries[0].Restored
+	})
+	f.assert("agent-mail-child", child, width, height)
+	f.send(sessionapi.NativeOperation{Display: &sessionpresentation.DisplayIntent{
+		Thread: sessionpresentation.Thread{ID: "thr-main", Caller: "/root"},
+	}})
+	retained := f.await(func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Displayed.ID == "thr-main" && ev.Frame.Main != nil &&
+			len(ev.Frame.Main.Entries) == 3 && ev.Frame.Main.Entries[1].Restored
+	})
+	f.assert("agent-mail", retained, width, height)
 }
 
 func TestUISnapshotDirectNativeProjection(t *testing.T) {
@@ -608,6 +686,9 @@ func TestUISnapshotDirectNativeProjection(t *testing.T) {
 				{"status":"available","resetType":"codexRateLimits"},{"status":"used","title":"Used reset"}
 			]}
 		}`)
+	}
+	srv.overrides["thread/changes/read"] = func(jsontext.Value) any {
+		return jsontext.Value(`{"threadId":"thr-main","workspace":"/workspace/demo","changes":[],"files":[]}`)
 	}
 	srv.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

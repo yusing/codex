@@ -1193,8 +1193,7 @@ impl CodexThread {
             .get::<codex_skills_extension::SkillsThreadState>()
             .map(|state| state.used_skill_names())
             .unwrap_or_default();
-        let background_terminal_count =
-            u32::try_from(self.background_terminal_count().await).ok();
+        let background_terminal_count = u32::try_from(self.background_terminal_count().await).ok();
         (!skills.is_empty() || background_terminal_count.is_some()).then_some(
             codex_app_server_protocol::ThreadExtra {
                 skills,

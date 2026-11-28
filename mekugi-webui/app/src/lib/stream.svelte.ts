@@ -167,7 +167,7 @@ export function itemToEntry(
   agent = "/root",
   live = false,
   threadId?: string,
-): Entry {
+): Entry | undefined {
   const base: Entry = {
     seq,
     position: seq,
@@ -237,6 +237,30 @@ export function itemToEntry(
         kind: "assistant",
         text: item.text,
       };
+    case "functionCallOutput": {
+      // Only the canonical exec diagnostic is a user-facing transcript item.
+      if (
+        item.namespace !== "functions" ||
+        item.name !== "exec" ||
+        !item.id.startsWith("code-mode-error:")
+      )
+        return;
+      const diagnostic = typeof item.output === "string" ? item.output.trimEnd() : "";
+      return {
+        ...base,
+        kind: "error",
+        outcome: "error",
+        values: [
+          {
+            kind: "error",
+            verb: "Error",
+            label: "exec script failed",
+            failed: true,
+            tail: diagnostic ? diagnostic.split("\n") : undefined,
+          },
+        ],
+      };
+    }
     case "plan":
       return {
         ...base,
@@ -245,19 +269,15 @@ export function itemToEntry(
       };
     case "reasoning": {
       const sections = (item.summary ?? []).map((part) => part.trim()).filter(Boolean);
-      const values: Value[] = sections.length
-        ? sections.map((body, index) => {
-            const heading = body.match(/^\*\*([^\n*]+)\*\*/)?.[1]?.trim();
-            return {
-              kind: "reasoning",
-              label: heading || undefined,
-              body,
-              live: live && index === sections.length - 1,
-            };
-          })
-        : live
-          ? [{ kind: "reasoning", body: "", live: true }]
-          : [];
+      const values: Value[] = sections.map((body, index) => {
+        const heading = body.match(/^\*\*([^\n*]+)\*\*/)?.[1]?.trim();
+        return {
+          kind: "reasoning",
+          label: heading || undefined,
+          body,
+          live: live && index === sections.length - 1,
+        };
+      });
       return {
         ...base,
         kind: "reasoning",
@@ -664,17 +684,18 @@ export function buildFeed(
         emitHook(turnHooks[hookIdx++]);
       }
       const item = turn.items[i];
-      seq++;
-      entries[seq] = itemToEntry(
+      const entry = itemToEntry(
         item,
-        seq,
+        seq + 1,
         t + 1,
         turn.id,
         "/root",
         !!liveItemIds?.has(item.id),
         attachment,
       );
-      indexItem?.(turn, i, entries[seq]);
+      if (!entry) continue;
+      entries[++seq] = entry;
+      indexItem?.(turn, i, entry);
       order.push(seq);
     }
     while (hookIdx < turnHooks.length) emitHook(turnHooks[hookIdx++]);
@@ -711,6 +732,24 @@ function previewId(thread: string, turn: string, item: string): string {
 }
 
 const changesPageSize = 20;
+const receiptPageSize = 100;
+
+function capturedEditValue(file: ThreadChangeFileDiff): Value {
+  return {
+    kind: "op",
+    verb:
+      file.status === "A"
+        ? "Create"
+        : file.status === "D"
+          ? "Delete"
+          : file.status === "R"
+            ? "Move"
+            : "Edit",
+    path: file.movedFrom ? `${file.movedFrom} => ${file.path}` : file.path,
+    label: file.additions || file.deletions ? `+${file.additions} −${file.deletions}` : undefined,
+    effect: true,
+  };
+}
 
 function changeFileReview(file: ThreadChangeFileDiff): ReviewFile {
   const path = file.absolutePath ?? file.path;
@@ -816,14 +855,32 @@ function usageFields(usage: ThreadTokenUsage) {
   };
 }
 
+function threadAgentPath(thread: Thread): string | undefined {
+  const source = thread.source;
+  if (typeof source !== "object" || !source || !("subAgent" in source)) return undefined;
+  const sub = source.subAgent;
+  if (typeof sub !== "object" || !sub || !("thread_spawn" in sub)) return undefined;
+  return sub.thread_spawn.agent_path ?? undefined;
+}
+
 function threadToAgent(thread: Thread, depth: number): Agent {
-  const name = depth === 0 ? "/root" : thread.agentNickname || thread.id;
-  const label = depth === 0 ? "main" : thread.agentNickname || thread.name || thread.id;
+  const canonicalPath = depth === 0 ? "/root" : threadAgentPath(thread);
+  const name = canonicalPath || thread.agentNickname || thread.id;
+  const label =
+    depth === 0
+      ? "main"
+      : canonicalPath
+        ? canonicalPath.replace(/^\/root\//, "")
+        : thread.agentNickname || thread.name || thread.id;
   const usage = thread.tokenUsage ? usageFields(thread.tokenUsage) : undefined;
   return {
     name,
     label,
-    aliases: [name, thread.id],
+    aliases: [
+      name,
+      thread.id,
+      ...(thread.agentNickname && thread.agentNickname !== name ? [thread.agentNickname] : []),
+    ],
     thread: thread.id,
     role: thread.agentRole ?? undefined,
     depth,
@@ -894,9 +951,11 @@ export class Stream {
   reviewError = $state<string>();
   reviewLoading = $state(false);
   reviewOverview = $state.raw<{
+    fileCount: number;
     callers: SavedReview["callers"];
     counts: SavedReview["counts"];
   }>({
+    fileCount: 0,
     callers: [],
     counts: { Callers: {}, Net: null },
   });
@@ -958,6 +1017,7 @@ export class Stream {
   #hooksByThread: HookCache;
   #hookSeq = 0;
   #reviewRevision = 0;
+  #editReceipts = new SvelteMap<string, Value[]>();
   #workspaces = new Map<string, string>();
   #processReads = new Map<string, symbol>();
   #stopNotifications?: () => void;
@@ -988,7 +1048,10 @@ export class Stream {
   }
 
   entry(seq: number): Entry | undefined {
-    return this.#entries.get(seq);
+    const entry = this.#entries.get(seq);
+    if (!entry?.turnId || !entry.itemId || entry.running || !this.#id) return entry;
+    const effects = this.#editReceipts.get(previewId(this.#id, entry.turnId, entry.itemId));
+    return effects?.length ? { ...entry, values: [...(entry.values ?? []), ...effects] } : entry;
   }
 
   commandExecution(turnId: string, itemId: string) {
@@ -1087,7 +1150,9 @@ export class Stream {
     const cursor = this.#turnsBackwardsCursor;
     if (!id || this.loadingEarlier || this.hydrating) return false;
     if (this.#hiddenEntries) {
+      const previous = this.#hiddenEntries;
       this.#hiddenEntries = Math.max(0, this.#hiddenEntries - transcriptPageSize);
+      this.#loadRowReceipts(this.#hiddenEntries, previous);
       return true;
     }
     if (machine?.connection !== "open" || !cursor) return false;
@@ -1116,6 +1181,7 @@ export class Stream {
         0,
         this.main.order.length - retainedCount - transcriptPageSize,
       );
+      this.#loadRowReceipts(this.#hiddenEntries, this.main.order.length - retainedCount);
       return true;
     } catch {
       return false;
@@ -1254,6 +1320,9 @@ export class Stream {
         skipThreadId: loadedMainProcesses ? id : undefined,
       });
       void this.#loadChanges(id, machine, signal);
+      this.#loadRowReceipts(
+        Math.max(this.#hiddenEntries, this.main.order.length - transcriptPageSize),
+      );
     } catch (err) {
       if (signal.aborted) return;
       this.error = errorText(err);
@@ -1469,27 +1538,136 @@ export class Stream {
     this.reviewCursor = undefined;
     this.reviewError = undefined;
     try {
-      const response = await machine.request<ThreadChangesReadResponse>(
-        "thread/changes/read",
-        {
-          threadId: id,
-          callerThreadId: caller || null,
-          includeExternal: this.reviewIncludeExternal,
-          limit: changesPageSize,
-        },
-        { signal },
-      );
+      const [response, overviewResponse] = await Promise.all([
+        machine.request<ThreadChangesReadResponse>(
+          "thread/changes/read",
+          {
+            threadId: id,
+            callerThreadId: caller || null,
+            includeExternal: this.reviewIncludeExternal,
+            limit: changesPageSize,
+          },
+          { signal },
+        ),
+        caller
+          ? machine
+              .request<ThreadChangesReadResponse>(
+                "thread/changes/read",
+                {
+                  threadId: id,
+                  callerThreadId: null,
+                  includeExternal: this.reviewIncludeExternal,
+                  limit: 1,
+                },
+                { signal },
+              )
+              .catch(() => undefined)
+          : Promise.resolve(undefined),
+      ]);
       if (signal.aborted || revision !== this.#reviewRevision) return;
       const review = changesToReview(response, revision, caller, (thread) =>
         this.#callerName(thread),
       );
-      if (!caller) this.reviewOverview = { callers: review.callers, counts: review.counts };
+      if (!caller) {
+        this.reviewOverview = {
+          fileCount: review.fileCount,
+          callers: review.callers,
+          counts: review.counts,
+        };
+      } else if (overviewResponse) {
+        const overview = changesToReview(overviewResponse, revision, "", (thread) =>
+          this.#callerName(thread),
+        );
+        this.reviewOverview = {
+          fileCount: overview.fileCount,
+          callers: overview.callers,
+          counts: overview.counts,
+        };
+      }
       this.review = review;
       this.reviewCursor = response.nextCursor ?? undefined;
     } catch (error) {
       if (!signal.aborted && revision === this.#reviewRevision) this.reviewError = errorText(error);
     } finally {
       if (!signal.aborted && revision === this.#reviewRevision) this.reviewLoading = false;
+    }
+  }
+
+  // Saved Diff composes files across commands. The transcript instead needs the
+  // original operation receipts, limited to this thread's newly shown command rows.
+  #loadRowReceipts(start: number, end?: number): void {
+    const id = this.#id;
+    const machine = this.#machine;
+    if (!id || machine?.connection !== "open") return;
+    const commands: { turnId: string; itemId: string }[] = [];
+    for (const seq of this.main.order.slice(start, end)) {
+      const { turnId, itemId, running } = this.main.entries[seq];
+      if (!turnId || !itemId || running || this.#editReceipts.has(previewId(id, turnId, itemId)))
+        continue;
+      const target = this.#deltaTargets.get(turnId)?.get(itemId);
+      if (target?.items[target.index]?.type === "commandExecution")
+        commands.push({ turnId, itemId });
+    }
+    if (commands.length) void this.#loadEditReceipts(id, machine, this.#requests.signal, commands);
+  }
+
+  async #loadEditReceipts(
+    id: string,
+    machine: Machine,
+    signal: AbortSignal,
+    commands: readonly { turnId: string; itemId: string }[],
+    replace = false,
+  ): Promise<void> {
+    const keys = new Set(commands.map(({ turnId, itemId }) => previewId(id, turnId, itemId)));
+    const receipts = new Map<string, { sequence: number; value: Value }[]>();
+    const published = new Map<string, Value[]>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    try {
+      do {
+        const page: ThreadChangesReadResponse = await machine.request(
+          "thread/changes/read",
+          {
+            threadId: id,
+            receiptItemIds: commands.map(({ itemId }) => itemId),
+            limit: receiptPageSize,
+            cursor,
+          },
+          { signal },
+        );
+        if (signal.aborted) return;
+        const origins = new Map(page.changes.map((origin) => [origin.changeId, origin]));
+        const updated = new Set<string>();
+        for (const file of page.files) {
+          if ((file.scope && file.scope !== "workspace") || file.changeIds?.length !== 1) continue;
+          const origin = origins.get(file.changeIds[0]);
+          if (origin?.threadId !== id || !origin.turnId || !origin.itemId) continue;
+          const key = previewId(id, origin.turnId, origin.itemId);
+          if (!keys.has(key)) continue;
+          let rows = receipts.get(key);
+          if (!rows) receipts.set(key, (rows = []));
+          rows.push({ sequence: origin.sequence, value: capturedEditValue(file) });
+          updated.add(key);
+        }
+        for (const key of updated) {
+          // A live completion's receipt wins over a concurrent hydration snapshot.
+          if (!replace && this.#editReceipts.get(key) !== published.get(key)) continue;
+          const rows = receipts.get(key)!;
+          rows.sort((a, b) => a.sequence - b.sequence);
+          const values = rows.map(({ value }) => value);
+          this.#editReceipts.set(key, values);
+          published.set(key, values);
+        }
+        cursor = page.nextCursor ?? undefined;
+        if (cursor && seenCursors.has(cursor)) return;
+        if (cursor) seenCursors.add(cursor);
+      } while (cursor);
+      for (const key of keys) {
+        if (!receipts.has(key) && (replace || !this.#editReceipts.has(key)))
+          this.#editReceipts.set(key, []);
+      }
+    } catch {
+      // Unavailable receipt data does not replace the command or the Saved Diff state.
     }
   }
 
@@ -1962,17 +2140,11 @@ export class Stream {
             }
           }
         }
+        const agent = this.roster.agents.find((a) => a.thread === targetId);
+        const activity = itemToEntry(item, 0, 0, turnId, agent?.name, started, targetId);
+        if (!activity) return;
         if (targetId !== id) {
-          const agent = this.roster.agents.find((a) => a.thread === targetId);
           if (agent) {
-            const activity = itemToEntry(
-              notification.params.item,
-              0,
-              0,
-              notification.params.turnId,
-              agent.name,
-              started,
-            );
             this.roster = {
               ...this.roster,
               agents: this.roster.agents.map((a) =>
@@ -1989,21 +2161,19 @@ export class Stream {
         }
         this.#upsertItem(notification.params.turnId, notification.params.item);
         this.#rebuildMain();
-        const latestActivity = itemToEntry(
-          notification.params.item,
-          0,
-          0,
-          notification.params.turnId,
-          "/root",
-          started,
-        );
+        if (!started && item.type === "commandExecution" && item.status !== "inProgress")
+          void this.#loadEditReceipts(
+            id,
+            machine,
+            this.#requests.signal,
+            [{ turnId, itemId: item.id }],
+            true,
+          );
         if (this.roster.agents.some((a) => a.thread === id || a.name === "/root")) {
           this.roster = {
             ...this.roster,
             agents: this.roster.agents.map((a) =>
-              a.thread === id || (!a.thread && a.name === "/root")
-                ? { ...a, activity: latestActivity }
-                : a,
+              a.thread === id || (!a.thread && a.name === "/root") ? { ...a, activity } : a,
             ),
           };
         }
@@ -2250,10 +2420,16 @@ export class Stream {
     const item = update(previous);
     if (item === previous) return;
     items[index] = item;
-    this.#entries.set(
+    const entry = itemToEntry(
+      item,
       seq,
-      itemToEntry(item, seq, 0, turnId, "/root", this.#liveItemIds.has(itemId), this.#id),
+      0,
+      turnId,
+      "/root",
+      this.#liveItemIds.has(itemId),
+      this.#id,
     );
+    if (entry) this.#entries.set(seq, entry);
   }
 
   async close(): Promise<void> {
@@ -2296,7 +2472,7 @@ export class Stream {
 
   label(name: string | undefined): string {
     if (!name || name === "/root") return "main";
-    return this.identities.get(name)?.label ?? name;
+    return (this.identities.get(name)?.label ?? name).replace(/^\/root\//, "");
   }
 
   agent(name: string | undefined): Agent | undefined {

@@ -18,7 +18,7 @@ use crate::MaybeApplyPatchVerified;
 use crate::parser::Hunk;
 use crate::parser::ParseError;
 use crate::parser::parse_patch;
-use crate::unified_diff_from_chunks;
+use crate::{LIVE_DIFF_CONTEXT, unified_diff_from_chunks_with_context};
 use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
 use std::str::Utf8Error;
@@ -229,7 +229,14 @@ async fn try_verify_apply_patch_args(
                     unified_diff,
                     content: contents,
                     ..
-                } = unified_diff_from_chunks(&path, &chunks, fs, sandbox).await?;
+                } = unified_diff_from_chunks_with_context(
+                    &path,
+                    &chunks,
+                    LIVE_DIFF_CONTEXT,
+                    fs,
+                    sandbox,
+                )
+                .await?;
                 changes.insert(
                     path,
                     ApplyPatchFileChange::Update {

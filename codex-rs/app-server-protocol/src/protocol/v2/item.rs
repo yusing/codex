@@ -169,6 +169,10 @@ pub struct CommandDisplay {
     /// Classification in source order; one kind for an unsplit script.
     #[serde(default)]
     pub step_kinds: Vec<CommandStepKind>,
+    /// Compact display subjects in the same order as step kinds.
+    /// A step without a subject displays its source.
+    #[serde(default)]
+    pub step_subjects: Vec<Option<String>>,
     pub effective_cwd: Option<LegacyAppPathString>,
 }
 

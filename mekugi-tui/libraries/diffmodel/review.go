@@ -94,7 +94,7 @@ func (file ReviewFile) LineCounts() (added, removed int) {
 	}
 	inHunk := false
 	for line := range strings.SplitSeq(file.Diff, "\n") {
-		if strings.HasPrefix(line, "@@ ") {
+		if line == "@@" || strings.HasPrefix(line, "@@ ") {
 			inHunk = true
 		} else if inHunk && strings.HasPrefix(line, "+") {
 			added++

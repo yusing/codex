@@ -1,0 +1,20 @@
+└ Ran     printf checked
+
+✓ worker → main finished                                                       22:15:01
+│ The parser checks pass.
+╰─↩ Open reply
+
+● main                                                                         22:15:01
+┃ I reviewed the result.
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────
+❯  
+────────────────────────────────────────────────────────────────────────────────────────
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • ◐ 1 • Direct Session • /tmp/ws • ↓ roster • → diff • ctrl+e view

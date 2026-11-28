@@ -10,10 +10,9 @@
   import Dot from "./ui/Dot.svelte";
   import Tag from "./ui/Tag.svelte";
 
-  // Edits owner is writing, shown over its transcript as the terminal shows
-  // live source. Each completed call stays for its own settling interval; the
-  // transcript returns when no cards remain. Calls already complete when the
-  // view opens are history, not arrivals.
+  // Edits appear alongside the transcript. Each completed call stays for its
+  // own settling interval. Calls already complete when the view opens are
+  // history, not arrivals.
   let {
     previews,
     owner,
@@ -66,7 +65,7 @@
     return () => clearTimeout(timer);
   });
 
-  // Hiding returns the transcript until another call arrives.
+  // Hiding leaves only the transcript until another call arrives.
   let hidden = $state<string[]>([]);
   const shown = $derived(cards.filter((card) => !hidden.includes(card.preview.ID)));
   const writing = $derived(shown.some((card) => !card.until && !card.preview.Settling));
@@ -75,7 +74,7 @@
 
 {#if shown.length}
   <section
-    class="@container absolute inset-0 z-5 flex flex-col overflow-hidden bg-surface"
+    class="@container flex min-h-0 min-w-0 flex-1 flex-col border-t border-rule @min-[40rem]/thread-panes:border-t-0 @min-[40rem]/thread-panes:border-l"
     aria-label="Live edits"
   >
     <div
@@ -91,7 +90,7 @@
         size="sm"
         variant="quiet"
         class="ml-auto"
-        onclick={() => (hidden = cards.map((card) => card.preview.ID))}>Show transcript</Button
+        onclick={() => (hidden = cards.map((card) => card.preview.ID))}>Hide Live Diff</Button
       >
     </div>
     <div class="min-h-0 flex-1 overflow-hidden">

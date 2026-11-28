@@ -1,8 +1,9 @@
 use crate::function_tool::FunctionCallError;
-use crate::session::turn_context::TurnContext;
+use crate::session::step_context::StepContext;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
+use crate::tools::handlers::live_diff::ArgumentPreview;
 use crate::tools::handlers::unified_exec::CodeModeEditProjector;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
@@ -326,13 +327,21 @@ struct CodeModeInputPreview {
 }
 
 impl ToolArgumentDiffConsumer for CodeModeInputPreview {
-    fn consume_diff(&mut self, turn: &TurnContext, call_id: String, diff: &str) -> Vec<EventMsg> {
+    fn consume_diff(
+        &mut self,
+        step: &StepContext,
+        call_id: String,
+        diff: &str,
+    ) -> Vec<ArgumentPreview> {
         const MAX_PREVIEW_BYTES: u32 = 256 << 10;
         let mut events = Vec::new();
-        #[allow(deprecated)]
-        let cwd = turn.cwd.as_path();
-        if let Some(patch_event) = self.edits.consume_diff(cwd, call_id.clone(), diff) {
-            events.push(patch_event);
+        let cwd = step
+            .environments
+            .primary()
+            .map(|env| env.selection.cwd.to_path_buf())
+            .unwrap_or_default();
+        if let Some(patch_event) = self.edits.consume_diff(&cwd, call_id.clone(), diff) {
+            events.push(ArgumentPreview::Patch(patch_event));
         }
         let len = u32::try_from(diff.len()).unwrap_or(u32::MAX);
         if len == 0 {
@@ -344,7 +353,7 @@ impl ToolArgumentDiffConsumer for CodeModeInputPreview {
         }
         let offset = self.offset;
         self.offset += len;
-        events.push(EventMsg::CodeModeInputDelta(CodeModeInputDeltaEvent {
+        events.push(ArgumentPreview::Code(CodeModeInputDeltaEvent {
             call_id,
             offset,
             delta: diff.to_owned(),
@@ -352,7 +361,12 @@ impl ToolArgumentDiffConsumer for CodeModeInputPreview {
         events
     }
 
-    fn finish(&mut self) -> Result<Vec<EventMsg>, FunctionCallError> {
-        Ok(self.edits.finish().into_iter().collect())
+    fn finish(&mut self) -> Result<Vec<ArgumentPreview>, FunctionCallError> {
+        Ok(self
+            .edits
+            .finish()
+            .map(ArgumentPreview::Patch)
+            .into_iter()
+            .collect())
     }
 }

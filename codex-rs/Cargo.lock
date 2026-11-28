@@ -2290,6 +2290,7 @@ dependencies = [
 name = "codex-change-history"
 version = "0.172.0"
 dependencies = [
+ "codex-shell-command",
  "diffy 0.4.2",
  "pretty_assertions",
  "serde",

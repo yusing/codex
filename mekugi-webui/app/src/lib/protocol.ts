@@ -9,7 +9,10 @@ export type { InitializeResponse } from "@codex-protocol/InitializeResponse";
 export type { ReasoningEffort } from "@codex-protocol/ReasoningEffort";
 export type { RequestId } from "@codex-protocol/RequestId";
 export type { ServerNotification } from "@codex-protocol/ServerNotification";
-export type { ServerRequest } from "@codex-protocol/ServerRequest";
+
+import type { ServerRequest as NativeServerRequest } from "@codex-protocol/ServerRequest";
+import type { AdditionalPermissionProfile } from "@codex-protocol/v2/AdditionalPermissionProfile";
+import type { CommandExecutionApprovalDecision } from "@codex-protocol/v2/CommandExecutionApprovalDecision";
 
 export type { CommandExecutionApprovalDecision } from "@codex-protocol/v2/CommandExecutionApprovalDecision";
 export type { CommandExecutionChangesUpdatedNotification } from "@codex-protocol/v2/CommandExecutionChangesUpdatedNotification";
@@ -160,6 +163,19 @@ export type RemoteHumanMethod =
   | "thread/items/read";
 
 // Experimental native RPC payloads whose Rust definitions are gated behind experimentalApi.
+type CommandApprovalRequest = Extract<
+  NativeServerRequest,
+  { method: "item/commandExecution/requestApproval" }
+>;
+export type ServerRequest =
+  | Exclude<NativeServerRequest, CommandApprovalRequest>
+  | (CommandApprovalRequest & {
+      params: {
+        additionalPermissions?: AdditionalPermissionProfile | null;
+        availableDecisions?: CommandExecutionApprovalDecision[] | null;
+      };
+    });
+
 export type ThreadPredictionRequestResponse = { text: string | null };
 
 export type ThreadSettingsUpdateParams = {
@@ -562,7 +578,7 @@ export type Preview = {
 export type ApprovalChoice = {
   id: number;
   label: string;
-  decision: "accept" | "decline";
+  decision: "accept" | "acceptForSession" | "decline";
   deny?: boolean;
 };
 

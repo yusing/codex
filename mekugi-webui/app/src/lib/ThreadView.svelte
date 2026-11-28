@@ -513,31 +513,35 @@
             <Alert>{stream.error}</Alert>
           </div>
         {/if}
-        <div class="relative flex min-h-0 flex-1 flex-col">
-          <Transcript
-            entries={stream.transcriptEntries}
-            transcript={stream}
-            owner={view.agent ?? "/root"}
-            workspace={session?.workspace}
-            jumps={stream.jumps}
-            onhiddenhooks={(count) => (hiddenHooks = count)}
-            onchanges={hasChanges ? openChanges : undefined}
-            hasSavedChange={hasChanges ? hasSavedChange : undefined}
-            onselect={openDetails}
-            onreference={stream.connection === "open" ? addReference : undefined}
-          />
-          {#if preferences.liveDiff}
-            {#key stream}
-              <LiveSource
-                previews={stream.live}
+        <div class="@container/thread-panes flex min-h-0 flex-1">
+          <div class="flex min-h-0 min-w-0 flex-1 flex-col @min-[40rem]/thread-panes:flex-row">
+            <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+              <Transcript
+                entries={stream.transcriptEntries}
+                transcript={stream}
                 owner={view.agent ?? "/root"}
-                onsaved={(path) => {
-                  stream.selectChangeCaller("");
-                  openChanges([path]);
-                }}
+                workspace={session?.workspace}
+                jumps={stream.jumps}
+                onhiddenhooks={(count) => (hiddenHooks = count)}
+                onchanges={hasChanges ? openChanges : undefined}
+                hasSavedChange={hasChanges ? hasSavedChange : undefined}
+                onselect={openDetails}
+                onreference={stream.connection === "open" ? addReference : undefined}
               />
-            {/key}
-          {/if}
+            </div>
+            {#if preferences.liveDiff}
+              {#key stream}
+                <LiveSource
+                  previews={stream.live}
+                  owner={view.agent ?? "/root"}
+                  onsaved={(path) => {
+                    stream.selectChangeCaller("");
+                    openChanges([path]);
+                  }}
+                />
+              {/key}
+            {/if}
+          </div>
         </div>
         {#key machine.id + ":" + displayed}
           <ThreadDocks />
@@ -620,6 +624,7 @@
               review={stream.review}
               caller={stream.review?.caller ?? ""}
               callers={stream.reviewOverview.callers}
+              overview={stream.reviewOverview}
               callerLabel={(caller) => stream.label(caller)}
               oncaller={(caller) => stream.selectChangeCaller(caller)}
               includeExternal={stream.reviewIncludeExternal}

@@ -723,6 +723,32 @@ func TestUISnapshotNativeWorkingFooter(t *testing.T) {
 	f.assert("working-footer", ev, 112, 16)
 }
 
+func TestUISnapshotNativeReasoningLive(t *testing.T) {
+	f := newNativeParitySnapshot(t)
+	f.notify("item/started", `{"threadId":"thr-main","turnId":"turn-1","item":{"type":"reasoning","id":"thinking"}}`)
+	empty := f.await(func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 1
+	})
+	f.assert("reasoning-empty", empty, 76, 12)
+	f.notify("item/reasoning/summaryTextDelta", `{
+		"threadId":"thr-main","turnId":"turn-1","itemId":"thinking","summaryIndex":0,
+		"delta":"Inspecting the parser\n\nCompare valid and invalid inputs."
+	}`)
+	f.notify("item/reasoning/summaryTextDelta", `{
+		"threadId":"thr-main","turnId":"turn-1","itemId":"thinking","summaryIndex":1,
+		"delta":"**Checking results**\n\nStream the second section."
+	}`)
+	f.notify("item/started", `{
+		"threadId":"thr-main","turnId":"turn-1","item":{"id":"batch","type":"commandExecution",
+			"command":"date; pwd","status":"inProgress",
+			"display":{"script":"date; pwd","segments":["date","pwd"],"stepKinds":["run","run"]}}
+	}`)
+	live := f.await(func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 2
+	})
+	f.assert("reasoning-and-commands-live", live, 76, 16)
+}
+
 func TestUISnapshotNativeReasoningAndCommands(t *testing.T) {
 	f := newNativeParitySnapshot(t)
 	f.notify("item/started", `{"threadId":"thr-main","turnId":"turn-1","item":{"type":"reasoning","id":"thinking"}}`)
@@ -730,14 +756,22 @@ func TestUISnapshotNativeReasoningAndCommands(t *testing.T) {
 		"threadId":"thr-main","turnId":"turn-1","itemId":"thinking","summaryIndex":0,
 		"delta":"Inspecting the parser\n\nCompare valid and invalid inputs."
 	}`)
+	f.notify("item/reasoning/summaryTextDelta", `{
+		"threadId":"thr-main","turnId":"turn-1","itemId":"thinking","summaryIndex":1,
+		"delta":"**Checking results**\n\nStream the second section."
+	}`)
 	f.notify("item/completed", `{
 		"threadId":"thr-main","turnId":"turn-1","item":{"id":"thinking","type":"reasoning",
-			"summary":["Inspecting the parser\n\nCompare valid and invalid inputs."],"content":[]}
+			"summary":["Inspecting the parser\n\nCompare valid and invalid inputs.","**Checking results**\n\nStream the second section."],"content":[]}
 	}`)
 	for _, item := range []string{
+		`{"id":"batch","type":"commandExecution","command":"date; pwd","status":"completed",
+			"display":{"script":"date; pwd","segments":["date","pwd"],"stepKinds":["run","run"]}}`,
 		`{"id":"read","type":"commandExecution","command":"cat fixture.txt && rg invalid .","status":"completed","exitCode":0,
-			"display":{"script":"cat fixture.txt && rg invalid .","segments":["cat fixture.txt","rg invalid ."],"stepKinds":["read","search"]},
+			"display":{"script":"cat fixture.txt && rg invalid .","segments":["cat fixture.txt","rg invalid ."],"stepKinds":["read","search"],"stepSubjects":["fixture.txt","invalid ."]},
 			"aggregatedOutput":"one\nprogress 10%\rprogress 100%\n"}`,
+		`{"id":"skill","type":"commandExecution","command":"skills-mgr get demo/references/check.md","status":"completed","exitCode":0,
+			"display":{"script":"skills-mgr get demo/references/check.md","segments":[],"stepKinds":["skill"],"stepSubjects":["demo/references/check.md"]}}`,
 		`{"id":"image-1","type":"imageView","path":"/tmp/ws/one.png"}`,
 		`{"id":"image-2","type":"imageView","path":"/tmp/ws/two.png"}`,
 		`{"id":"image-3","type":"imageView","path":"/tmp/ws/three.png"}`,
@@ -749,7 +783,7 @@ func TestUISnapshotNativeReasoningAndCommands(t *testing.T) {
 		f.notify("item/completed", `{"threadId":"thr-main","turnId":"turn-1","item":`+item+`}`)
 	}
 	ev := f.await(func(ev sessionapi.NativeEvent) bool {
-		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 9
+		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 11
 	})
 	const width = 76
 	rows := append(f.rows(ev, width, 24), "plain after transcript")
@@ -760,9 +794,9 @@ func TestUISnapshotNativeFileChangeDetails(t *testing.T) {
 	f := newNativeParitySnapshot(t)
 	f.notify("item/completed", `{
 		"threadId":"thr-main","turnId":"turn-1","item":{"type":"fileChange","id":"edits","status":"completed","changes":[
-			{"path":"added.go","kind":{"type":"add"},"diff":"+new"},
+			{"path":"added.go","kind":{"type":"add"},"diff":"new\n"},
 			{"path":"parser.go","kind":{"type":"update"},"diff":"@@ -1 +1 @@\n-before\n+after"},
-			{"path":"old.go","kind":{"type":"delete"},"diff":"-old"}
+			{"path":"old.go","kind":{"type":"delete"},"diff":"old\n"}
 		]}
 	}`)
 	published := f.await(func(ev sessionapi.NativeEvent) bool {
@@ -788,6 +822,11 @@ func newNativeParitySnapshot(t *testing.T) *nativeParitySnapshot {
 	t.Helper()
 	socket := filepath.Join(shortTempDir(t), "native.sock")
 	server := startMockNativeAppServer(t, socket)
+	server.mu.Lock()
+	server.overrides["thread/changes/read"] = func(jsontext.Value) any {
+		return jsontext.Value(`{"workspace":"/tmp/ws","changes":[],"files":[]}`)
+	}
+	server.mu.Unlock()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancel)
 	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "", "")

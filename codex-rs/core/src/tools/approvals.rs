@@ -805,6 +805,30 @@ impl Session {
                     .or_else(|| ctx.approval_reason.clone())
                     .or_else(|| justification.clone());
                 let human_once = ctx.requires_human_approval();
+                let network_approval = ctx
+                    .network_approval_context
+                    .clone()
+                    .filter(|_| !human_once)
+                    .map(|context| (context, NetworkApprovalTurn::AnyActive));
+                let available_decisions = if human_once {
+                    Some(vec![
+                        ReviewDecision::Approved,
+                        ReviewDecision::denied("rejected by user"),
+                        ReviewDecision::Abort,
+                    ])
+                } else if network_approval.is_none() && additional_permissions.is_none() {
+                    let mut decisions =
+                        codex_protocol::approvals::ExecApprovalRequestEvent::default_available_decisions(
+                            /*network_approval_context*/ None,
+                            proposed_execpolicy_amendment.as_ref(),
+                            /*proposed_network_policy_amendments*/ None,
+                            /*additional_permissions*/ None,
+                        );
+                    decisions.insert(1, ReviewDecision::ApprovedForSession);
+                    Some(decisions)
+                } else {
+                    None
+                };
                 let request = || async {
                     self.request_command_approval(
                         ctx.review_context.turn(),
@@ -821,26 +845,14 @@ impl Session {
                         command.clone(),
                         cwd.clone(),
                         reason,
-                        if human_once {
-                            None
-                        } else {
-                            ctx.network_approval_context
-                                .clone()
-                                .map(|context| (context, NetworkApprovalTurn::AnyActive))
-                        },
+                        network_approval,
                         if human_once {
                             None
                         } else {
                             proposed_execpolicy_amendment.clone()
                         },
                         additional_permissions.clone(),
-                        human_once.then(|| {
-                            vec![
-                                ReviewDecision::Approved,
-                                ReviewDecision::denied("rejected by user"),
-                                ReviewDecision::Abort,
-                            ]
-                        }),
+                        available_decisions,
                         /*plugin_attribution_override*/ None,
                     )
                     .await

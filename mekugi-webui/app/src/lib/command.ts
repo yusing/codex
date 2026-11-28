@@ -41,8 +41,10 @@ const commandVerbs: Readonly<Record<string, string>> = {
   skill: "Skill",
 };
 
-function commandVerb(kind: string | undefined): string {
-  return (kind && commandVerbs[kind]) || "Run";
+function commandVerb(item: CommandItem, kind?: string): string {
+  if (kind && commandVerbs[kind]) return commandVerbs[kind];
+  if (item.status === "declined") return "Denied";
+  return item.status === "inProgress" ? "Running" : "Ran";
 }
 
 function commandSegments(item: CommandItem): string[] {
@@ -52,7 +54,7 @@ function commandSegments(item: CommandItem): string[] {
 export function commandResult(item: CommandItem): Value {
   return {
     kind: "op",
-    verb: "Run",
+    verb: commandVerb(item),
     workdir: item.display?.effectiveCwd || item.cwd || undefined,
     batchExit: commandSegments(item).length > 1,
     running: item.status === "inProgress",
@@ -65,14 +67,15 @@ export function commandResult(item: CommandItem): Value {
 export function commandValues(item: CommandItem): Value[] {
   const segments = commandSegments(item);
   const kinds = item.display?.stepKinds;
+  const subjects = item.display?.stepSubjects;
   const actions = item.commandActions ?? [];
   if (segments.length < 2)
     return [
       {
         ...commandResult(item),
-        verb: commandVerb(kinds?.[0] ?? (actions.length === 1 ? actions[0].type : undefined)),
-        code: item.display?.segments[0] ?? item.display?.script ?? item.command,
-        lang: "bash",
+        verb: commandVerb(item, kinds?.[0] ?? (actions.length === 1 ? actions[0].type : undefined)),
+        code: subjects?.[0] ?? item.display?.segments[0] ?? item.display?.script ?? item.command,
+        lang: subjects?.[0] ? "text" : "bash",
         ...commandTail(item.aggregatedOutput ?? ""),
       },
     ];
@@ -80,9 +83,9 @@ export function commandValues(item: CommandItem): Value[] {
   // Source steps describe the script, not which steps ran. Details owns the result.
   return segments.map((code, i) => ({
     kind: "op",
-    verb: commandVerb(kinds?.[i] ?? (!item.display ? actions[i]?.type : undefined)),
-    code,
-    lang: "bash",
+    verb: commandVerb(item, kinds?.[i] ?? (!item.display ? actions[i]?.type : undefined)),
+    code: subjects?.[i] ?? code,
+    lang: subjects?.[i] ? "text" : "bash",
     workdir,
   }));
 }

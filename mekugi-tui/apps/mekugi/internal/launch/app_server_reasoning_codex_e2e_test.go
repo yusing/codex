@@ -101,7 +101,7 @@ func TestAppServerReasoningStreamNativeCodexE2E(t *testing.T) {
 	}
 	close(p.stages[1])
 	terminal.await("Second public checkpoint.")
-	if !strings.Contains(terminal.screen.String(), "Thinking…") || strings.Contains(terminal.screen.String(), "Reasoning acceptance complete.") {
+	if strings.Contains(terminal.screen.String(), "Thinking…") || strings.Contains(terminal.screen.String(), "Reasoning acceptance complete.") {
 		t.Fatalf("second delta was not visible before completion:\n%s", terminal.screen.String())
 	}
 	close(p.stages[2])

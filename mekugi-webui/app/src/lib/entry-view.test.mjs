@@ -506,13 +506,41 @@ test("user messages compose Message with right alignment and retain marked conte
   assert.match(html, /12:34/);
 });
 
-test("reasoning composes Trace disclosure without a control for empty thoughts", () => {
+test("user messages keep unquoted text after an explicit quote, with or without attachments", () => {
+  const quoteText = "> Quoted first line\n> Quoted second line\nWhere did it come from?";
+  for (const withImage of [false, true]) {
+    const content = [{ type: "text", text: quoteText, text_elements: [] }];
+    if (withImage) content.push({ type: "localImage", path: "/workspace/shot.png" });
+    const entry = itemToEntry({ id: "user", type: "userMessage", content }, 1, 1, "t1");
+    const html = render(EntryView, {
+      props: { entry, at: "", stamp: "", owner: "/root" },
+    }).body;
+    assert.match(
+      html,
+      /<blockquote>\s*<p>Quoted first line\nQuoted second line<\/p>\s*<\/blockquote>/,
+    );
+    assert.match(html, /<\/blockquote>\s*<p>Where did it come from\?/);
+    if (withImage) assert.match(html, /<span[^>]+text-marker-image[^>]*>\[Image 1\]<\/span>/);
+  }
+
+  const entry = itemToEntry(
+    { id: "reply", type: "agentMessage", text: quoteText, phase: null },
+    2,
+    1,
+    "t1",
+  );
+  const html = render(EntryView, {
+    props: { entry, at: "", stamp: "", owner: "/root" },
+  }).body;
+  assert.match(html, /Quoted second line\nWhere did it come from\?<\/p>\s*<\/blockquote>/);
+});
+
+test("reasoning streams visibly and folds only after completion", () => {
   const html = view([{ label: "A thought", body: "Reasoning body.", live: true }], "reasoning");
   assert.match(html, /data-ai-element="reasoning"/);
-  assert.match(html, /data-slot="trace-collapsible-trigger"/);
-  assert.match(html, /aria-expanded="false"/);
-  assert.match(html, /data-slot="trace-collapsible-content"[^>]*hidden/);
+  assert.doesNotMatch(html, /Thinking|data-slot="trace-collapsible-trigger"/);
   assert.match(html, /Reasoning body/);
+  assert.match(view([], "reasoning"), /<article hidden/);
   const empty = view([{ label: "A thought", body: "**A thought**" }], "reasoning");
   assert.match(empty, /data-slot="trace-line"/);
   assert.doesNotMatch(empty, /data-slot="trace-collapsible-trigger"/);
@@ -747,10 +775,11 @@ test("Transcript respects Thoughts modes and filters hidden completed thought se
 
     preferences.setThoughts("collapsed");
     const collapsedHtml = render(Transcript, {
-      props: { entries: [completedThought] },
+      props: { entries: [completedThought, mixedThought] },
     }).body;
     assert.match(collapsedHtml, /Done reasoning/);
     assert.match(collapsedHtml, /aria-expanded="false"/);
+    assert.match(collapsedHtml.split("</button>").at(-1), /Live section/);
 
     preferences.setThoughts("expanded");
     const expandedHtml = render(Transcript, {
@@ -821,7 +850,7 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
     props: { entry: runningCmd, at: "", stamp: "", owner: "/root", workspace: "/repo" },
   }).body;
   assert.match(runningHtml, /sleep 1/);
-  assert.match(runningHtml, />running</);
+  assert.match(runningHtml, />Running</);
   assert.doesNotMatch(runningHtml, /text-negative/);
   assert.doesNotMatch(runningHtml, /exit /);
 
@@ -829,12 +858,13 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
     {
       id: "batch",
       type: "commandExecution",
-      command: "/bin/bash -lc 'cd sub && cat a && cat b'",
+      command: "/bin/bash -lc 'cd sub && cat a && skills-mgr get demo/references/check.md && date'",
       display: {
-        script: "cd sub && cat a && cat b",
+        script: "cd sub && cat a && skills-mgr get demo/references/check.md && date",
         effectiveCwd: "/repo/sub",
-        segments: ["cat a", "cat b"],
-        stepKinds: ["stage", "commit"],
+        segments: ["cat a", "skills-mgr get demo/references/check.md", "date"],
+        stepKinds: ["read", "skill", "run"],
+        stepSubjects: ["a", "demo/references/check.md", null],
       },
       cwd: "/repo",
       status: "failed",
@@ -852,18 +882,19 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
   );
   assert.deepEqual(
     batch.values.map((v) => v.code),
-    ["cat a", "cat b"],
+    ["a", "demo/references/check.md", "date"],
   );
   assert.ok(batch.values.every((v) => v.workdir === "/repo/sub"));
   assert.ok(batch.values.every((value) => !value.tail && value.exitCode == null));
   assert.deepEqual(
     batch.values.map((value) => value.verb),
-    ["Stage", "Commit"],
+    ["Read", "Skill", "Ran"],
   );
   const batchHtml = render(EntryView, {
     props: { entry: batch, at: "", stamp: "", owner: "/root", workspace: "/repo" },
   }).body;
-  assert.match(batchHtml, />Stage<[\s\S]*>Commit</);
+  assert.match(batchHtml, />Read<[\s\S]*>Skill<[\s\S]*>Ran</);
+  assert.doesNotMatch(batchHtml, /cat a|skills-mgr get/);
   assert.doesNotMatch(batchHtml, /last 5 of 6 lines|exit -1/);
 
   // Completed fileChange renders per-file op rows and Source disclosure through EntryView.
@@ -1012,4 +1043,40 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
   }).body;
   assert.match(subHtml, /data-ai-element="subagent"/);
   assert.match(subHtml, /Run tests/);
+
+  const execErr = itemToEntry(
+    {
+      id: "code-mode-error:call-1",
+      type: "functionCallOutput",
+      namespace: "functions",
+      name: "exec",
+      output: "SyntaxError: Unexpected token\n  at cell:1:12",
+    },
+    8,
+    1,
+    "t1",
+  );
+  assert.equal(execErr?.kind, "error");
+  const errHtml = render(EntryView, {
+    props: { entry: execErr, at: "", stamp: "", owner: "/root" },
+  }).body;
+  assert.match(errHtml, /exec script failed/);
+  assert.match(errHtml, /SyntaxError: Unexpected token/);
+  assert.doesNotMatch(errHtml, /functionCallOutput/);
+
+  assert.equal(
+    itemToEntry(
+      {
+        id: "call-2",
+        type: "functionCallOutput",
+        namespace: "functions",
+        name: "other",
+        output: "ok",
+      },
+      9,
+      1,
+      "t1",
+    ),
+    undefined,
+  );
 });

@@ -153,20 +153,26 @@ func (v *View) RenderConversation(width int) Feed {
 	items = append(ordered, held...)
 	clear(held[:cap(held)])
 	v.conversationHeld = held[:0]
-	// On default view, earlier reasoning summaries do not stay in the
-	// transcript once a newer reasoning summary arrives.
+	// Keep only the latest reasoning group within each stretch of work.
+	// A new user message, including a steer in the same turn, ends the stretch.
 	if v.Expansion == 0 {
-		latestAside := -1
-		for k, it := range items {
-			if it.aside && v.hasReasoningContent(it) {
-				latestAside = k
+		firstKept, keptAside := len(items), false
+		for _, it := range slices.Backward(items) {
+			entry := v.entries[it.first]
+			if entry.Agent == "You" || entry.Kind == "user" {
+				keptAside = false
 			}
+			if it.aside {
+				if keptAside || !v.hasReasoningContent(it) {
+					continue
+				}
+				keptAside = true
+			}
+			firstKept--
+			items[firstKept] = it
 		}
 		kept := items[:0]
-		for k, it := range items {
-			if it.aside && k != latestAside {
-				continue
-			}
+		for _, it := range items[firstKept:] {
 			// Hidden reasoning must not split what is now one visible tool run.
 			if n := len(kept); n > 0 && tools(v.entries[kept[n-1].first]) && tools(v.entries[it.first]) {
 				kept[n-1].last = it.last
@@ -174,6 +180,7 @@ func (v *View) RenderConversation(width int) Feed {
 			}
 			kept = append(kept, it)
 		}
+		clear(items[len(kept):])
 		items = kept
 	}
 	traffic := func(it conversationItem) bool {
@@ -418,15 +425,14 @@ func (v *View) conversationLead(index int) bool {
 	return entry.Kind == "text" && strings.TrimSpace(entry.Text) != ""
 }
 
-// hasReasoningContent reports whether a reasoning item renders visible text or
-// a live thinking placeholder.
+// hasReasoningContent reports whether a reasoning item renders visible text.
 func (v *View) hasReasoningContent(it conversationItem) bool {
 	for k := it.first; k <= it.last; k++ {
 		if !v.Visible(v.entries[k]) {
 			continue
 		}
 		for _, block := range v.blocks(k) {
-			if block.Live || activitypresentation.ReasoningSummaryBody(block.Body) != "" {
+			if activitypresentation.ReasoningSummaryBody(block.Body) != "" {
 				return true
 			}
 		}

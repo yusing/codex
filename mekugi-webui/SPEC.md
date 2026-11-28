@@ -37,7 +37,7 @@ Secret prompts (`sudo`/GPG) and native-local filesystem/editor actions remain na
 - **Chat layout & controls**: sidebar lists threads per machine; composer shares `/`, `@`, `$`,
   `!`, presets, model/effort/Fast pickers, inline selection Reference, active-process bar with Stop,
   and Retry/Edit/Discard recovery for rejected submissions. Right panel (sheet on phone) hosts
-  Agents roster, Changes (per-caller composed diffs), and Details; live edits replace the
-  transcript while streaming with independent per-card scrolling.
+  Agents roster, Changes (per-caller composed diffs), and Details; live edits stream
+  beside the transcript, or below it in a narrow pane, with independent per-card scrolling.
 - See [Server, connector and browser guide](../docs/guide/remote.md) for deployment and
   Docker Compose setup.

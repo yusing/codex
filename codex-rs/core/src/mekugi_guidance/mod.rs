@@ -80,8 +80,11 @@ pub(crate) fn shell_guidance(path: &OsStr) -> String {
         write!(description, "\n\n#### `{name}`\n\n{help}")
             .expect("writing to a String cannot fail");
     }
-    write!(description, "\n\n### Source references\n\n{SOURCE_REFERENCE_SYNTAX}")
-        .expect("writing to a String cannot fail");
+    write!(
+        description,
+        "\n\n### Source references\n\n{SOURCE_REFERENCE_SYNTAX}"
+    )
+    .expect("writing to a String cannot fail");
     description
 }
 

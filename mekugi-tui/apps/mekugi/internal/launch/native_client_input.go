@@ -372,7 +372,7 @@ func (c *nativeClient) details(version sessionpresentation.Version, request sess
 	if request.Displayed.ID == "" {
 		request.Displayed = c.event.Frame.View.Displayed
 	}
-	if request.Kind == sessionapi.NativeSkillDetails && request.Agent {
+	if request.Kind == sessionapi.NativeSkillDetails && request.Agent && request.Caller != request.Displayed.Caller {
 		found := false
 		if c.renderer.terminal != nil {
 			for _, row := range c.renderer.terminal.Agents.Roster() {

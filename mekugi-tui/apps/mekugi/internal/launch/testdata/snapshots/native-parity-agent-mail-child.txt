@@ -1,0 +1,20 @@
+✉ main → worker                                                                22:15:01
+│ Please include the supporting work.
+
+● worker                                                                       22:15:01
+┃ Summary
+┃ ───────
+┃ The parser checks pass.
+┃ 
+┃ Details
+┃ ───────
+┃ The supporting work stays in the reply.
+
+
+
+Read-only • ↑ back to parent Main
+────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • worker • ◐ 1 • /tmp/ws • ↓ roster • → diff • ctrl+e view

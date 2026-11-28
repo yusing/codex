@@ -320,6 +320,9 @@ func (p *Painter) DialogPageTitle(block Block, now time.Time, width int) string 
 		switch block.Kind {
 		case "summary":
 			verb, _ = p.thinkingHeader(block, max(1, width-7))
+			if verb == "" {
+				verb = "Reasoning"
+			}
 		case "final":
 			verb = "Answer"
 		case "error":

@@ -16,19 +16,17 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
-use codex_apply_patch::Hunk;
+use crate::tools::handlers::live_diff::{
+    ArgumentPreview, EditKind, MAX_STREAM_FILE_BYTES, MAX_STREAM_FILES, PatchPreview,
+    ProjectedEdit, patch_edits,
+};
 use codex_apply_patch::StreamingPatchParser;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::FileChange;
-use codex_protocol::protocol::PatchApplyUpdatedEvent;
 
 use crate::function_tool::FunctionCallError;
-use crate::session::turn_context::TurnContext;
+use crate::session::step_context::StepContext;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 
 const SHELL_EDIT_STREAM_BUFFER_INTERVAL: Duration = Duration::from_millis(100);
-const MAX_STREAM_FILES: usize = 32;
-const MAX_STREAM_FILE_BYTES: usize = 128 * 1024;
 
 #[derive(Default)]
 struct ThrottledPatchEmitter {
@@ -49,8 +47,8 @@ impl ThrottledPatchEmitter {
     fn emit(
         &mut self,
         force: bool,
-        snapshot: impl FnOnce() -> HashMap<PathBuf, FileChange>,
-    ) -> Option<EventMsg> {
+        snapshot: impl FnOnce() -> HashMap<PathBuf, ProjectedEdit>,
+    ) -> Option<PatchPreview> {
         if !self.dirty {
             return None;
         }
@@ -68,10 +66,7 @@ impl ThrottledPatchEmitter {
             return None;
         }
         self.last_sent_at = Some(now);
-        Some(EventMsg::PatchApplyUpdated(PatchApplyUpdatedEvent {
-            call_id,
-            changes,
-        }))
+        Some(PatchPreview { call_id, changes })
     }
 }
 
@@ -83,16 +78,31 @@ pub(crate) struct ExecCommandArgumentDiffConsumer {
 }
 
 impl ToolArgumentDiffConsumer for ExecCommandArgumentDiffConsumer {
-    fn consume_diff(&mut self, turn: &TurnContext, call_id: String, diff: &str) -> Vec<EventMsg> {
+    fn consume_diff(
+        &mut self,
+        step: &StepContext,
+        call_id: String,
+        diff: &str,
+    ) -> Vec<ArgumentPreview> {
         self.emitter.set_call_id(call_id);
         let projector = self.projector.get_or_insert_with(|| {
-            #[allow(deprecated)]
-            let cwd = turn.cwd.as_path();
-            ShellEditProjector::new(cwd)
+            ShellEditProjector::new(
+                &step
+                    .environments
+                    .primary()
+                    .map(|env| env.selection.cwd.to_path_buf())
+                    .unwrap_or_default(),
+            )
         });
         let (cmd_chunk, workdir) = self.json.push(diff);
         if let Some(dir) = workdir {
             projector.set_workdir(Path::new(&dir));
+        }
+        if self.json.state == JsonState::Complete {
+            projector
+                .environment_id
+                .clone_from(&self.json.environment_id);
+            projector.resolve_location();
         }
         if !cmd_chunk.is_empty() {
             projector.push(&cmd_chunk);
@@ -104,12 +114,13 @@ impl ToolArgumentDiffConsumer for ExecCommandArgumentDiffConsumer {
             return Vec::new();
         };
         self.emitter
-            .emit(false, || projector.snapshot())
+            .emit(false, || projector.snapshot_entries())
+            .map(ArgumentPreview::Patch)
             .into_iter()
             .collect()
     }
 
-    fn finish(&mut self) -> Result<Vec<EventMsg>, FunctionCallError> {
+    fn finish(&mut self) -> Result<Vec<ArgumentPreview>, FunctionCallError> {
         if let Some(projector) = self.projector.as_mut() {
             projector.finish();
             if projector.take_dirty() {
@@ -121,7 +132,8 @@ impl ToolArgumentDiffConsumer for ExecCommandArgumentDiffConsumer {
         };
         Ok(self
             .emitter
-            .emit(true, || projector.snapshot())
+            .emit(true, || projector.snapshot_entries())
+            .map(ArgumentPreview::Patch)
             .into_iter()
             .collect())
     }
@@ -138,7 +150,7 @@ enum ActiveCodeModeOp {
     },
     Patch {
         parser: StreamingPatchParser,
-        changes: HashMap<PathBuf, FileChange>,
+        changes: HashMap<PathBuf, ProjectedEdit>,
         aborted: bool,
     },
 }
@@ -148,7 +160,7 @@ pub(crate) struct CodeModeEditProjector {
     base_cwd: Option<PathBuf>,
     emitter: ThrottledPatchEmitter,
     js: JsNestedEditScanner,
-    committed: HashMap<PathBuf, FileChange>,
+    committed: HashMap<PathBuf, ProjectedEdit>,
     active: Option<ActiveCodeModeOp>,
 }
 
@@ -168,7 +180,7 @@ impl CodeModeEditProjector {
         cwd: &Path,
         call_id: String,
         diff: &str,
-    ) -> Option<EventMsg> {
+    ) -> Option<PatchPreview> {
         self.emitter.set_call_id(call_id);
         self.base_cwd.get_or_insert_with(|| cwd.to_path_buf());
         for event in self.js.push(diff) {
@@ -208,7 +220,20 @@ impl CodeModeEditProjector {
                     }
                 }
                 JsEditEvent::ExecCallEnd => {
+                    if let Some(projector) = self.active_shell_mut() {
+                        projector.resolve_location();
+                    }
                     self.finalize_active();
+                }
+                JsEditEvent::ExecEnvironment(id) => {
+                    if let Some(projector) = self.active_shell_mut() {
+                        projector.environment_id = Some(id);
+                    }
+                }
+                JsEditEvent::ExecUnresolved => {
+                    if let Some(projector) = self.active_shell_mut() {
+                        projector.ambiguous_location = true;
+                    }
                 }
                 JsEditEvent::ApplyPatchStart => {
                     self.finalize_active();
@@ -228,7 +253,9 @@ impl CodeModeEditProjector {
                         && let Ok(hunks) = parser.push_delta(&chunk)
                         && !hunks.is_empty()
                     {
-                        for (path, change) in hunks_to_file_changes(&hunks, base) {
+                        for (path, change) in
+                            patch_edits(hunks, parser.environment_id(), Some(base))
+                        {
                             changes.insert(path, change);
                         }
                         self.emitter.mark_dirty();
@@ -256,7 +283,7 @@ impl CodeModeEditProjector {
             .emit(false, || snapshot_code_mode(committed, active))
     }
 
-    pub(crate) fn finish(&mut self) -> Option<EventMsg> {
+    pub(crate) fn finish(&mut self) -> Option<PatchPreview> {
         self.finalize_active();
         let committed = &self.committed;
         let active = &self.active;
@@ -294,7 +321,7 @@ impl CodeModeEditProjector {
                     && !hunks.is_empty()
                 {
                     let base = self.base_cwd.as_deref().unwrap_or_else(|| Path::new(""));
-                    for (path, change) in hunks_to_file_changes(&hunks, base) {
+                    for (path, change) in patch_edits(hunks, parser.environment_id(), Some(base)) {
                         changes.insert(path, change);
                     }
                     self.emitter.mark_dirty();
@@ -308,9 +335,9 @@ impl CodeModeEditProjector {
 }
 
 fn snapshot_code_mode(
-    committed: &HashMap<PathBuf, FileChange>,
+    committed: &HashMap<PathBuf, ProjectedEdit>,
     active: &Option<ActiveCodeModeOp>,
-) -> HashMap<PathBuf, FileChange> {
+) -> HashMap<PathBuf, ProjectedEdit> {
     let mut out = committed.clone();
     match active {
         Some(ActiveCodeModeOp::Shell {
@@ -331,16 +358,24 @@ fn snapshot_code_mode(
     out
 }
 
-fn merge_shell_snapshot(target: &mut HashMap<PathBuf, FileChange>, shell: &ShellEditProjector) {
+fn merge_shell_snapshot(target: &mut HashMap<PathBuf, ProjectedEdit>, shell: &ShellEditProjector) {
     let entries = shell.snapshot_entries();
     let mut ordered: Vec<_> = entries.into_iter().collect();
     if target.len() + ordered.len() > MAX_STREAM_FILES {
         ordered.sort_by(|(a, _), (b, _)| a.cmp(b));
     }
-    for (path, (change, append_only)) in ordered {
-        if append_only
-            && let FileChange::Add { content: added } = &change
-            && let Some(FileChange::Add { content: existing }) = target.get_mut(&path)
+    for (path, change) in ordered {
+        if let EditKind::Write {
+            content: added,
+            append: true,
+        } = &change.kind
+            && let Some(ProjectedEdit {
+                kind: EditKind::Write {
+                    content: existing, ..
+                },
+                source,
+            }) = target.get_mut(&path)
+            && *source == change.source
         {
             let remaining = MAX_STREAM_FILE_BYTES.saturating_sub(existing.len());
             if added.len() <= remaining {
@@ -361,8 +396,8 @@ fn merge_shell_snapshot(target: &mut HashMap<PathBuf, FileChange>, shell: &Shell
 }
 
 fn merge_capped_changes(
-    target: &mut HashMap<PathBuf, FileChange>,
-    incoming: HashMap<PathBuf, FileChange>,
+    target: &mut HashMap<PathBuf, ProjectedEdit>,
+    incoming: HashMap<PathBuf, ProjectedEdit>,
 ) {
     let mut ordered: Vec<_> = incoming.into_iter().collect();
     if target.len() + ordered.len() > MAX_STREAM_FILES {
@@ -383,75 +418,13 @@ fn join_path(base: &Path, target: &Path) -> PathBuf {
     }
 }
 
-fn write_unified_hunk<S: AsRef<str>>(
-    out: &mut String,
-    old_lines: &[S],
-    new_lines: &[S],
-    context: Option<&str>,
-) {
-    let old_count = old_lines.len();
-    let new_count = new_lines.len();
-    match context {
-        Some(ctx) => out.push_str(&format!("@@ -1,{old_count} +1,{new_count} @@ {ctx}\n")),
-        None => out.push_str(&format!("@@ -1,{old_count} +1,{new_count} @@\n")),
-    }
-    for line in old_lines {
-        out.push('-');
-        out.push_str(line.as_ref());
-        out.push('\n');
-    }
-    for line in new_lines {
-        out.push('+');
-        out.push_str(line.as_ref());
-        out.push('\n');
-    }
-}
-
-fn hunks_to_file_changes(hunks: &[Hunk], base_cwd: &Path) -> HashMap<PathBuf, FileChange> {
-    hunks
-        .iter()
-        .map(|hunk| {
-            let raw = match hunk {
-                Hunk::AddFile { path, .. }
-                | Hunk::DeleteFile { path }
-                | Hunk::UpdateFile { path, .. } => path.as_path(),
-            };
-            let path = join_path(base_cwd, raw);
-            let change = match hunk {
-                Hunk::AddFile { contents, .. } => FileChange::Add {
-                    content: contents.clone(),
-                },
-                Hunk::DeleteFile { .. } => FileChange::Delete {
-                    content: String::new(),
-                },
-                Hunk::UpdateFile {
-                    chunks, move_path, ..
-                } => {
-                    let mut diff = String::new();
-                    for chunk in chunks {
-                        write_unified_hunk(
-                            &mut diff,
-                            &chunk.old_lines,
-                            &chunk.new_lines,
-                            chunk.change_context.as_deref(),
-                        );
-                    }
-                    FileChange::Update {
-                        unified_diff: diff,
-                        move_path: move_path.clone(),
-                    }
-                }
-            };
-            (path, change)
-        })
-        .collect()
-}
-
 enum JsEditEvent {
     ExecCallStart,
     ExecCmdStart,
     ExecCmdChunk(String),
     ExecWorkdir(String),
+    ExecEnvironment(String),
+    ExecUnresolved,
     ExecCmdEnd,
     ExecCallAbort,
     ExecCallEnd,
@@ -690,7 +663,7 @@ fn push_js_string_char(
             field, workdir_buf, ..
         } => match field {
             TargetField::Cmd => cmd_buf.push(ch),
-            TargetField::Workdir => workdir_buf.push(ch),
+            TargetField::Workdir | TargetField::Environment => workdir_buf.push(ch),
             TargetField::Other => {}
         },
     }
@@ -714,7 +687,7 @@ fn abort_js_string_target(
                 cmd_buf.clear();
                 events.push(JsEditEvent::ExecCallAbort);
             }
-            TargetField::Workdir => {
+            TargetField::Workdir | TargetField::Environment => {
                 workdir_buf.clear();
                 events.push(JsEditEvent::ExecCallAbort);
             }
@@ -919,7 +892,9 @@ impl JsNestedEditScanner {
                                         if had_dollar {
                                             match field {
                                                 TargetField::Cmd => cmd_buf.push('$'),
-                                                TargetField::Workdir => workdir_buf.push('$'),
+                                                TargetField::Workdir | TargetField::Environment => {
+                                                    workdir_buf.push('$')
+                                                }
                                                 TargetField::Other => {}
                                             }
                                         }
@@ -930,6 +905,10 @@ impl JsNestedEditScanner {
                                                 ));
                                             }
                                             events.push(JsEditEvent::ExecCmdEnd);
+                                        } else if *field == TargetField::Environment {
+                                            events.push(JsEditEvent::ExecEnvironment(
+                                                std::mem::take(workdir_buf),
+                                            ));
                                         } else if *field == TargetField::Workdir
                                             && !workdir_buf.is_empty()
                                         {
@@ -973,6 +952,14 @@ impl JsNestedEditScanner {
                     pending_key,
                 } => {
                     if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
+                        if *brace_depth == 1
+                            && matches!(
+                                expect_value_for,
+                                Some(TargetField::Workdir | TargetField::Environment)
+                            )
+                        {
+                            events.push(JsEditEvent::ExecUnresolved);
+                        }
                         if *brace_depth == 1 && expect_value_for.is_none() {
                             pending_key.push(ch);
                         }
@@ -997,6 +984,7 @@ impl JsNestedEditScanner {
                             *expect_value_for = Some(match key.as_str() {
                                 "cmd" => TargetField::Cmd,
                                 "workdir" => TargetField::Workdir,
+                                "environment_id" => TargetField::Environment,
                                 _ => TargetField::Other,
                             });
                         }
@@ -1041,6 +1029,15 @@ impl JsNestedEditScanner {
                         }
                         _ if ch.is_whitespace() => {}
                         _ => {
+                            if *brace_depth == 1
+                                && (ch == '.'
+                                    || matches!(
+                                        expect_value_for,
+                                        Some(TargetField::Workdir | TargetField::Environment)
+                                    ))
+                            {
+                                events.push(JsEditEvent::ExecUnresolved);
+                            }
                             if *brace_depth == 1 && expect_value_for.is_some() {
                                 *expect_value_for = None;
                             }
@@ -1143,6 +1140,7 @@ fn js_keyword_allows_regex(ident: &str) -> bool {
 
 #[derive(Default)]
 struct JsonCmdExtractor {
+    environment_id: Option<String>,
     depth: usize,
     state: JsonState,
     key_buf: String,
@@ -1161,12 +1159,14 @@ enum JsonState {
     InTargetString(TargetField),
     SkipValue,
     InSkipString,
+    Complete,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TargetField {
     Cmd,
     Workdir,
+    Environment,
     Other,
 }
 
@@ -1189,7 +1189,7 @@ impl JsonCmdExtractor {
                     }
                     '}' => {
                         self.depth = self.depth.saturating_sub(1);
-                        self.state = JsonState::Start;
+                        self.state = JsonState::Complete;
                     }
                     _ => {}
                 },
@@ -1203,6 +1203,7 @@ impl JsonCmdExtractor {
                         let field = match self.key_buf.as_str() {
                             "cmd" => TargetField::Cmd,
                             "workdir" => TargetField::Workdir,
+                            "environment_id" => TargetField::Environment,
                             _ => TargetField::Other,
                         };
                         self.state = JsonState::ExpectValue(field);
@@ -1213,8 +1214,11 @@ impl JsonCmdExtractor {
                         continue;
                     }
                     match (field, ch) {
-                        (TargetField::Cmd | TargetField::Workdir, '"') => {
-                            if field == TargetField::Workdir {
+                        (
+                            TargetField::Cmd | TargetField::Workdir | TargetField::Environment,
+                            '"',
+                        ) => {
+                            if matches!(field, TargetField::Workdir | TargetField::Environment) {
                                 self.workdir_buf.clear();
                             }
                             self.state = JsonState::InTargetString(field);
@@ -1235,11 +1239,16 @@ impl JsonCmdExtractor {
                     match self.escape.feed(EscapeDialect::Json, ch, '"') {
                         DecodedEscape::Char(decoded) => match field {
                             TargetField::Cmd => cmd_out.push(decoded),
-                            TargetField::Workdir => self.workdir_buf.push(decoded),
+                            TargetField::Workdir | TargetField::Environment => {
+                                self.workdir_buf.push(decoded)
+                            }
                             TargetField::Other => {}
                         },
                         DecodedEscape::CloseQuote => {
-                            if field == TargetField::Workdir && !self.workdir_buf.is_empty() {
+                            if field == TargetField::Environment {
+                                self.environment_id = Some(std::mem::take(&mut self.workdir_buf));
+                            } else if field == TargetField::Workdir && !self.workdir_buf.is_empty()
+                            {
                                 completed_workdir = Some(std::mem::take(&mut self.workdir_buf));
                             }
                             self.state = JsonState::SkipValue;
@@ -1261,7 +1270,7 @@ impl JsonCmdExtractor {
                     '}' | ']' => {
                         self.depth = self.depth.saturating_sub(1);
                         if self.depth == 0 {
-                            self.state = JsonState::Start;
+                            self.state = JsonState::Complete;
                         }
                     }
                     ',' if self.depth == 1 => {
@@ -1269,6 +1278,7 @@ impl JsonCmdExtractor {
                     }
                     _ => {}
                 },
+                JsonState::Complete => {}
             }
         }
         (cmd_out, completed_workdir)
@@ -1280,6 +1290,10 @@ impl JsonCmdExtractor {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct ShellEditProjector {
+    workdir: PathBuf,
+    location_resolved: bool,
+    ambiguous_location: bool,
+    environment_id: Option<String>,
     base_cwd: PathBuf,
     script_cwd: PathBuf,
     mode: ShellMode,
@@ -1295,19 +1309,21 @@ enum StreamedFile {
         append_only: bool,
     },
     Update {
-        committed: String,
-        partial: String,
+        committed: Vec<(String, String)>,
+        bytes: usize,
+        allow_context: bool,
+        partial: Option<(String, String)>,
     },
 }
 
 impl StreamedFile {
-    fn to_file_change(&self, extra_tail: Option<&str>) -> Option<FileChange> {
+    fn edit_kind(&self, extra_tail: Option<&str>) -> Option<EditKind> {
         match self {
             Self::Add {
                 committed,
                 partial,
                 allow_empty,
-                ..
+                append_only,
             } => {
                 let tail = extra_tail.unwrap_or("");
                 if !*allow_empty && committed.is_empty() && partial.is_empty() && tail.is_empty() {
@@ -1318,20 +1334,16 @@ impl StreamedFile {
                 content.push_str(committed);
                 content.push_str(partial);
                 content.push_str(tail);
-                Some(FileChange::Add { content })
-            }
-            Self::Update { committed, partial } => {
-                if committed.is_empty() && partial.is_empty() {
-                    return None;
-                }
-                let mut unified_diff = String::with_capacity(committed.len() + partial.len());
-                unified_diff.push_str(committed);
-                unified_diff.push_str(partial);
-                Some(FileChange::Update {
-                    unified_diff,
-                    move_path: None,
+                Some(EditKind::Write {
+                    content,
+                    append: *append_only,
                 })
             }
+            Self::Update {
+                committed, partial, ..
+            } => Some(EditKind::Replace(
+                committed.iter().chain(partial.iter()).cloned().collect(),
+            )),
         }
     }
 }
@@ -1365,6 +1377,10 @@ impl ShellEditProjector {
     pub(crate) fn new(base_cwd: &Path) -> Self {
         Self {
             base_cwd: base_cwd.to_path_buf(),
+            workdir: PathBuf::new(),
+            location_resolved: false,
+            ambiguous_location: false,
+            environment_id: None,
             script_cwd: PathBuf::new(),
             mode: ShellMode::Scan {
                 line: String::new(),
@@ -1382,13 +1398,19 @@ impl ShellEditProjector {
     }
 
     pub(crate) fn set_workdir(&mut self, dir: &Path) {
-        let next = join_path(&self.base_cwd, dir);
-        if next != self.base_cwd {
-            self.base_cwd = next;
-            if !self.files.is_empty() || matches!(self.mode, ShellMode::Heredoc { .. }) {
-                self.dirty = true;
-            }
+        self.workdir = dir.to_path_buf();
+        self.mark_location_dirty();
+    }
+
+    fn resolve_location(&mut self) {
+        if !self.location_resolved {
+            self.location_resolved = true;
+            self.mark_location_dirty();
         }
+    }
+
+    fn mark_location_dirty(&mut self) {
+        self.dirty |= !self.files.is_empty() || matches!(self.mode, ShellMode::Heredoc { .. });
     }
 
     pub(crate) fn push(&mut self, chunk: &str) {
@@ -1451,14 +1473,15 @@ impl ShellEditProjector {
         std::mem::replace(&mut self.dirty, false)
     }
 
-    pub(crate) fn snapshot(&self) -> HashMap<PathBuf, FileChange> {
+    #[cfg(test)]
+    fn snapshot(&self) -> HashMap<PathBuf, codex_protocol::protocol::FileChange> {
         self.snapshot_entries()
             .into_iter()
-            .map(|(path, (change, _))| (path, change))
+            .map(|(p, e)| (p, e.kind.render(None)))
             .collect()
     }
 
-    pub(crate) fn snapshot_entries(&self) -> HashMap<PathBuf, (FileChange, bool)> {
+    fn snapshot_entries(&self) -> HashMap<PathBuf, ProjectedEdit> {
         let active_heredoc: Option<(&Path, &str, bool)> = match &self.mode {
             ShellMode::Heredoc {
                 path,
@@ -1481,15 +1504,18 @@ impl ShellEditProjector {
         let mut out = HashMap::new();
         for (raw_path, file) in &self.files {
             let tail = active_heredoc.and_then(|(p, t, _)| (p == raw_path.as_path()).then_some(t));
-            if let Some(change) = file.to_file_change(tail) {
-                let append_only = matches!(
+            if let Some(kind) = file.edit_kind(tail) {
+                let mut edit = self.project_edit(raw_path, kind);
+                if matches!(
                     file,
-                    StreamedFile::Add {
-                        append_only: true,
+                    StreamedFile::Update {
+                        allow_context: false,
                         ..
                     }
-                );
-                out.insert(self.resolve_abs(raw_path), (change, append_only));
+                ) {
+                    edit.source = None;
+                }
+                out.insert(self.resolve_abs(raw_path), edit);
             }
         }
         if let Some((raw_path, tail, append_only)) = active_heredoc
@@ -1498,11 +1524,12 @@ impl ShellEditProjector {
         {
             out.insert(
                 self.resolve_abs(raw_path),
-                (
-                    FileChange::Add {
+                self.project_edit(
+                    raw_path,
+                    EditKind::Write {
                         content: tail.to_owned(),
+                        append: append_only,
                     },
-                    append_only,
                 ),
             );
         }
@@ -1510,7 +1537,19 @@ impl ShellEditProjector {
     }
 
     fn resolve_abs(&self, raw_path: &Path) -> PathBuf {
-        join_path(&self.base_cwd, raw_path)
+        let path = self.workdir.join(raw_path);
+        if self.environment_id.is_some() {
+            path
+        } else {
+            join_path(&self.base_cwd, &path)
+        }
+    }
+
+    fn project_edit(&self, path: &Path, kind: EditKind) -> ProjectedEdit {
+        // A later environment argument can change the baseline even for absolute paths.
+        let source = (!self.ambiguous_location && self.location_resolved)
+            .then(|| (self.environment_id.clone(), self.workdir.join(path)));
+        ProjectedEdit { source, kind }
     }
 
     fn resolve_script_target(&self, target: &str) -> PathBuf {
@@ -2091,6 +2130,7 @@ struct PythonEditProjector {
     call_stack: Vec<PyCallContext>,
     replace_touched: HashSet<PathBuf>,
     written_paths: HashSet<PathBuf>,
+    unmatched_destination: HashSet<PathBuf>,
     stmt: Vec<PyTok>,
     paren_depth: usize,
     lex: PyLexState,
@@ -2166,6 +2206,7 @@ impl PythonEditProjector {
             call_stack: Vec::new(),
             replace_touched: HashSet::new(),
             written_paths: HashSet::new(),
+            unmatched_destination: HashSet::new(),
             stmt: Vec::new(),
             paren_depth: 0,
             lex: PyLexState::Normal {
@@ -2191,10 +2232,26 @@ impl PythonEditProjector {
                 }
                 PyStreamOp::ReplaceOld { path, old }
                 | PyStreamOp::ReplaceAwaitNew { path, old } => {
-                    write_replace_hunk(files, &path, &old, "", true, dirty);
+                    write_replace_hunk(
+                        files,
+                        &self.unmatched_destination,
+                        &path,
+                        &old,
+                        "",
+                        true,
+                        dirty,
+                    );
                 }
                 PyStreamOp::ReplaceNew { path, old, new } => {
-                    write_replace_hunk(files, &path, &old, &new, true, dirty);
+                    write_replace_hunk(
+                        files,
+                        &self.unmatched_destination,
+                        &path,
+                        &old,
+                        &new,
+                        true,
+                        dirty,
+                    );
                 }
                 PyStreamOp::ReplaceAwaitOld { .. } => {}
             }
@@ -2280,6 +2337,7 @@ impl PythonEditProjector {
                                     c.encode_utf8(&mut tmp),
                                     is_streaming,
                                     &mut self.active_op,
+                                    &self.unmatched_destination,
                                     files,
                                     dirty,
                                 );
@@ -2294,6 +2352,7 @@ impl PythonEditProjector {
                                     slice,
                                     is_streaming,
                                     &mut self.active_op,
+                                    &self.unmatched_destination,
                                     files,
                                     dirty,
                                 );
@@ -2324,6 +2383,7 @@ impl PythonEditProjector {
                                 slice,
                                 is_streaming,
                                 &mut self.active_op,
+                                &self.unmatched_destination,
                                 files,
                                 dirty,
                             );
@@ -2342,6 +2402,7 @@ impl PythonEditProjector {
                             ch.encode_utf8(&mut tmp),
                             is_streaming,
                             &mut self.active_op,
+                            &self.unmatched_destination,
                             files,
                             dirty,
                         );
@@ -2406,7 +2467,7 @@ impl PythonEditProjector {
             '(' => {
                 self.paren_depth += 1;
                 self.stmt.push(PyTok::LParen);
-                self.check_call_open();
+                self.check_call_open(files, dirty);
             }
             ')' => {
                 self.paren_depth = self.paren_depth.saturating_sub(1);
@@ -2464,7 +2525,7 @@ impl PythonEditProjector {
         }
     }
 
-    fn check_call_open(&mut self) {
+    fn check_call_open(&mut self, files: &mut HashMap<PathBuf, StreamedFile>, dirty: &mut bool) {
         let n = self.stmt.len();
         let mut ctx = PyCallContext::Neutral;
         if n >= 2
@@ -2495,9 +2556,19 @@ impl PythonEditProjector {
                 }
                 "replace" => {
                     if !self.in_readonly_sink() {
-                        let target = self
-                            .enclosing_write_target()
-                            .or_else(|| self.resolve_text_expr(receiver_tokens));
+                        let source = self.resolve_text_expr(receiver_tokens);
+                        let destination = self.enclosing_write_target();
+                        let target = destination.clone().or_else(|| source.clone());
+                        if let Some(dest) = destination
+                            && Some(&dest) != source.as_ref()
+                        {
+                            if let Some(StreamedFile::Update { allow_context, .. }) =
+                                files.get_mut(&dest)
+                            {
+                                *dirty |= std::mem::replace(allow_context, false);
+                            }
+                            self.unmatched_destination.insert(dest);
+                        }
                         if let Some(path) = target {
                             self.replace_touched.insert(path.clone());
                             self.active_op = Some(PyStreamOp::ReplaceAwaitOld { path });
@@ -2554,7 +2625,15 @@ impl PythonEditProjector {
                     self.active_op = Some(PyStreamOp::ReplaceAwaitNew { path, old });
                 }
                 Some(PyStreamOp::ReplaceNew { path, old, new }) => {
-                    write_replace_hunk(files, &path, &old, &new, true, dirty);
+                    write_replace_hunk(
+                        files,
+                        &self.unmatched_destination,
+                        &path,
+                        &old,
+                        &new,
+                        true,
+                        dirty,
+                    );
                 }
                 other => {
                     self.active_op = other;
@@ -2716,6 +2795,7 @@ fn push_py_str_slice(
     slice: &str,
     is_streaming: bool,
     active_op: &mut Option<PyStreamOp>,
+    unmatched_destination: &HashSet<PathBuf>,
     files: &mut HashMap<PathBuf, StreamedFile>,
     dirty: &mut bool,
 ) {
@@ -2750,40 +2830,22 @@ fn push_py_str_slice(
         Some(PyStreamOp::ReplaceOld { path, old }) => {
             if old.len() + slice.len() <= MAX_STREAM_FILE_BYTES {
                 old.push_str(slice);
-                write_replace_hunk(files, path, old, "", false, dirty);
+                write_replace_hunk(files, unmatched_destination, path, old, "", false, dirty);
             }
         }
         Some(PyStreamOp::ReplaceNew { path, old, new }) => {
             if new.len() + slice.len() <= MAX_STREAM_FILE_BYTES {
                 new.push_str(slice);
-                write_replace_hunk(files, path, old, new, false, dirty);
+                write_replace_hunk(files, unmatched_destination, path, old, new, false, dirty);
             }
         }
         _ => {}
     }
 }
 
-fn split_hunk_lines(text: &str) -> Vec<&str> {
-    if text.is_empty() {
-        Vec::new()
-    } else {
-        text.strip_suffix('\n')
-            .unwrap_or(text)
-            .split('\n')
-            .collect()
-    }
-}
-
-fn format_replace_hunk(old: &str, new: &str) -> String {
-    let old_lines = split_hunk_lines(old);
-    let new_lines = split_hunk_lines(new);
-    let mut out = String::new();
-    write_unified_hunk(&mut out, &old_lines, &new_lines, None);
-    out
-}
-
 fn write_replace_hunk(
     files: &mut HashMap<PathBuf, StreamedFile>,
+    unmatched_destination: &HashSet<PathBuf>,
     path: &Path,
     old: &str,
     new: &str,
@@ -2796,21 +2858,30 @@ fn write_replace_hunk(
     let entry = files
         .entry(path.to_path_buf())
         .or_insert_with(|| StreamedFile::Update {
-            committed: String::new(),
-            partial: String::new(),
+            committed: Vec::new(),
+            partial: None,
+            bytes: 0,
+            allow_context: !unmatched_destination.contains(path),
         });
-    if let StreamedFile::Update { committed, partial } = entry {
-        let hunk = format_replace_hunk(old, new);
-        if commit {
-            partial.clear();
-            if committed.len() + hunk.len() <= MAX_STREAM_FILE_BYTES {
-                committed.push_str(&hunk);
-                *dirty = true;
-            }
-        } else if committed.len() + hunk.len() <= MAX_STREAM_FILE_BYTES && *partial != hunk {
-            *partial = hunk;
-            *dirty = true;
+    if let StreamedFile::Update {
+        committed,
+        partial,
+        bytes,
+        ..
+    } = entry
+    {
+        let size = old.len() + new.len() + 1;
+        if *bytes + size > MAX_STREAM_FILE_BYTES {
+            return;
         }
+        if commit {
+            partial.take();
+            committed.push((old.to_owned(), new.to_owned()));
+            *bytes += size;
+        } else {
+            *partial = Some((old.to_owned(), new.to_owned()));
+        }
+        *dirty = true;
     }
 }
 

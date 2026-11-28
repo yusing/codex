@@ -60,13 +60,14 @@ type directPendingServerRequest struct {
 type directItemKey struct{ thread, item string }
 
 type directItemRecord struct {
-	id       string
-	threadID string
-	turnID   string
-	itemType string
-	seq      uint64
-	entry    activity.Entry
-	output   string
+	id               string
+	threadID         string
+	turnID           string
+	itemType         string
+	seq              uint64
+	entry            activity.Entry
+	output           string
+	reasoningSummary []string
 }
 
 type directThreadUsage struct {
@@ -207,6 +208,8 @@ type directNativeConnection struct {
 	sideFirstTurn      string
 	activeTurnSince    time.Time
 	sideTurnSince      time.Time
+	mainTurnStatus     sessionpresentation.Label
+	sideTurnStatus     sessionpresentation.Label
 	sideReplaceTask    string
 	sideModel          string
 	sideEffort         string
@@ -233,6 +236,7 @@ type directNativeConnection struct {
 	archived           bool
 	threadUsage        map[string]directThreadUsage
 	threadSkills       map[string]activity.SkillSet
+	threadSkillReads   map[string]activity.SkillSet
 	rateLimits         [2]*sessionpresentation.CaptionLimit
 	prediction         directPrediction
 	feedbackText       string
@@ -492,6 +496,7 @@ func (c *directNativeConnection) applyThreadBootstrapLocked(response directThrea
 	if c.mainThread != threadID {
 		c.resetPredictionLocked("")
 		c.activeTurn = ""
+		c.mainTurnStatus = sessionpresentation.Label{}
 		c.busy = c.sideActiveTurn != ""
 		c.archived = false
 		c.title = name
@@ -545,8 +550,16 @@ func (c *directNativeConnection) applyThreadBootstrapLocked(response directThrea
 	}
 	c.threadCallers[threadID] = "/root"
 	c.resumeView = nil
-	if turns := response.Thread.Turns; len(turns) != 0 && turns[len(turns)-1].Status == "completed" {
-		c.resetPredictionLocked(turns[len(turns)-1].ID)
+	if turns := response.Thread.Turns; len(turns) != 0 {
+		last := turns[len(turns)-1]
+		if last.Status == "inProgress" {
+			c.setActiveInputTurnLocked(threadID, last.ID, last.StartedAt)
+		} else if c.activeTurn == "" {
+			c.mainTurnStatus = directFinishedTurnStatus(last.Status, last.DurationMS)
+			if last.Status == "completed" {
+				c.resetPredictionLocked(last.ID)
+			}
+		}
 	}
 }
 
@@ -692,19 +705,27 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		})
 	}
 
-	var composerStatus sessionpresentation.Label
+	composerStatus := c.mainTurnStatus
+	since := c.activeTurnSince
+	if input == c.sideThread && c.sideThread != "" {
+		composerStatus, since = c.sideTurnStatus, c.sideTurnSince
+	}
 	if c.activeTurnForLocked(input) != "" {
-		since := c.activeTurnSince
-		if input == c.sideThread {
-			since = c.sideTurnSince
-		}
 		composerStatus = sessionpresentation.Label{Text: "Working", Running: true, Started: since}
+	}
+	pending := conversation.PendingView{
+		CanSteer: c.activeTurnForLocked(input) != "" && len(queue.waiting) > 0,
+		Waiting:  c.pendingSteersLocked(input),
+		Queued:   slices.Clone(queue.pending),
+	}
+	if len(pending.Waiting) != 0 {
+		pending.Reason = conversation.Steering
 	}
 	view := sessionpresentation.View{
 		DisplayedWorkspace: c.workspace,
 		Info: sessionpresentation.MainInfo{
 			Workspace:      c.workspace,
-			Skills:         slices.Clone(c.threadSkills[c.mainThread]),
+			Skills:         c.loadedSkillsLocked(c.mainThread),
 			Title:          c.title,
 			BackendVersion: c.wire.UserAgent(),
 			Caller:         mainCaller,
@@ -724,7 +745,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 			Session:   composerStatus,
 			Composer:  composerStatus,
 			Processes: len(c.processes),
-			Animating: c.busy,
+			Animating: c.busy || len(c.processes) > 0,
 		},
 		Caption: sessionpresentation.Caption{
 			Model:         captionModel,
@@ -742,11 +763,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 			Items:         captionItems,
 			Limits:        directCaptionLimits(c.rateLimits),
 		},
-		Pending: conversation.PendingView{
-			CanSteer: c.activeTurnForLocked(input) != "" && len(queue.waiting) > 0,
-			Waiting:  c.pendingSteersLocked(input),
-			Queued:   slices.Clone(queue.pending),
-		},
+		Pending: pending,
 		Draft: conversation.DraftView{
 			Available:  c.mainThread != "" && c.resumeView == nil,
 			Prediction: c.prediction.text,
@@ -763,7 +780,9 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		view.Status.SetFeedback(sessionpresentation.Label{Text: c.feedbackText, Alert: c.feedbackAlert}, c.feedbackRev)
 	}
 	if c.sideThread != "" {
-		view.Side = &sessionpresentation.SideToken{ID: 1, Key: c.sideThread, Label: "One-off"}
+		view.Side = &sessionpresentation.SideToken{
+			ID: 1, Key: c.sideThread, Label: "One-off", Skills: c.loadedSkillsLocked(c.sideThread),
+		}
 	}
 	if c.btwThread != "" {
 		view.BTW = &conversation.SideView{
@@ -801,7 +820,9 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 	var family *sessionapi.Family
 	if c.family != nil {
 		cp := *c.family
-		cp.Agents = &activity.Publication{Roster: c.rosterLocked()}
+		cp.Agents = &activity.Publication{
+			Roster: agentsPub.Roster, LineCounts: agentsPub.LineCounts, NetCounts: agentsPub.NetCounts,
+		}
 		cp.Status = sessionpresentation.Label{Text: c.statusTextLocked(), Running: c.busy}
 		family = &cp
 	}
@@ -920,6 +941,9 @@ func (c *directNativeConnection) publicationForThreadLocked(threadID string) *ac
 		LastSeq: lastSeq,
 		Roster:  c.rosterLocked(),
 	}
+	if c.review != nil && c.reviewThread == threadID {
+		pub.LineCounts, pub.NetCounts = c.review.Counts.Callers, c.review.Counts.Net
+	}
 	return pub
 }
 
@@ -950,7 +974,7 @@ func (c *directNativeConnection) rosterLocked() []activity.AgentRow {
 			agent.Waiting = true
 		}
 		agent.Status = agent.ObservedStatus(agent.LatestKind)
-		agent.Skills = slices.Clone(c.threadSkills[agent.Thread])
+		agent.Skills = c.loadedSkillsLocked(agent.Thread)
 		if u, ok := c.threadUsage[agent.Thread]; ok {
 			agent.InputTokens = u.InputTokens
 			agent.OutputTokens = u.OutputTokens
@@ -1058,8 +1082,10 @@ type directWireThread struct {
 }
 
 type directWireTurn struct {
-	ID     string             `json:"id"`
-	Status string             `json:"status"`
-	Items  []jsontext.Value   `json:"items"`
-	Error  *binding.TurnError `json:"error"`
+	ID         string             `json:"id"`
+	Status     string             `json:"status"`
+	Items      []jsontext.Value   `json:"items"`
+	Error      *binding.TurnError `json:"error"`
+	StartedAt  *int64             `json:"startedAt"`
+	DurationMS *int64             `json:"durationMs"`
 }

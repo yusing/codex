@@ -699,6 +699,17 @@
             "$ref": "#/definitions/CommandStepKind"
           },
           "type": "array"
+        },
+        "stepSubjects": {
+          "default": [],
+          "description": "Compact display subjects in the same order as step kinds. A step without a subject displays its source.",
+          "items": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": "array"
         }
       },
       "required": [

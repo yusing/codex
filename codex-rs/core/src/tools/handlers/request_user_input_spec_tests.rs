@@ -24,10 +24,10 @@ fn request_user_input_tool_includes_shared_questions_schema() {
         question["properties"]["options"]["items"]["properties"]["preview"]["type"],
         "string"
     );
-    let preview_description = question["properties"]["options"]["items"]["properties"]["preview"]
-        ["description"]
-        .as_str()
-        .expect("preview description");
+    let preview_description =
+        question["properties"]["options"]["items"]["properties"]["preview"]["description"]
+            .as_str()
+            .expect("preview description");
     assert!(preview_description.contains("picker"));
     assert!(preview_description.contains("appearance or interaction choices"));
     assert!(preview_description.contains("same concrete example under each option"));

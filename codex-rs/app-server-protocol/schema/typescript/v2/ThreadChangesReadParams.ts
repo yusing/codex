@@ -23,6 +23,11 @@ callerThreadId?: string | null,
  */
 itemId?: string | null,
 /**
+ * Read per-capture file metadata (no patch text) for these command items
+ * in the selected thread only. External and ephemeral files are omitted.
+ */
+receiptItemIds?: Array<string> | null,
+/**
  * Return individual captures, rather than composing them by file.
  */
 perCapture?: boolean,

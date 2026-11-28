@@ -19,4 +19,9 @@ segments: Array<string>,
 /**
  * Classification in source order; one kind for an unsplit script.
  */
-stepKinds: Array<CommandStepKind>, effectiveCwd: LegacyAppPathString | null, };
+stepKinds: Array<CommandStepKind>,
+/**
+ * Compact display subjects in the same order as step kinds.
+ * A step without a subject displays its source.
+ */
+stepSubjects: Array<string | null>, effectiveCwd: LegacyAppPathString | null, };

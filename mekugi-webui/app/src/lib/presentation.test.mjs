@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { markedBlock, toolLabel } from "./markdown.ts";
+import { toolLabel, userBlock } from "./markdown.ts";
 import {
   editEntryPaths,
   hasDetails,
@@ -46,19 +46,19 @@ test("progress text preserves named wait targets, optional timeout and settlemen
 
 test("only bound UTF-8 spans become attachment markers", () => {
   const text = "圖 [Image 1] and [Image 1] <script>";
-  const html = markedBlock(text, [{ Start: 4, End: 13, Kind: 0 }]);
+  const html = userBlock(text, [{ Start: 4, End: 13, Kind: 0 }]);
   assert.equal((html.match(/text-marker-image/g) ?? []).length, 1);
   assert.match(html, /and \[Image 1\] &lt;script&gt;/);
   assert.match(html, /圖 <span[^>]+>\[Image 1\]<\/span>/);
-  assert.doesNotMatch(markedBlock(text, [{ Start: 1, End: 13, Kind: 0 }]), /text-marker/);
+  assert.doesNotMatch(userBlock(text, [{ Start: 1, End: 13, Kind: 0 }]), /text-marker/);
 });
 
 test("bound markers remain escaped inside code and emphasis", () => {
   assert.match(
-    markedBlock("`<b>`", [{ Start: 1, End: 4, Kind: 1 }]),
+    userBlock("`<b>`", [{ Start: 1, End: 4, Kind: 1 }]),
     /<code><span[^>]+>&lt;b&gt;<\/span><\/code>/,
   );
-  assert.match(markedBlock("**[Image 1]**", [{ Start: 2, End: 11, Kind: 0 }]), /<strong><span/);
+  assert.match(userBlock("**[Image 1]**", [{ Start: 2, End: 11, Kind: 0 }]), /<strong><span/);
 });
 
 test("Details uses the published omission fact and measured clipping", () => {

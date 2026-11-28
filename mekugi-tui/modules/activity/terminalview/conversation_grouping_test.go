@@ -124,3 +124,37 @@ func TestConversationSameItemReasoningHeadingsShareOneRow(t *testing.T) {
 		}
 	}
 }
+
+func TestConversationSteerPreservesDistinctReasoningGroups(t *testing.T) {
+	v := NewView()
+	v.Conversation = true
+	entries := []presentation.Entry{
+		{Seq: 1, Agent: "Main", Kind: "reasoning", ItemComplete: true, Values: presentation.ReasoningSections("**First before steer**\n\nInitial check.")},
+		{Seq: 2, Agent: "Main", Kind: "reasoning", ItemComplete: true, Values: presentation.ReasoningSections("**Latest before steer**\n\nSecond check.")},
+		{Seq: 3, Agent: "You", Kind: "user", Text: "Actually check the second branch."},
+		{Seq: 4, Agent: "Main", Kind: "reasoning", ItemComplete: true, Values: presentation.ReasoningSections("**First after steer**\n\nThird check.")},
+		{Seq: 5, Agent: "Main", Kind: "reasoning", ItemComplete: true, Values: presentation.ReasoningSections("**Latest after steer**\n\nFourth check.")},
+	}
+	v.Update(&presentation.Publication{Entries: entries}, Display{})
+	collapsed := strings.Join(v.RenderConversation(80).Lines, "\n")
+	if !strings.Contains(collapsed, "Latest before steer") || !strings.Contains(collapsed, "Latest after steer") {
+		t.Fatalf("steer did not preserve both reasoning groups:\n%s", collapsed)
+	}
+	if strings.Contains(collapsed, "First before steer") || strings.Contains(collapsed, "First after steer") {
+		t.Fatalf("collapsed groups leaked earlier headings:\n%s", collapsed)
+	}
+	var pages int
+	for _, run := range v.Runs {
+		pages += len(presentation.DetailPages(Values(run.Blocks)))
+	}
+	if pages != 4 {
+		t.Fatalf("detail pages = %d, want 4", pages)
+	}
+	v.Expansion = 1
+	expanded := strings.Join(v.RenderConversation(80).Lines, "\n")
+	for _, want := range []string{"First before steer", "Latest before steer", "First after steer", "Latest after steer"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("expanded view missing %q:\n%s", want, expanded)
+		}
+	}
+}

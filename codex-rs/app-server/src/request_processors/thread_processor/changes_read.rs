@@ -21,6 +21,7 @@ use codex_change_history::CoverageStatus;
 use codex_change_history::FileEvidence;
 use codex_change_history::captured_diff_files;
 use codex_change_history::captured_diff_range_by;
+use codex_change_history::captured_file_stats;
 use codex_change_history::compose_diff;
 use codex_change_history::compose_file_stats;
 use codex_protocol::ThreadId;
@@ -92,11 +93,12 @@ impl ThreadRequestProcessor {
             }
             (root, workspace)
         };
-        let member_scope = if root == id && params.item_id.is_none() {
-            None
-        } else {
-            Some(id.to_string())
-        };
+        let member_scope =
+            if root == id && params.item_id.is_none() && params.receipt_item_ids.is_none() {
+                None
+            } else {
+                Some(id.to_string())
+            };
         let dir =
             codex_protocol::shell_environment::session_tmp_path(root.into()).join("change-history");
         let cursor = params.cursor.as_deref().map(parse_cursor).transpose()?;
@@ -156,12 +158,21 @@ fn read_changes(
     let entries = store.list_entries().map_err(read_error)?;
     let (sequence, offset, patch_offset) =
         cursor.unwrap_or_else(|| (entries.last().map_or(0, |entry| entry.sequence), 0, 0));
-    let capture_page = params.limit.filter(|_| params.per_capture);
-    if patch_offset != 0 && capture_page.is_none() {
+    let receipt_ids = params
+        .receipt_item_ids
+        .as_ref()
+        .map(|ids| ids.iter().map(String::as_str).collect::<HashSet<_>>());
+    let receipts = receipt_ids.is_some();
+    let capture_page = if receipts {
+        Some(params.limit.unwrap_or(100))
+    } else {
+        params.limit.filter(|_| params.per_capture)
+    };
+    if patch_offset != 0 && (receipts || capture_page.is_none()) {
         return Err(invalid_request("invalid captured edit cursor"));
     }
-    let include_external = params.include_external.unwrap_or(true);
-    let include_ephemeral = params.include_ephemeral.unwrap_or(false);
+    let include_external = !receipts && params.include_external.unwrap_or(true);
+    let include_ephemeral = !receipts && params.include_ephemeral.unwrap_or(false);
     let ids: Vec<_> = entries
         .into_iter()
         .filter(|entry| {
@@ -175,6 +186,9 @@ fn read_changes(
                     .item_id
                     .as_ref()
                     .is_none_or(|id| *id == entry.call_id)
+                && receipt_ids
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(entry.call_id.as_str()))
         })
         .map(|entry| entry.id)
         .collect();
@@ -183,6 +197,9 @@ fn read_changes(
     }
     let mut records = store.load_records(&ids).map_err(read_error)?;
     records.retain_mut(|record| {
+        if record.is_retained_vcs_diagnostic() {
+            return false;
+        }
         record.files.retain(|file| match file.scope {
             codex_change_history::ChangeScope::Workspace => true,
             codex_change_history::ChangeScope::External => include_external,
@@ -198,10 +215,9 @@ fn read_changes(
             &store,
             &records,
             &mut response,
-            sequence,
-            offset,
-            patch_offset,
+            (sequence, offset, patch_offset),
             limit.clamp(1, 100) as usize,
+            receipts,
         )?;
         return Ok(response);
     }
@@ -466,11 +482,11 @@ fn read_capture_page(
     store: &ChangeHistoryStore,
     records: &[ChangeRecord],
     response: &mut ThreadChangesReadResponse,
-    sequence: u64,
-    offset: usize,
-    patch_offset: usize,
+    cursor: (u64, usize, usize),
     limit: usize,
+    receipts: bool,
 ) -> Result<(), JSONRPCErrorError> {
+    let (sequence, offset, patch_offset) = cursor;
     let captured_files: Vec<_> = records
         .iter()
         .rev()
@@ -541,15 +557,30 @@ fn read_capture_page(
             response.next_cursor = Some(format_capture_cursor(sequence, index, start));
             break;
         }
-        let Some((diff, next_patch)) = captured_diff_range_by(
-            store,
-            record,
-            &files,
-            start,
-            available_diff_budget,
-            json_escaped_char_len,
-        )
-        .map_err(|error| internal_error(format!("could not read captured edits: {error}")))?
+        let capture = if receipts {
+            captured_file_stats(store, record, &files).map(|stats| {
+                stats.map(|stats| {
+                    (
+                        ComposedFileDiff {
+                            stats,
+                            unified_diff: String::new(),
+                        },
+                        None,
+                    )
+                })
+            })
+        } else {
+            captured_diff_range_by(
+                store,
+                record,
+                &files,
+                start,
+                available_diff_budget,
+                json_escaped_char_len,
+            )
+        };
+        let Some((diff, next_patch)) = capture
+            .map_err(|error| internal_error(format!("could not read captured edits: {error}")))?
         else {
             return Err(invalid_request("invalid captured edit cursor"));
         };

@@ -39,7 +39,9 @@
   above the composer offer `[details]` when truncated and `[×]` dismissal; destructive choices
   require confirmation. See [Terminal UI guide](../../../../../docs/guide/terminal-ui.md) for full
   user controls.
-- **Live changes & dialogs**: `/live` toggles provisional streaming diffs above the composer;
+- **Live changes & dialogs**: `/live` toggles provisional streaming diffs beside the
+  transcript. With Saved Diff open, Live stacks below the transcript when space allows.
+  In compact views Live replaces the transcript, leaving the composer available.
   bottom-docked content/output/file/process dialogs support scrolling, search (`/`), copy (`y`),
   and Original/Model-visible toggling (`o`). Drag-selection freezes the document for off-screen
   scrolling, source-aware Markdown/Diff copy, and `Reference` (`r`) mentions.

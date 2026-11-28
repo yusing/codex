@@ -49,6 +49,66 @@ fn record(store: &ChangeHistoryStore, workspace: &Path, name: &str, files: Vec<(
 }
 
 #[test]
+fn command_receipts_page_only_requested_captures_without_patch_text() {
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let dir = workspace.path().join("history");
+    let store = ChangeHistoryStore::open(dir.clone()).expect("open history");
+    for (item, path) in [("first", "a"), ("omitted", "b"), ("last", "c")] {
+        record(
+            &store,
+            workspace.path(),
+            item,
+            vec![(path, "one\ntwo\n".into())],
+        );
+    }
+    let params = ThreadChangesReadParams {
+        thread_id: "thread".into(),
+        include_external: None,
+        include_ephemeral: None,
+        caller_thread_id: None,
+        item_id: None,
+        receipt_item_ids: Some(vec!["first".into(), "last".into()]),
+        per_capture: false,
+        limit: Some(1),
+        cursor: None,
+    };
+    let mut cursor = None;
+    for (item, path) in [("last", "c"), ("first", "a")] {
+        let page = read_changes(
+            dir.clone(),
+            None,
+            Some("thread".into()),
+            params.clone(),
+            cursor,
+        )
+        .expect("read receipts");
+        assert_eq!(page.file_count, 2);
+        assert_eq!(page.changes.len(), 1);
+        assert_eq!(page.files.len(), 1);
+        assert_eq!(
+            page.files[0].change_ids,
+            vec![page.changes[0].change_id.clone()]
+        );
+        assert!(page.files[0].unified_diff.is_empty());
+        assert_eq!(
+            (
+                page.changes[0].item_id.as_str(),
+                page.files[0].path.as_str(),
+                page.files[0].additions
+            ),
+            (item, path, 2),
+        );
+        cursor = page
+            .next_cursor
+            .as_deref()
+            .map(parse_cursor)
+            .transpose()
+            .expect("parse cursor");
+    }
+    assert!(cursor.is_none());
+}
+
+#[test]
 fn capture_pages_bound_encoded_payload_and_resume_inside_a_patch() {
     let workspace = tempfile::tempdir().expect("temp workspace");
     let dir = workspace.path().join("history");
@@ -73,6 +133,7 @@ fn capture_pages_bound_encoded_payload_and_resume_inside_a_patch() {
         include_ephemeral: None,
         caller_thread_id: None,
         item_id: None,
+        receipt_item_ids: None,
         per_capture: true,
         limit: None,
         cursor: None,
@@ -142,6 +203,7 @@ fn capture_pages_preserve_origin_paths_and_fill_page_budget_across_chunks() {
         include_ephemeral: None,
         caller_thread_id: None,
         item_id: None,
+        receipt_item_ids: None,
         per_capture: true,
         limit: None,
         cursor: None,
@@ -228,6 +290,7 @@ fn capture_pages_fallback_when_origin_paths_exceed_page_budget() {
         include_ephemeral: None,
         caller_thread_id: None,
         item_id: None,
+        receipt_item_ids: None,
         per_capture: true,
         limit: Some(100),
         cursor: None,
@@ -289,6 +352,7 @@ fn capture_pages_paginate_large_rename_with_long_source_path() {
         include_ephemeral: None,
         caller_thread_id: None,
         item_id: None,
+        receipt_item_ids: None,
         per_capture: true,
         limit: None,
         cursor: None,
@@ -351,6 +415,7 @@ fn composed_review_pages_keep_totals_and_provenance_under_the_connector_limit() 
             include_ephemeral: None,
             caller_thread_id: caller,
             item_id: None,
+            receipt_item_ids: None,
             per_capture: false,
             limit: Some(20),
             cursor: None,

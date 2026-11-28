@@ -1542,7 +1542,7 @@ func TestDirectNativeProjectionCommandFileChangeAndCtrlECollapse(t *testing.T) {
 			ID: "turn-1",
 			Items: []jsontext.Value{
 				jsontext.Value(`{"id":"cmd-1","type":"commandExecution","command":"/bin/bash -lc 'printf \"a\\nb\\nc\\n\"'","display":{"script":"printf \"a\\nb\\nc\\n\"","segments":[],"effectiveCwd":null},"cwd":"/tmp/ws","status":"completed","exitCode":0,"durationMs":125,"aggregatedOutput":"a\nb\nc\n"}`),
-				jsontext.Value("{\"id\":\"fc-1\",\"type\":\"fileChange\",\"status\":\"completed\",\"changes\":[{\"path\":\"a.go\",\"kind\":{\"type\":\"add\"},\"diff\":\"+line1\\n+line2\\n\"},{\"path\":\"b.go\",\"kind\":{\"type\":\"update\",\"move_path\":\"c.go\"},\"diff\":\"-old\\n+new\\n\"}]}"),
+				jsontext.Value("{\"id\":\"fc-1\",\"type\":\"fileChange\",\"status\":\"completed\",\"changes\":[{\"path\":\"a.go\",\"kind\":{\"type\":\"add\"},\"diff\":\"line1\\nline2\\n\"},{\"path\":\"b.go\",\"kind\":{\"type\":\"update\",\"move_path\":\"c.go\"},\"diff\":\"@@ -1 +1 @@\\n-old\\n+new\\n\"}]}"),
 			},
 		},
 	})
@@ -1563,7 +1563,7 @@ func TestDirectNativeProjectionCommandFileChangeAndCtrlECollapse(t *testing.T) {
 	if fcRec == nil || len(fcRec.entry.Values) != 2 {
 		t.Fatalf("expected 2 fileChange values, got %+v", fcRec)
 	}
-	if fcRec.entry.Values[0].Verb != "Create" || fcRec.entry.Values[1].Verb != "Move" || fcRec.entry.Values[1].Label != "`b.go => c.go`" {
+	if fcRec.entry.Values[0].Verb != "Create" || fcRec.entry.Values[0].Label != "`a.go` +2 -0" || fcRec.entry.Values[1].Verb != "Move" || fcRec.entry.Values[1].Label != "`b.go => c.go` +1 -1" {
 		t.Fatalf("unexpected fileChange decoding: %+v", fcRec.entry.Values)
 	}
 

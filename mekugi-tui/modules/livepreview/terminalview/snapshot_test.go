@@ -51,3 +51,27 @@ func TestUISnapshotDiffPreview(t *testing.T) {
 		})
 	}
 }
+
+func TestUISnapshotProvisionalDiffCoordinates(t *testing.T) {
+	view := PreviewView{Current: previewmodel.Preview{
+		ID: "edit", Workspace: "/workspace", Status: previewmodel.PreviewEdit,
+		UnlocatedDiff: true,
+		Files: []diffmodel.ReviewFile{{
+			BeforePath: "/workspace/input.patch", AfterPath: "/workspace/input.patch",
+			Diff: "@@\n--- old\n+++ new\n",
+		}},
+	}}
+	before, err := view.Render(t.Context(), "/workspace", diffrender.DarkTheme, 48, 5, PreviewMotion{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view.Current.Files = []diffmodel.ReviewFile{{
+		BeforePath: "/workspace/input.patch", AfterPath: "/workspace/input.patch",
+		Diff: "@@ -137 +137 @@\n--- old\n+++ new\n",
+	}}
+	after, err := view.Render(t.Context(), "/workspace", diffrender.DarkTheme, 48, 5, PreviewMotion{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRowsSnapshot(t, "preview_coordinates", append(before, after...))
+}

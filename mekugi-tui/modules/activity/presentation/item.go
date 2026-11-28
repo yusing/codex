@@ -18,6 +18,7 @@ type ItemContent struct {
 	Facts
 	Command             Command
 	Details             *ItemDetails
+	ReasoningParts      []string
 	Message, Assignment *DirectedContent
 	StartLabel          *string
 	ErrorDetail         string
@@ -174,16 +175,24 @@ func (entry ItemContent) Values() (blocks []Value) {
 			return []Value{{Kind: "message", From: entry.Assignment.From, To: entry.Assignment.To, Owner: entry.Agent, Body: textsanitize.Safe(entry.Assignment.Text, false)}}
 		}
 	case "reasoning":
-		blocks := ReasoningSections(source)
-		for i := range blocks {
-			block := &blocks[i]
-			if entry.Details != nil {
-				block.Live = i == len(blocks)-1 && entry.Details.ReasoningLive
-				// Duration belongs to the item, not to each detected section.
-				if i == len(blocks)-1 {
-					block.Thought = entry.Details.Thought
+		if len(entry.ReasoningParts) == 0 {
+			blocks = ReasoningSections(source)
+		} else {
+			for _, part := range entry.ReasoningParts {
+				part = textsanitize.MarkdownSource(part)
+				if ReasoningSummaryBody(part) != "" {
+					blocks = append(blocks, ReasoningSections(part)...)
 				}
 			}
+		}
+		for i := range blocks {
+			blocks[i].Section = i
+		}
+		if entry.Details != nil && len(blocks) > 0 {
+			last := &blocks[len(blocks)-1]
+			last.Live = entry.Details.ReasoningLive
+			// Duration belongs to the item, not to each detected section.
+			last.Thought = entry.Details.Thought
 		}
 		return blocks
 	case "command":

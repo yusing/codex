@@ -27,6 +27,7 @@ import (
 	activityfeed "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
 )
 
 func clonePanelView(p *sessionpresentation.PanelView) *sessionpresentation.PanelView {
@@ -329,20 +330,24 @@ func readDetailFile(ctx context.Context, path string) (string, bool, error) {
 func (c *directNativeConnection) openSkillDetails(ctx context.Context, req sessionapi.NativeDetailRequest) error {
 	c.mu.Lock()
 	cwd := c.workspace
-	mainID := c.mainThread
-	caller := c.threadCallers[mainID]
-	if caller == "" {
-		caller = "/root"
-	}
+	threadID := cmp.Or(req.Displayed.ID, c.displayedThread, c.mainThread)
+	caller := cmp.Or(c.threadCallers[threadID], req.Displayed.Caller, "/root")
+	names := c.loadedSkillsLocked(threadID)
 	c.mu.Unlock()
 
-	skills := c.loadSkills(ctx, cwd)
 	var b strings.Builder
-	if len(skills) == 0 {
-		b.WriteString("No enabled skills found for this workspace.")
+	if len(names) == 0 {
+		b.WriteString("No skills loaded.")
 	} else {
-		for _, sk := range skills {
-			fmt.Fprintf(&b, "- **%s**", sk.Name)
+		skills := c.loadSkills(ctx, cwd)
+		for _, name := range names {
+			fmt.Fprintf(&b, "- **%s**", name)
+			index := slices.IndexFunc(skills, func(skill completion.Choice) bool { return skill.Name == name })
+			if index < 0 {
+				b.WriteByte('\n')
+				continue
+			}
+			sk := skills[index]
 			if sk.Description != "" {
 				fmt.Fprintf(&b, " — %s", sk.Description)
 			}
@@ -367,7 +372,7 @@ func (c *directNativeConnection) openSkillDetails(ctx context.Context, req sessi
 	c.detailSeq++
 	id := sessionpresentation.DetailID{Attachment: c.attachID, Selection: c.detailSeq}
 	c.details = &sessionapi.NativeDetails{
-		Source:   sessionpresentation.Thread{ID: mainID, Caller: caller},
+		Source:   sessionpresentation.Thread{ID: threadID, Caller: caller},
 		Selected: page.ID,
 		Agent:    req.Agent,
 		View: sessionpresentation.DetailView{

@@ -3296,6 +3296,7 @@ async fn try_run_sampling_request(
         Option<codex_protocol::ResponseItemId>,
         String,
         Box<dyn ToolArgumentDiffConsumer>,
+        crate::tools::handlers::live_diff::PreviewBaselines,
     )> = None;
     let mut should_emit_token_count = false;
     const MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE: usize = 256;
@@ -3538,10 +3539,14 @@ async fn try_run_sampling_request(
                         analytics_tool_call_ids.push(call_id.to_string());
                     }
                 }
-                if let Some((_, _, mut consumer)) = active_tool_argument_diff_consumer.take()
+                if let Some((_, _, mut consumer, mut baselines)) =
+                    active_tool_argument_diff_consumer.take()
                     && let Ok(events) = consumer.finish()
                 {
-                    for event in events {
+                    for preview in events {
+                        let event = baselines
+                            .render(preview, &step_context.environments, &cancellation_token)
+                            .await;
                         sess.send_event(&turn_context, event).await;
                     }
                 }
@@ -3738,7 +3743,9 @@ async fn try_run_sampling_request(
                         let tool_name = ToolName::new(namespace.clone(), name.as_str());
                         active_tool_argument_diff_consumer = tool_runtime
                             .create_diff_consumer(&tool_name)
-                            .map(|consumer| (id.clone(), call_id.clone(), consumer));
+                            .map(|consumer| {
+                                (id.clone(), call_id.clone(), consumer, Default::default())
+                            });
                     }
                 } else if matches!(
                     &item,
@@ -4003,7 +4010,7 @@ async fn try_run_sampling_request(
                 call_id,
                 delta,
             } => {
-                let Some((active_item_id, active_call_id, consumer)) =
+                let Some((active_item_id, active_call_id, consumer, baselines)) =
                     active_tool_argument_diff_consumer.as_mut()
                 else {
                     continue;
@@ -4020,7 +4027,10 @@ async fn try_run_sampling_request(
                         active_call_id.clone()
                     }
                 };
-                for event in consumer.consume_diff(turn_context.as_ref(), call_id, &delta) {
+                for preview in consumer.consume_diff(step_context.as_ref(), call_id, &delta) {
+                    let event = baselines
+                        .render(preview, &step_context.environments, &cancellation_token)
+                        .await;
                     sess.send_event(&turn_context, event).await;
                 }
             }

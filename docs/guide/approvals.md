@@ -10,6 +10,11 @@ command approvals selects denial with an optional reason; feedback reaches the c
 turn. Your draft/attachments return afterward. Amber choices last beyond this
 request: for the turn, the session, or as a saved policy.
 
+The browser offers **Allow for session** on eligible command and file approvals.
+It reuses the native session decision, not a saved rule. Prompts for a one-time
+human decision, network access, or additional permissions are not remembered
+in the browser.
+
 At interactive startup or session replacement, Mekugi asks about untrusted hooks
 and hooks whose hash has changed, before accepting work. Review the command, source
 and event in the approval dock. **Continue without trusting**, the initial terminal
@@ -21,10 +26,11 @@ hooks. Headless runs and prepared child runtimes do not grant trust automaticall
 The shell guard asks before supported Git, GitHub CLI, Mercurial, SVN, and
 Jujutsu remote writes in interactive sessions, including with `--yolo`.
 Headless runs do not prompt. Your `PreToolUse` hooks still run first.
-Approve once, approve the exact command, executable, and working directory for
-this UI attachment, or deny. Denial, a five-minute timeout, or an unreachable
-approval channel fails that command with status 1. Subsequent commands follow
-normal shell control flow. Session grants expire when the attachment closes.
+In the terminal or browser, approve once, allow the exact command arguments,
+executable, and working directory for this attachment, or deny. Denial, a
+five-minute timeout, or an unreachable approval channel fails that command with
+status 1. Subsequent commands follow normal shell control flow. Remembered
+approvals are scoped to the thread and expire on detach or disconnect.
 
 The guard is not a sandbox. Commands that construct executable paths at
 runtime or invoke tools outside the guarded search path may not be recognized.

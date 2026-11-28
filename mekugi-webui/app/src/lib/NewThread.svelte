@@ -4,7 +4,6 @@
   import Attachments from "./Attachments.svelte";
   import {
     activeAttachments,
-    atomicAttachmentInput,
     prepareAttachments,
     resolveDeferredPathAttachments,
     submissionAttachments,
@@ -13,6 +12,7 @@
     type InitialInput,
     type PendingAttachment,
   } from "./attachments";
+  import DraftField from "./DraftField.svelte";
   import { basename } from "./format";
   import { hub, type Machine } from "./hub.svelte";
   import type { Start, StartOptions } from "./protocol";
@@ -209,7 +209,13 @@
     }
   }
   function onkeydown(event: KeyboardEvent) {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !touch) {
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.isComposing &&
+      event.keyCode !== 229 &&
+      !touch
+    ) {
       event.preventDefault();
       void start();
     }
@@ -254,13 +260,12 @@
         previewTarget={{ machine, workspace, deferUnadmitted: !workspaceAdmitted }}
         disabled={busy}
       />
-      <label class="sr-only" for="new-text">First message</label>
-      <textarea
+      <DraftField
         id="new-text"
-        data-slot="input-group-control"
+        label="First message"
         class="{composerText} min-h-20 pt-3.5 pb-1.5"
         bind:value={text}
-        use:atomicAttachmentInput={() => ({ text, items })}
+        {items}
         {onkeydown}
         onpaste={(event) => {
           const files = event.clipboardData?.files;
@@ -268,9 +273,9 @@
           if (!event.clipboardData?.types.includes("text/plain")) event.preventDefault();
           tray?.add(files);
         }}
-        rows="2"
         disabled={busy}
-        placeholder={`Message main on ${machine.label}`}></textarea>
+        placeholder={`Message main on ${machine.label}`}
+      />
       <InputGroup.Addon
         align="block-end"
         class="{composerTools} cursor-default flex-wrap gap-1 text-body font-normal select-auto"

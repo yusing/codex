@@ -593,6 +593,7 @@ func (c *directNativeConnection) handleCloseSide(ctx context.Context) error {
 	c.sideFirstTurn = ""
 	c.sideModel, c.sideEffort = "", ""
 	c.sideActiveTurn = ""
+	c.sideTurnStatus = sessionpresentation.Label{}
 	c.sideQueue = directQueueState{}
 	if c.settingsMenuThread == sideID || c.menu != nil && c.menu.Kind == sessionpresentation.MenuSideReplace {
 		c.clearMenuLocked()

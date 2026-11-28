@@ -188,7 +188,7 @@
   {@const content = reasoningBody(value.body, value.label)}
   {#if content}
     <Reasoning
-      heading={value.live ? "Thinking" : thought(value.thought)}
+      heading={value.live ? undefined : thought(value.thought)}
       label={value.label}
       running={value.live}
       defaultOpen={expandThoughts}
@@ -197,11 +197,16 @@
     </Reasoning>
   {:else}
     <Reasoning
-      heading={value.live ? "Thinking" : thought(value.thought)}
+      heading={value.live ? undefined : thought(value.thought)}
       label={value.label}
       running={value.live}
       defaultOpen={expandThoughts}
     />
+  {/if}
+{/snippet}
+{#snippet liveThoughtContent()}
+  {#if latestThought?.live}
+    <Markdown text={reasoningBody(latestThought.body, latestThought.label)} quiet />
   {/if}
 {/snippet}
 {#snippet wait(value: Value)}
@@ -244,6 +249,7 @@
 <!-- Agent output reads down the left beside its offsets; your turns sit on the right,
      ending where agent output ends. -->
 <article
+  hidden={entry.kind === "reasoning" && reasoning.length === 0}
   class={[
     "max-w-[920px]",
     user
@@ -284,7 +290,7 @@
                     {index}
                   />{/each}
               </div>{/if}
-            <Markdown text={entry.text ?? ""} spans={entry.spans} />
+            <Markdown text={entry.text ?? ""} spans={entry.spans} userMessage />
           </Bubble.Content>
         </Bubble.Root>
       </Message.Content>
@@ -367,17 +373,22 @@
         <Message.Root>
           <Message.Content><Markdown text={entry.text ?? ""} /></Message.Content>
         </Message.Root>
-      {:else if entry.kind === "reasoning" && reasoning.length > 1}
-        <Reasoning
-          heading={latestThought?.live ? "Thinking" : thinking}
-          label={latestThought?.label}
-          running={latestThought?.live}
-          defaultOpen={expandThoughts}
-        >
-          {#each reasoning as value, i (i)}{@render thoughtRow(value)}{/each}
-        </Reasoning>
       {:else if entry.kind === "reasoning"}
-        {#each reasoning as value, i (i)}{@render thoughtRow(value)}{/each}
+        {#if reasoning.length > 1}
+          <Reasoning
+            heading={thinking}
+            label={latestThought?.label}
+            running={latestThought?.live}
+            defaultOpen={expandThoughts}
+            liveContent={latestThought?.live ? liveThoughtContent : undefined}
+          >
+            {#each reasoning as value, i (i)}
+              {#if !value.live}{@render thoughtRow(value)}{/if}
+            {/each}
+          </Reasoning>
+        {:else if reasoning[0]}
+          {@render thoughtRow(reasoning[0])}
+        {/if}
       {:else if entry.kind === "hook"}
         <div class="flex min-h-[26px] items-center gap-2 text-small text-muted">
           <span

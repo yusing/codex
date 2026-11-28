@@ -270,7 +270,7 @@ fn supervisor_loop(
     settled: Arc<AtomicBool>,
     connected: Arc<AtomicBool>,
 ) {
-    let listener_fd = loop {
+    let (listener_fd, wrapper_pid) = loop {
         if settled.load(Ordering::Acquire) {
             return;
         }
@@ -281,7 +281,7 @@ fn supervisor_loop(
                     Ok(fd) => {
                         connected.store(true, Ordering::Release);
                         let _ = stream.write_all(&[1u8]);
-                        break fd;
+                        break (fd, peer_pid(&stream));
                     }
                     Err(_) => return,
                 }
@@ -298,10 +298,30 @@ fn supervisor_loop(
         }
     };
 
-    serve_notifications(listener_fd.as_raw_fd(), &state, &settled);
+    serve_notifications(listener_fd.as_raw_fd(), wrapper_pid, &state, &settled);
 }
 
-fn serve_notifications(notif_fd: RawFd, state: &Mutex<ObservationState>, settled: &AtomicBool) {
+fn peer_pid(stream: &UnixStream) -> Option<u32> {
+    let mut cred: libc::ucred = unsafe { mem::zeroed() };
+    let mut size = mem::size_of_val(&cred) as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut cred).cast(),
+            &mut size,
+        )
+    };
+    (rc == 0).then(|| u32::try_from(cred.pid).ok()).flatten()
+}
+
+fn serve_notifications(
+    notif_fd: RawFd,
+    wrapper_pid: Option<u32>,
+    state: &Mutex<ObservationState>,
+    settled: &AtomicBool,
+) {
     loop {
         let mut pfd = libc::pollfd {
             fd: notif_fd,
@@ -343,7 +363,7 @@ fn serve_notifications(notif_fd: RawFd, state: &Mutex<ObservationState>, settled
         }
 
         if !settled.load(Ordering::Acquire) {
-            handle_notification(notif_fd, &req, state);
+            handle_notification(notif_fd, &req, wrapper_pid, state);
         }
 
         let resp = SeccompNotifResp {
@@ -358,7 +378,12 @@ fn serve_notifications(notif_fd: RawFd, state: &Mutex<ObservationState>, settled
     }
 }
 
-fn handle_notification(notif_fd: RawFd, req: &SeccompNotif, state: &Mutex<ObservationState>) {
+fn handle_notification(
+    notif_fd: RawFd,
+    req: &SeccompNotif,
+    wrapper_pid: Option<u32>,
+    state: &Mutex<ObservationState>,
+) {
     let nr = req.data.nr as libc::c_long;
     let pid = req.pid;
     let args = req.data.args;
@@ -426,7 +451,7 @@ fn handle_notification(notif_fd: RawFd, req: &SeccompNotif, state: &Mutex<Observ
     if unsafe { libc::ioctl(notif_fd, SECCOMP_IOCTL_NOTIF_ID_VALID, &id) } < 0 {
         return;
     }
-    let is_vcs_diagnostic = is_vcs_diagnostic_git_process(pid);
+    let is_vcs_diagnostic = is_vcs_diagnostic_writer(pid, wrapper_pid);
     let mut guard = state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -435,15 +460,45 @@ fn handle_notification(notif_fd: RawFd, req: &SeccompNotif, state: &Mutex<Observ
     }
 }
 
-/// Detect whether `pid` is a `git` subprocess executing a VCS state-mutating
-/// subcommand so its writes are classified as `ChangeSourceKind::VcsDiagnostic`.
-fn is_vcs_diagnostic_git_process(pid: u32) -> bool {
-    let Ok(comm) = fs::read_to_string(format!("/proc/{pid}/comm")) else {
-        return false;
-    };
-    if comm.trim() != "git" {
-        return false;
+/// Worktree setup may run checkout hooks with their own writers. Only inherit
+/// provenance inside this observed process tree; sibling shell commands are
+/// independent even if they write inside the new checkout.
+fn is_vcs_diagnostic_writer(writer: u32, wrapper: Option<u32>) -> bool {
+    let mut pid = writer;
+    let mut inherited = false;
+    loop {
+        let Ok(stat) = fs::read(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        // comm is parenthesized and may itself contain spaces or parentheses.
+        let Some(end) = stat.iter().rposition(|&b| b == b')') else {
+            return false;
+        };
+        if stat[..end].ends_with(b" (git") && is_vcs_diagnostic_git_process(pid, pid != writer) {
+            if pid == writer {
+                return true;
+            }
+            inherited = true;
+        }
+        if Some(pid) == wrapper {
+            return inherited;
+        }
+        if wrapper.is_none() || pid == 1 {
+            return false;
+        }
+        let Some(parent) = stat[end + 1..]
+            .split(|b| b.is_ascii_whitespace())
+            .filter(|word| !word.is_empty())
+            .nth(1)
+            .and_then(|word| std::str::from_utf8(word).ok()?.parse().ok())
+        else {
+            return false;
+        };
+        pid = parent;
     }
+}
+
+fn is_vcs_diagnostic_git_process(pid: u32, ancestor: bool) -> bool {
     let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) else {
         return false;
     };
@@ -453,7 +508,7 @@ fn is_vcs_diagnostic_git_process(pid: u32) -> bool {
         .map(String::from_utf8_lossy);
     let _ = args.next();
     let mut skip_next = false;
-    for arg in args {
+    while let Some(arg) = args.next() {
         if skip_next {
             skip_next = false;
             continue;
@@ -468,20 +523,29 @@ fn is_vcs_diagnostic_git_process(pid: u32) -> bool {
         if arg.starts_with('-') {
             continue;
         }
-        return matches!(
-            arg.as_ref(),
-            "checkout"
-                | "switch"
-                | "restore"
-                | "reset"
-                | "merge"
-                | "rebase"
-                | "pull"
-                | "stash"
-                | "cherry-pick"
-                | "revert"
-                | "clean"
-        );
+        if arg == "worktree" {
+            return args.next().is_some_and(|op| {
+                matches!(
+                    op.as_ref(),
+                    "add" | "remove" | "move" | "repair" | "prune" | "lock" | "unlock"
+                )
+            });
+        }
+        return !ancestor
+            && matches!(
+                arg.as_ref(),
+                "checkout"
+                    | "switch"
+                    | "restore"
+                    | "reset"
+                    | "merge"
+                    | "rebase"
+                    | "pull"
+                    | "stash"
+                    | "cherry-pick"
+                    | "revert"
+                    | "clean"
+            );
     }
     false
 }

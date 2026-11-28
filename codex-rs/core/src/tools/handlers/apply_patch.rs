@@ -1,7 +1,4 @@
-use std::collections::HashMap;
 use std::io;
-use std::path::Path;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -14,7 +11,6 @@ use crate::safety::PatchPolicyMatcher;
 use crate::safety::PatchSandboxRoute;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
-use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::tools::context::ApplyPatchToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
@@ -47,15 +43,14 @@ use crate::tools::sandboxing::ToolError;
 use crate::windows_sandbox::windows_sandbox_level_for_legacy_checks;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchFileChange;
-use codex_apply_patch::Hunk;
 use codex_apply_patch::StreamingPatchParser;
 use codex_exec_server::ExecutorFileSystem;
 use codex_features::Feature;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::FileChange;
-use codex_protocol::protocol::PatchApplyUpdatedEvent;
+
+use super::live_diff::{ArgumentPreview, PatchPreview};
+
 use codex_sandboxing::policy_transforms::effective_file_system_sandbox_policy;
 use codex_sandboxing::policy_transforms::normalize_additional_permissions;
 use codex_sandboxing::policy_transforms::normalize_additional_permissions_with_context;
@@ -82,132 +77,68 @@ impl ApplyPatchHandler {
 struct ApplyPatchArgumentDiffConsumer {
     parser: StreamingPatchParser,
     last_sent_at: Option<Instant>,
-    pending: Option<PatchApplyUpdatedEvent>,
+    pending: Option<String>,
 }
 
 impl ToolArgumentDiffConsumer for ApplyPatchArgumentDiffConsumer {
-    fn consume_diff(&mut self, turn: &TurnContext, call_id: String, diff: &str) -> Vec<EventMsg> {
-        if !turn
+    fn consume_diff(
+        &mut self,
+        step: &StepContext,
+        call_id: String,
+        diff: &str,
+    ) -> Vec<ArgumentPreview> {
+        if !step
+            .turn
             .config
             .features
             .enabled(Feature::ApplyPatchStreamingEvents)
         {
             return Vec::new();
         }
-
         self.push_delta(call_id, diff)
-            .map(EventMsg::PatchApplyUpdated)
+            .map(ArgumentPreview::Patch)
             .into_iter()
             .collect()
     }
 
-    fn finish(&mut self) -> Result<Vec<EventMsg>, FunctionCallError> {
+    fn finish(&mut self) -> Result<Vec<ArgumentPreview>, FunctionCallError> {
         self.finish_update_on_complete()
-            .map(|event| event.map(EventMsg::PatchApplyUpdated).into_iter().collect())
+            .map(|event| event.map(ArgumentPreview::Patch).into_iter().collect())
     }
 }
 
 impl ApplyPatchArgumentDiffConsumer {
-    fn push_delta(&mut self, call_id: String, delta: &str) -> Option<PatchApplyUpdatedEvent> {
+    fn push_delta(&mut self, call_id: String, delta: &str) -> Option<PatchPreview> {
         let hunks = self.parser.push_delta(delta).ok()?;
         if hunks.is_empty() {
             return None;
         }
-        let changes = convert_apply_patch_hunks_to_protocol(&hunks);
-        let event = PatchApplyUpdatedEvent { call_id, changes };
         let now = Instant::now();
-        match self.last_sent_at {
-            Some(last_sent_at)
-                if now.duration_since(last_sent_at) < APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL =>
-            {
-                self.pending = Some(event);
-                None
-            }
-            Some(_) | None => {
-                self.pending = None;
-                self.last_sent_at = Some(now);
-                Some(event)
-            }
+        if self.last_sent_at.is_some_and(|last| {
+            now.duration_since(last) < APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL
+        }) {
+            self.pending = Some(call_id);
+            return None;
         }
+        self.pending = None;
+        self.last_sent_at = Some(now);
+        Some(PatchPreview::patch(
+            call_id,
+            hunks,
+            self.parser.environment_id(),
+            None,
+        ))
     }
 
-    fn finish_update_on_complete(
-        &mut self,
-    ) -> Result<Option<PatchApplyUpdatedEvent>, FunctionCallError> {
-        self.parser.finish().map_err(|err| {
+    fn finish_update_on_complete(&mut self) -> Result<Option<PatchPreview>, FunctionCallError> {
+        let hunks = self.parser.finish().map_err(|err| {
             FunctionCallError::RespondToModel(format!("failed to parse apply_patch: {err}"))
         })?;
-
-        let event = self.pending.take();
-        if event.is_some() {
-            self.last_sent_at = Some(Instant::now());
-        }
-        Ok(event)
+        Ok(self
+            .pending
+            .take()
+            .map(|id| PatchPreview::patch(id, hunks, self.parser.environment_id(), None)))
     }
-}
-
-fn convert_apply_patch_hunks_to_protocol(hunks: &[Hunk]) -> HashMap<PathBuf, FileChange> {
-    hunks
-        .iter()
-        .map(|hunk| {
-            let path = hunk_source_path(hunk).to_path_buf();
-            let change = match hunk {
-                Hunk::AddFile { contents, .. } => FileChange::Add {
-                    content: contents.clone(),
-                },
-                Hunk::DeleteFile { .. } => FileChange::Delete {
-                    content: String::new(),
-                },
-                Hunk::UpdateFile {
-                    chunks, move_path, ..
-                } => FileChange::Update {
-                    unified_diff: format_update_chunks_for_progress(chunks),
-                    move_path: move_path.clone(),
-                },
-            };
-            (path, change)
-        })
-        .collect()
-}
-
-fn hunk_source_path(hunk: &Hunk) -> &Path {
-    match hunk {
-        Hunk::AddFile { path, .. } | Hunk::DeleteFile { path } | Hunk::UpdateFile { path, .. } => {
-            path
-        }
-    }
-}
-
-fn format_update_chunks_for_progress(chunks: &[codex_apply_patch::UpdateFileChunk]) -> String {
-    let mut unified_diff = String::new();
-    for chunk in chunks {
-        match &chunk.change_context {
-            Some(context) => {
-                unified_diff.push_str("@@ ");
-                unified_diff.push_str(context);
-                unified_diff.push('\n');
-            }
-            None => {
-                unified_diff.push_str("@@");
-                unified_diff.push('\n');
-            }
-        }
-        for line in &chunk.old_lines {
-            unified_diff.push('-');
-            unified_diff.push_str(line);
-            unified_diff.push('\n');
-        }
-        for line in &chunk.new_lines {
-            unified_diff.push('+');
-            unified_diff.push_str(line);
-            unified_diff.push('\n');
-        }
-        if chunk.is_end_of_file {
-            unified_diff.push_str("*** End of File");
-            unified_diff.push('\n');
-        }
-    }
-    unified_diff
 }
 
 fn file_paths_for_action(action: &ApplyPatchAction) -> Vec<PathUri> {

@@ -77,6 +77,10 @@
       thoughts?: Entry[];
     }[] = [];
     for (const entry of entries) {
+      if (isHiddenHook(entry)) {
+        hiddenHooks++;
+        continue;
+      }
       const last = grouped.at(-1);
       if (last?.thoughts && entry.kind === "reasoning" && entry.agent === last.entry.agent) {
         last.thoughts.push(entry);
@@ -110,14 +114,10 @@
       thoughts?: Entry[];
     }[] = [];
     for (const row of grouped) {
-      if (isHiddenHook(row.entry)) {
-        hiddenHooks++;
-        continue;
-      }
       let rawAt = row.rawAt;
       let thoughts = row.thoughts;
       if (thoughts && preferences.thoughts === "hidden") {
-        thoughts = thoughts.filter((entry) => entry.values?.some((value) => value.live));
+        thoughts = thoughts.filter((entry) => entry.running);
         const live = thoughts[0];
         if (!live) continue;
         rawAt = live.observed ? date(live.observed).slice(11) : "";
@@ -309,6 +309,7 @@
       if (viewport.scrollHeight <= viewport.clientHeight) void maybeEarlier(viewport);
     });
     observer.observe(content);
+    observer.observe(viewport);
     return () => observer.disconnect();
   });
 

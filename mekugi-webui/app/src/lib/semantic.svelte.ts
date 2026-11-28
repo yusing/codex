@@ -15,6 +15,7 @@ import {
 } from "./attachments";
 import type {
   Approval,
+  ApprovalChoice,
   Attachment,
   CommandExecutionRequestApprovalResponse,
   FileChangeRequestApprovalResponse,
@@ -338,12 +339,17 @@ export function toNativeUserInput(
   return items;
 }
 
-// One-time-only choices: RemoteHuman connections are rejected by mekugi-app-server
-// if they submit acceptForSession, policy amendments, or secret prompt answers.
-const ONE_TIME_CHOICES = [
-  { id: 0, label: "Allow once", decision: "accept" as const },
-  { id: 1, label: "Deny", decision: "decline" as const, deny: true },
-];
+function approvalChoices(remember: boolean, denyWithReason = false): ApprovalChoice[] {
+  const choices: ApprovalChoice[] = [{ id: 0, label: "Allow once", decision: "accept" }];
+  if (remember) choices.push({ id: 1, label: "Allow for session", decision: "acceptForSession" });
+  choices.push({
+    id: choices.length,
+    label: denyWithReason ? "Deny" : "Decline",
+    decision: "decline",
+    deny: denyWithReason,
+  });
+  return choices;
+}
 
 const KNOWN_SERVER_REQUEST_METHODS = new Set<string>([
   "item/commandExecution/requestApproval",
@@ -365,6 +371,8 @@ export function serverRequestToPrompt(
       if (req.params.threadId !== threadId) return undefined;
       const details: string[] = [];
       if (req.params.cwd) details.push(`Directory: ${req.params.cwd}`);
+      if (req.params.networkApprovalContext)
+        details.push(`Network host: ${req.params.networkApprovalContext.host}`);
       if (req.params.reason) details.push(req.params.reason);
       return {
         kind: "approval",
@@ -376,10 +384,12 @@ export function serverRequestToPrompt(
           title: "Approve command execution",
           subject: req.params.command ?? undefined,
           details,
-          choices: [
-            { id: 0, label: "Allow once", decision: "accept" },
-            { id: 1, label: "Decline", decision: "decline" },
-          ],
+          choices: approvalChoices(
+            req.params.kind === "command" &&
+              req.params.networkApprovalContext == null &&
+              req.params.additionalPermissions == null &&
+              req.params.availableDecisions?.includes("acceptForSession") === true,
+          ),
         },
       };
     }
@@ -397,10 +407,7 @@ export function serverRequestToPrompt(
           title: "Approve file change",
           subject: req.params.grantRoot ?? undefined,
           details,
-          choices: [
-            { id: 0, label: "Allow once", decision: "accept" },
-            { id: 1, label: "Decline", decision: "decline" },
-          ],
+          choices: approvalChoices(req.params.reason == null && req.params.grantRoot == null),
         },
       };
     }
@@ -417,7 +424,7 @@ export function serverRequestToPrompt(
           title: "Approve guarded shell action",
           subject: command,
           details: req.params.cwd ? [`Directory: ${req.params.cwd}`] : [],
-          choices: ONE_TIME_CHOICES,
+          choices: approvalChoices(req.params.kind === "remoteWrite", true),
         },
       };
     }
@@ -1114,9 +1121,7 @@ export class ThreadControl {
     }
     if (!this.prompts.approvals.includes(approval)) return "This approval is no longer available.";
     const choice = approval.choices.find((c) => c.id === choiceIndex);
-    if (!choice || (choice.decision !== "accept" && choice.decision !== "decline")) {
-      return "Only one-time allow or decline decisions are permitted remotely.";
-    }
+    if (!choice) return "This approval choice is no longer available.";
     if (approval.method === "item/commandExecution/requestApproval") {
       const response: CommandExecutionRequestApprovalResponse = { decision: choice.decision };
       machine.respond(approval.requestId, response);

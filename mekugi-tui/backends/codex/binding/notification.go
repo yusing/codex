@@ -16,9 +16,10 @@ type TokenUsage struct {
 }
 
 type Turn struct {
-	ID     string     `json:"id"`
-	Status string     `json:"status"`
-	Error  *TurnError `json:"error"`
+	ID         string     `json:"id"`
+	Status     string     `json:"status"`
+	Error      *TurnError `json:"error"`
+	DurationMS *int64     `json:"durationMs"`
 }
 
 type TurnError struct {

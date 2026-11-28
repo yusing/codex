@@ -715,7 +715,7 @@ test("shellGuard/requestApproval preserves argument boundaries with shell quotin
   assert.equal(prompt.approval.subject, "rm -rf '/tmp/a b' 'it'\\''s' ''");
 });
 
-test("one-time approvals never offer session-wide grants and reply with accept/decline only", () => {
+test("approval without a native session decision remains one-time", () => {
   const machine = fakeMachine({ "thread/queue/list": () => ({ data: [], nextCursor: null }) });
   const control = new ThreadControl();
   control.connect("t1", machine);
@@ -745,6 +745,67 @@ test("one-time approvals never offer session-wide grants and reply with accept/d
   const err = control.decideApproval(approval, 0);
   assert.equal(err, undefined);
   assert.deepEqual(machine.responses, [{ id: 10, result: { decision: "accept" } }]);
+  assert.equal(control.prompts.approvals.length, 0);
+  control.release();
+});
+
+test("WebUI offers and sends session approval only for supported requests", () => {
+  const machine = fakeMachine({ "thread/queue/list": () => ({ data: [], nextCursor: null }) });
+  const control = new ThreadControl();
+  control.connect("t1", machine);
+
+  const base = { threadId: "t1", turnId: "turn1", itemId: "item1", startedAtMs: 1000 };
+  const cases = [
+    [
+      "item/commandExecution/requestApproval",
+      { kind: "command", availableDecisions: ["acceptForSession"] },
+      true,
+    ],
+    [
+      "item/commandExecution/requestApproval",
+      { kind: "humanCommand", availableDecisions: ["acceptForSession"] },
+      false,
+    ],
+    [
+      "item/commandExecution/requestApproval",
+      {
+        kind: "command",
+        availableDecisions: ["acceptForSession"],
+        networkApprovalContext: { host: "example.com", protocol: "https" },
+      },
+      false,
+    ],
+    ["item/fileChange/requestApproval", { grantRoot: null, reason: null }, true],
+    ["item/fileChange/requestApproval", { grantRoot: "/workspace" }, false],
+    [
+      "shellGuard/requestApproval",
+      { kind: "remoteWrite", executable: "git", argv: ["push"] },
+      true,
+    ],
+    ["shellGuard/requestApproval", { kind: "sudo", executable: "sudo", argv: ["id"] }, false],
+  ];
+  for (const [index, [method, fields, canRemember]] of cases.entries()) {
+    const id = index + 1;
+    machine.emitServerRequest({ id, method, params: { ...base, ...fields } });
+    const approval = control.prompts.approvals[0];
+    if (!canRemember) {
+      assert.deepEqual(
+        approval.choices.map(({ decision }) => decision),
+        ["accept", "decline"],
+      );
+      assert.equal(control.decideApproval(approval, 0), undefined);
+      continue;
+    }
+    const remember = approval.choices.find(({ label }) => label === "Allow for session");
+    assert.equal(control.decideApproval(approval, remember.id), undefined);
+    assert.deepEqual(machine.responses.at(-1), {
+      id,
+      result:
+        method === "shellGuard/requestApproval"
+          ? { decision: "acceptForSession", reason: null }
+          : { decision: "acceptForSession" },
+    });
+  }
   assert.equal(control.prompts.approvals.length, 0);
   control.release();
 });
@@ -1451,7 +1512,23 @@ test("one terminal change refreshes both warm family views with one read", async
 
 test("saved edits page, retain exact caller provenance, and discard stale pages", async () => {
   const root = { id: "t1", cwd: "/repo", status: { type: "idle" }, turns: [] };
-  const child = { ...root, id: "t2", parentThreadId: "t1", agentNickname: "worker" };
+  const child = {
+    ...root,
+    id: "t2",
+    parentThreadId: "t1",
+    agentNickname: "Pasteur",
+    source: {
+      subAgent: {
+        thread_spawn: {
+          parent_thread_id: "t1",
+          depth: 1,
+          agent_path: "/root/worker",
+          agent_nickname: "Pasteur",
+          agent_role: "worker",
+        },
+      },
+    },
+  };
   const edit = {
     changeId: "apple1",
     authorThreadId: "t2",
@@ -1494,8 +1571,10 @@ test("saved edits page, retain exact caller provenance, and discard stale pages"
   stream.connect(root.id, machine);
   await stream.refresh();
   assert.deepEqual(stream.review.files[0].origins, [
-    { Change: "apple1", Caller: "worker", Source: "Shell" },
+    { Change: "apple1", Caller: "/root/worker", Source: "Shell" },
   ]);
+  assert.equal(stream.label("t2"), "worker");
+  assert.equal(stream.label("/root/agent_a"), "agent_a");
   assert.deepEqual(stream.reviewOverview.callers[0].counts, { Added: 1, Removed: 1 });
   assert.deepEqual(stream.reviewOverview.counts.Callers, { t2: { Added: 1, Removed: 1 } });
   let pending = stream.moreChanges();
@@ -1707,6 +1786,76 @@ test("shell preview settlement distinguishes missing from failed and empty patch
   stream.close();
 });
 
+test("edit receipts follow visible transcript pages and publish before the final capture page", async () => {
+  const [older, recent, live] = ["older", "recent", "live"].map((id) => ({
+    id,
+    type: "commandExecution",
+    command: "make",
+    status: "completed",
+  }));
+  const turn = {
+    id: "turn",
+    status: "completed",
+    items: [
+      older,
+      ...Array.from({ length: 39 }, (_, i) => ({
+        id: `m${i}`,
+        type: "agentMessage",
+        text: "filler",
+      })),
+      recent,
+    ],
+  };
+  const threadId = "receipts";
+  const continuation = Promise.withResolvers();
+  const page = (itemId, path, sequence, nextCursor) => ({
+    nextCursor,
+    changes: [{ threadId, turnId: turn.id, itemId, changeId: path, sequence }],
+    files: [{ path, status: "A", changeIds: [path], scope: "workspace", additions: 2 }],
+  });
+  const machine = fakeMachine({
+    "thread/resume": () => resumedThread(threadId, { data: [turn] }),
+    "thread/subtree/list": () => ({ data: [] }),
+    "thread/changes/read": ({ receiptItemIds, cursor }) => {
+      if (!receiptItemIds) return { files: [], changes: [] };
+      assert.equal(receiptItemIds.length, 1);
+      const [itemId] = receiptItemIds;
+      if (cursor) return continuation.promise;
+      return page(itemId, `${itemId}.txt`, 2, itemId === recent.id ? "2:1" : undefined);
+    },
+  });
+  const stream = new Stream();
+  stream.connect(threadId, machine);
+  await stream.refresh();
+  const paths = (itemId) => {
+    const seed = stream.transcriptEntries.find((entry) => entry.itemId === itemId);
+    return (
+      seed &&
+      stream
+        .entry(seed.seq)
+        .values.filter((value) => value.effect)
+        .map((value) => value.path)
+    );
+  };
+  const requested = () =>
+    machine.requests.map(({ params }) => params?.receiptItemIds).filter(Boolean);
+  assert.deepEqual(requested(), [[recent.id], [recent.id]]);
+  assert.deepEqual(paths(recent.id), ["recent.txt"]);
+  continuation.resolve(page(recent.id, "first.txt", 1));
+  assert.equal(await stream.earlier(), true);
+  await new Promise(setImmediate);
+  assert.deepEqual(paths(recent.id), ["first.txt", "recent.txt"]);
+  assert.deepEqual(paths(older.id), ["older.txt"]);
+  machine.emitNotification({
+    method: "item/completed",
+    params: { threadId, turnId: turn.id, item: live },
+  });
+  await new Promise(setImmediate);
+  assert.deepEqual(paths(live.id), ["live.txt"]);
+  assert.deepEqual(requested(), [[recent.id], [recent.id], [older.id], [live.id]]);
+  stream.close();
+});
+
 test("itemToEntry maps commandExecution with bash lang and fileChange as per-file op rows", () => {
   const cmdEntry = itemToEntry(
     {
@@ -1726,7 +1875,7 @@ test("itemToEntry maps commandExecution with bash lang and fileChange as per-fil
   );
   assert.equal(cmdEntry.kind, "tool");
   assert.equal(cmdEntry.values?.[0]?.kind, "op");
-  assert.equal(cmdEntry.values?.[0]?.verb, "Run");
+  assert.equal(cmdEntry.values?.[0]?.verb, "Ran");
   assert.equal(cmdEntry.values?.[0]?.lang, "bash");
   assert.equal(cmdEntry.values?.[0]?.code, "git diff --stat");
 
