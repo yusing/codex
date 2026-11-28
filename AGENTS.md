@@ -78,12 +78,13 @@ Build prerequisites, profiles, artifacts and host integration are owned by
 
 ## Fork changelog
 
-Update [MEKUGI_CHANGELOG.md](MEKUGI_CHANGELOG.md) in the same change that adds,
-changes, or removes an intentional difference from stock Codex. Record the
-effect and any compatibility consequence, not generated artifacts or
-implementation churn. When importing upstream, compare directly with the new
-release tag, update the baseline and import record, and remove entries for
-differences that upstream now supplies.
+[MEKUGI_CHANGELOG.md](MEKUGI_CHANGELOG.md) inventories only current, intentional
+differences in the native runtime, protocol, and shipped native artifacts from
+the imported stock Codex release. Update it in the same change when that delta
+changes. Record behavior and compatibility impact; omit TUI, WebUI, connector,
+tests, generated artifacts, implementation history, and already-upstream
+behavior. When importing upstream, compare directly with the new release tag,
+update the baseline and import record, and prune differences now upstream.
 
 ## Rust conventions
 
